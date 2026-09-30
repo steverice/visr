@@ -93,6 +93,7 @@ variable, which wins over the file; the tools use those
 | `display.window_scale` | `2` | `HALO_WINDOW_SCALE` | window size as a multiple of 640x480; the window is resizable and the picture is letterboxed |
 | `display.vsync` | `true` | `HALO_NO_VSYNC=1` turns it off | wait for the display between frames |
 | `display.interpolation` | `true` | `HALO_INTERPOLATION` | a frame at every display refresh; `false` the original 30 frames per second (see Frame rate) |
+| `display.direct_camera` | `true` | `HALO_DIRECT_CAMERA` | in first person, on foot, the view points where the player aims in each frame, not where the last tick left it (see Frame rate) |
 | `audio.enabled` | `true` | `HALO_NO_AUDIO=1` turns it off | open an audio device (with `false`, sound still runs, silently) |
 | `audio.volume` | `1.0` | `HALO_VOLUME` | master volume |
 | `input.mouse_sensitivity` | `1.0` | `HALO_MOUSE_SENSITIVITY` | mouse aim multiplier |
@@ -131,6 +132,12 @@ shorter way round), positions and scales linearly; teleports, respawns and
 camera cuts snap. What is drawn is therefore one tick (33 ms) behind the
 simulation. Particles, contrails and other effects already moved every
 frame. The simulation itself is unchanged: 30 Hz, as on the Xbox.
+
+The direction of the view is the exception. The game reads the mouse and
+the sticks every frame, so in first person, on foot, each frame points the
+view where the player aims at that moment (`display.direct_camera`): the
+view turns in the frame the stick or the mouse moves. In a vehicle's seat
+and in cinematics the view blends as everything else does.
 
 `interpolation = false` in `config.toml` restores the original behaviour: one frame per
 tick, throttled to 30 per second.
