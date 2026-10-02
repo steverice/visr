@@ -19,6 +19,11 @@ void host_ios_prepare_assets(const char *documents);
 void host_tv_import(const char *documents);
 void host_ios_touch_attach(struct SDL_Window *window);
 void host_ios_touch_reset(void);
+/* debug.frame_counter (host_frame_counter.m): a label in the window's corner
+showing the frame number and the game time, 1/30 s a frame with
+fixed_timestep, else the time since the first frame */
+void host_frame_counter_start(int fixed_timestep);
+void host_frame_counter_show(unsigned long frame);
 int host_ios_gamepads(uint32_t *out, int capacity);
 int host_ios_gamepad_type(struct SDL_Gamepad *pad);
 int host_ios_gamepad_axis(struct SDL_Gamepad *pad, int axis);

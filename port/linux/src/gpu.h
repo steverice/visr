@@ -407,6 +407,10 @@ enum
 	GPU_INITIALIZE_DEBUG = 1,        /* debug.gl_debug: report GPU errors */
 	/* display.renderer = "metal": the Metal backend (iOS and tvOS hosts) */
 	GPU_INITIALIZE_METAL = 2,
+	/* debug.frame_counter: the iOS host shows the frame number and game time */
+	GPU_INITIALIZE_FRAME_COUNTER = 4,
+	/* debug.fixed_timestep: a frame is 1/30 s of game time (halo_virtual_clock.h) */
+	GPU_INITIALIZE_FIXED_TIMESTEP = 8,
 };
 /* probe the context, which must be current, and set it up */
 void gpu_initialize(uint32_t flags, struct gpu_capabilities *capabilities);

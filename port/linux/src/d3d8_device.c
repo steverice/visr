@@ -673,7 +673,9 @@ static void gl_initialize(void)
 	int index;
 
 	gpu_initialize((config_boolean("debug.gl_debug") ? GPU_INITIALIZE_DEBUG : 0) |
-		(platform_renderer_metal() ? GPU_INITIALIZE_METAL : 0), &device_capabilities);
+		(platform_renderer_metal() ? GPU_INITIALIZE_METAL : 0) |
+		(config_boolean("debug.frame_counter") ? GPU_INITIALIZE_FRAME_COUNTER : 0) |
+		(platform_fixed_timestep() ? GPU_INITIALIZE_FIXED_TIMESTEP : 0), &device_capabilities);
 	screen_maximum_texture_size = (int32_t)device_capabilities.max_texture_size;
 #ifdef HALO_ILP32
 	/* Select the real Retina drawable before allocating any screen targets. */
