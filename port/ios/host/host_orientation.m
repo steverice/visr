@@ -69,6 +69,13 @@ HALO_LANDSCAPE_PREFERENCES
 @end
 
 void host_ios_require_landscape(UIWindow *window) {
+#if TARGET_OS_VISION
+    /* a visionOS window has no orientation, and its scene rejects iOS's
+       geometry preferences; the controllers' landscape preferences above are
+       never consulted there */
+    (void)window;
+    return;
+#endif
     if (!window) return;
     [window.rootViewController setNeedsUpdateOfSupportedInterfaceOrientations];
 #if __IPHONE_OS_VERSION_MAX_ALLOWED >= 260000

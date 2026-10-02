@@ -1,10 +1,12 @@
-/* tvOS stand-ins for the iOS touch controls, orientation lock and XISO importer.
-   Apple TV has no touch screen or Files app: the Siri Remote stands in for the
-   touch pad, and the XISO arrives from a browser (host_tv_import.m). */
+/* tvOS and visionOS stand-ins for the iOS touch controls and orientation lock.
+   Apple TV has no touch screen: the Siri Remote stands in for the touch pad.
+   On visionOS a game controller plays, the Mac's or a paired keyboard's
+   arrows, Return and Escape work the menus as the remote's do, and a note asks
+   for a controller while none is connected. Each platform's importer is its
+   own file: host_tv_import.m on tvOS, host_import.m on visionOS. */
 #import <UIKit/UIKit.h>
 #include <SDL3/SDL.h>
 #include "ios_host.h"
-#include "xiso.h"
 #include <stdlib.h>
 
 /* The Siri Remote isn't a joystick (host_main.m), so SDL delivers its presses
@@ -15,6 +17,10 @@
    consumed here: the game's keyboard mapping (xinput_sdl.c) would otherwise
    also read Back, which SDL reports as Escape, as Start. */
 static SDL_Joystick *remote_joystick;
+#if TARGET_OS_VISION
+/* "Connect a game controller", shown while none is (host_ios_gamepads) */
+static UILabel *controller_note;
+#endif
 static SDL_JoystickID remote_id, primary_hardware;
 /* Remote presses latch until the game reads them: a swipe's key down and up
    arrive together, and a slow frame could otherwise miss a short press. Key
@@ -35,6 +41,14 @@ static int remote_button(SDL_Scancode key) {
 }
 static bool SDLCALL remote_event(void *userdata,SDL_Event *event) {
     (void)userdata;
+#if TARGET_OS_VISION
+    /* Which events look and pinch makes: UIKit documents an indirect touch
+       (SDL finger events, which the game ignores); a paired trackpad is an
+       indirect pointer (mouse events). Logged once each, to find out. */
+    static bool finger_seen,mouse_seen;
+    if(event->type==SDL_EVENT_FINGER_DOWN && !finger_seen){finger_seen=true;host_logf(HOST_LOG_INFO,"first finger event (look and pinch?)");}
+    if(event->type==SDL_EVENT_MOUSE_BUTTON_DOWN && !mouse_seen){mouse_seen=true;host_logf(HOST_LOG_INFO,"first mouse button event (pointer)");}
+#endif
     if(event->type!=SDL_EVENT_KEY_DOWN && event->type!=SDL_EVENT_KEY_UP)return true;
     int button=remote_button(event->key.scancode);
     if(button<0)return true;
@@ -79,7 +93,25 @@ void host_ios_touch_attach(SDL_Window *window) {
             candidate.hidden=YES;
     }
     [native makeKeyAndVisible];
+#if TARGET_OS_VISION
+    controller_note=[UILabel new];
+    controller_note.text=@"Connect a game controller to play Halo.";
+    controller_note.font=[UIFont preferredFontForTextStyle:UIFontTextStyleTitle2];
+    controller_note.textColor=UIColor.whiteColor;
+    controller_note.backgroundColor=[UIColor colorWithWhite:0 alpha:0.6];
+    controller_note.textAlignment=NSTextAlignmentCenter;
+    controller_note.layer.cornerRadius=12;controller_note.clipsToBounds=YES;
+    controller_note.translatesAutoresizingMaskIntoConstraints=NO;
+    UIView *root=native.rootViewController.view;
+    [root addSubview:controller_note];
+    [controller_note.centerXAnchor constraintEqualToAnchor:root.centerXAnchor].active=YES;
+    [controller_note.bottomAnchor constraintEqualToAnchor:root.bottomAnchor constant:-40].active=YES;
+    [controller_note.widthAnchor constraintEqualToConstant:520].active=YES;
+    [controller_note.heightAnchor constraintEqualToConstant:64].active=YES;
+    host_logf(HOST_LOG_INFO,"visionOS window attached, %.0fx%.0f",native.bounds.size.width,native.bounds.size.height);
+#else
     host_logf(HOST_LOG_INFO,"tvOS window attached, %.0fx%.0f",native.bounds.size.width,native.bounds.size.height);
+#endif
 }
 
 /* Port assignment and merging mirror host_touch.m, with the remote in place of touch. */
@@ -94,6 +126,9 @@ int host_ios_gamepads(uint32_t *out,int capacity) {
             if(!SDL_GetGamepadFromID(ids[i]))SDL_OpenGamepad(ids[i]);
         } else if(used<capacity) out[used++]=ids[i];
     }
+#if TARGET_OS_VISION
+    controller_note.hidden=primary_hardware!=0;
+#endif
     SDL_free(ids);return used;
 }
 int host_ios_gamepad_type(SDL_Gamepad *pad) {
@@ -113,16 +148,4 @@ int host_ios_gamepad_button(SDL_Gamepad *pad,int button) {
     if(SDL_GetGamepadID(pad)!=remote_id)return SDL_GetGamepadButton(pad,button);
     return remote_read(button) ||
         (primary_hardware && SDL_GetGamepadButton(SDL_GetGamepadFromID(primary_hardware),button));
-}
-
-/* The player's XISO is imported into root/maps over the local network
-   (host_tv_import.m). */
-void host_ios_prepare_assets(const char *root) {
-    NSString *imported=[[NSString stringWithUTF8String:root] stringByAppendingPathComponent:@"maps"];
-    char reason[1024]={0};
-    /* Caches is purgeable, so the import runs again if tvOS evicted the maps. */
-    if(!xiso_maps_ready(imported.fileSystemRepresentation,NULL,0))host_tv_import(root);
-    if(!xiso_maps_ready(imported.fileSystemRepresentation,reason,sizeof(reason)))
-        host_fatal("The imported maps are not usable (%s).",reason);
-    host_logf(HOST_LOG_INFO,"maps: %s",imported.fileSystemRepresentation);
 }

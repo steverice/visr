@@ -482,3 +482,15 @@ void host_tv_import(const char *root) {
     dispatch_sync(server_queue,^{nw_listener_cancel(listener);listener=nil;});
     window.hidden=YES;window.rootViewController=nil;
 }
+
+/* tvOS: the player's XISO is imported into root/maps over the local network
+   (host_tv_import, above). */
+void host_ios_prepare_assets(const char *root) {
+    NSString *imported=[[NSString stringWithUTF8String:root] stringByAppendingPathComponent:@"maps"];
+    char reason[1024]={0};
+    /* Caches is purgeable, so the import runs again if tvOS evicted the maps. */
+    if(!xiso_maps_ready(imported.fileSystemRepresentation,NULL,0))host_tv_import(root);
+    if(!xiso_maps_ready(imported.fileSystemRepresentation,reason,sizeof(reason)))
+        host_fatal("The imported maps are not usable (%s).",reason);
+    host_logf(HOST_LOG_INFO,"maps: %s",imported.fileSystemRepresentation);
+}

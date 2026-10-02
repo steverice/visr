@@ -1,19 +1,26 @@
 /*
 HOST_GPU_DISPATCH.C
 
-gpu.h's entry points in the iOS and tvOS host, which the guest's host_gpu_*
-imports call (tools/ios_bridges.py): each calls the backend gpu_initialize
-chose: GL (port/linux/src/gpu_gl.c) or, with GPU_INITIALIZE_METAL
-(display.renderer = "metal"), Metal (gpu_metal.m).
+gpu.h's entry points in the iOS, tvOS and visionOS host, which the guest's
+host_gpu_* imports call (tools/ios_bridges.py): each calls the backend
+gpu_initialize chose: GL (port/linux/src/gpu_gl.c) or, with
+GPU_INITIALIZE_METAL (display.renderer = "metal"), Metal (gpu_metal.m).
+visionOS has no OpenGL ES, and its build leaves the GL backend out.
 */
 
 #include "gpu.h"
 #include "ios_host.h"
 
-extern const struct gpu_backend gpu_backend_gl, gpu_backend_metal;
+#include <TargetConditionals.h>
 
+extern const struct gpu_backend gpu_backend_metal;
 /* nothing calls gpu.h before gpu_initialize (d3d8_device.c's gl_initialize) */
+#if TARGET_OS_VISION
+static const struct gpu_backend *backend = &gpu_backend_metal;
+#else
+extern const struct gpu_backend gpu_backend_gl;
 static const struct gpu_backend *backend = &gpu_backend_gl;
+#endif
 
 /* the chosen backend's table with a gpu_present that first holds while the
 app is in the background (host_lifecycle.m) and, with debug.frame_counter,
@@ -34,7 +41,14 @@ static void present_wrapped(gpu_texture back_buffer)
 
 void gpu_initialize(uint32_t flags, struct gpu_capabilities *capabilities)
 {
+#if TARGET_OS_VISION
+	/* host_main.m sets HALO_RENDERER=metal, which overrides config.toml */
+	if (!(flags & GPU_INITIALIZE_METAL))
+		host_fatal("visionOS draws with Metal only, but display.renderer isn't \"metal\"");
+	backend = &gpu_backend_metal;
+#else
 	backend = (flags & GPU_INITIALIZE_METAL) ? &gpu_backend_metal : &gpu_backend_gl;
+#endif
 	wrapped_backend = backend;
 	wrapped = *backend;
 	wrapped.present = present_wrapped;

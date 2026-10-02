@@ -1722,7 +1722,7 @@ static void gpu_metal_initialize(uint32_t flags, struct gpu_capabilities *capabi
 		/* no fast math: the GLSL is highp, and the compiler mustn't reorder
 		its arithmetic; invariance keeps a position computed in two passes
 		identical, as GLSL's invariant gl_Position does */
-		if (@available(iOS 18.0, tvOS 18.0, *))
+		if (@available(iOS 18.0, tvOS 18.0, visionOS 2.0, *))
 			compile_options.mathMode = MTLMathModeSafe;
 		else
 			compile_options.fastMathEnabled = NO;

@@ -56,7 +56,8 @@ static int import_progress(void *context, const char *file, uint64_t done, uint6
     UIImageView *icon=[[UIImageView alloc] initWithImage:[UIImage imageNamed:@"AppIcon60x60"]];
     icon.contentMode=UIViewContentModeScaleAspectFill;icon.clipsToBounds=YES;icon.layer.cornerRadius=16;
     [icon.widthAnchor constraintEqualToConstant:72].active=YES;[icon.heightAnchor constraintEqualToConstant:72].active=YES;
-    [stack addArrangedSubview:icon];
+    /* visionOS's layered icon has no AppIcon60x60 image */
+    if(icon.image)[stack addArrangedSubview:icon];
     UILabel *title=[UILabel new];title.text=@"Halo: CE";title.font=[UIFont preferredFontForTextStyle:UIFontTextStyleLargeTitle];
     title.adjustsFontForContentSizeCategory=YES;title.textAlignment=NSTextAlignmentCenter;[stack addArrangedSubview:title];
     UILabel *body=[UILabel new];body.text=@"Choose your own Halo: Combat Evolved Xbox XISO.\nWe'll import the game and start it for you.";

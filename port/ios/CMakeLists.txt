@@ -1,4 +1,4 @@
-# Build the iPhone/iPad host and SDL around the statically compiled guest image.
+# Build the iPhone/iPad (or Apple TV, or Apple Vision Pro) host and SDL around the statically compiled guest image.
 cmake_minimum_required(VERSION 3.24)
 project(HaloCE LANGUAGES C CXX OBJC ASM)
 set(HALO_BUNDLE_IDENTIFIER "org.haloce.ios" CACHE STRING "App bundle identifier")
@@ -16,6 +16,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "tvOS")
     # compiled; only these macros gate them.
     target_compile_definitions(SDL3-static PRIVATE SDL_VIDEO_OPENGL_ES=1 SDL_VIDEO_OPENGL_ES2=1)
 endif()
+if(CMAKE_SYSTEM_NAME STREQUAL "visionOS")
+    # SDL's CMake ties its virtual-joystick driver to HIDAPI, which is off on
+    # visionOS, but the driver doesn't use HIDAPI. host/host_tv.m's player-one
+    # pad is a virtual joystick, so compile it in as tvOS gets it.
+    target_sources(SDL3-static PRIVATE "${ROOT}/build/third_party/SDL3/src/joystick/virtual/SDL_virtualjoystick.c")
+    target_compile_definitions(SDL3-static PRIVATE SDL_JOYSTICK_VIRTUAL=1)
+endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "tvOS")
     # Controllers only, no Files app: the XISO arrives from a browser
     # (host/host_tv_import.m).
@@ -27,6 +34,18 @@ if(CMAKE_SYSTEM_NAME STREQUAL "tvOS")
     set(HALO_PLATFORM_SOURCES Assets-tvOS.xcassets host/host_tv.m host/host_tv_import.m)
     set(HALO_INFO_PLIST Info-tvOS.plist)
     set(HALO_DEVICE_FAMILY 3)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "visionOS")
+    # A window, played with a game controller (host/host_tv.m's input), the
+    # game imported through Files or the Documents folder (host/host_import.m).
+    # visionOS has no OpenGL ES: Metal is the only renderer.
+    set(HALO_VISIONOS ON)
+    # the window's drawable is about 2560x1440; 1080 lines keeps the GPU cost
+    # at the Apple TV's until a device shows what it can afford (0 = native)
+    set(HALO_RENDER_HEIGHT 1080 CACHE STRING "Internal render height (display.render_height)")
+    option(HALO_EXTENDED_VIRTUAL_ADDRESSING "Sign with the extended virtual addressing entitlement" OFF)
+    set(HALO_PLATFORM_SOURCES Assets-visionOS.xcassets host/host_tv.m host/host_import.m host/host_orientation.m)
+    set(HALO_INFO_PLIST Info-visionOS.plist)
+    set(HALO_DEVICE_FAMILY 7)
 else()
     set(HALO_PLATFORM_SOURCES Assets.xcassets host/host_import.m host/host_orientation.m host/host_touch.m)
     set(HALO_INFO_PLIST Info.plist)
@@ -36,23 +55,39 @@ add_executable(HaloCE MACOSX_BUNDLE
     ${HALO_PLATFORM_SOURCES} "${ROOT}/port/runtime/xiso.c"
     host/host_main.m host/host_memory.c host/host_loader.c host/host_syscall.c host/guest_call.S
     host/host_thread.c host/host_sdl.c host/host_gpu.c host/host_gpu_dispatch.c host/gpu_metal.m host/host_frame_counter.m host/host_lifecycle.m
-    "${ROOT}/port/linux/src/gpu_gl.c" "${ROOT}/port/linux/src/gl_functions.c"
     "${ROOT}/port/linux/src/posix_files.c" host/posix_net.c
     "${ROOT}/build/ios/host/bridges.c" "${ROOT}/build/ios/embedded/guest_image.S")
 target_include_directories(HaloCE PRIVATE host "${ROOT}/port/runtime" "${ROOT}/port/runtime/include"
     "${ROOT}/port/runtime/guest/runtime" "${ROOT}/port/linux/src" "${ROOT}/build/ios/host"
-    "${ROOT}/build/ios/gl_include" "${ROOT}/build/ios/embedded")
+    "${ROOT}/build/ios/embedded")
 target_compile_definitions(HaloCE PRIVATE HALO_IOS=1 st_mtim=st_mtimespec st_atim=st_atimespec st_ctim=st_ctimespec)
 target_compile_options(HaloCE PRIVATE -Wno-deprecated-declarations)
-# the GPU backend (step 4): OpenGL ES through gl.h's pointer table, resolved by name
-set_source_files_properties("${ROOT}/port/linux/src/gpu_gl.c" "${ROOT}/port/linux/src/gl_functions.c"
-    PROPERTIES COMPILE_DEFINITIONS GPU_GL_HOST=1)
+if(NOT HALO_VISIONOS)
+    # the GL backend (step 4): OpenGL ES through gl.h's pointer table, resolved by name
+    target_sources(HaloCE PRIVATE "${ROOT}/port/linux/src/gpu_gl.c" "${ROOT}/port/linux/src/gl_functions.c")
+    target_include_directories(HaloCE PRIVATE "${ROOT}/build/ios/gl_include")
+    set_source_files_properties("${ROOT}/port/linux/src/gpu_gl.c" "${ROOT}/port/linux/src/gl_functions.c"
+        PROPERTIES COMPILE_DEFINITIONS GPU_GL_HOST=1)
+    target_link_libraries(HaloCE PRIVATE "-framework OpenGLES")
+endif()
 target_compile_options(HaloCE PRIVATE "$<$<COMPILE_LANGUAGE:OBJC>:-fobjc-arc>")
-target_link_libraries(HaloCE PRIVATE SDL3::SDL3-static "-framework Foundation" "-framework UIKit" "-framework OpenGLES"
+target_link_libraries(HaloCE PRIVATE SDL3::SDL3-static "-framework Foundation" "-framework UIKit"
     "-framework Metal" "-framework QuartzCore")
 if(HALO_TVOS)
     target_link_libraries(HaloCE PRIVATE "-framework Network" "-framework CoreImage")
     set_source_files_properties(Assets-tvOS.xcassets PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+elseif(HALO_VISIONOS)
+    target_link_libraries(HaloCE PRIVATE "-framework UniformTypeIdentifiers")
+    set_source_files_properties(Assets-visionOS.xcassets PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+    # the guest pool can grow to about 1.9 GB; extended virtual addressing only
+    # if a device refuses the 4 GB arena (tools/ios_build.py)
+    if(HALO_EXTENDED_VIRTUAL_ADDRESSING)
+        set(HALO_ENTITLEMENTS HaloCE-visionOS-extended.entitlements)
+    else()
+        set(HALO_ENTITLEMENTS HaloCE-visionOS.entitlements)
+    endif()
+    set_target_properties(HaloCE PROPERTIES
+        XCODE_ATTRIBUTE_CODE_SIGN_ENTITLEMENTS "${CMAKE_CURRENT_SOURCE_DIR}/${HALO_ENTITLEMENTS}")
 else()
     target_link_libraries(HaloCE PRIVATE "-framework UniformTypeIdentifiers")
     set_source_files_properties(Assets.xcassets PROPERTIES MACOSX_PACKAGE_LOCATION Resources)

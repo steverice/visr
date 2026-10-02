@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the iPhone/iPad (or, with --tvos, Apple TV) app from source on an Apple Silicon Mac."""
+"""Build the iPhone/iPad (or, with --tvos, Apple TV; with --visionos, Apple Vision Pro) app from source on an Apple Silicon Mac."""
 import argparse
 import os
 import platform
@@ -32,10 +32,15 @@ def main():
     mode.add_argument('--simulator', action='store_true', help='build for an ARM64 simulator')
     mode.add_argument('--unsigned', action='store_true', help='build a device app for signing later')
     parser.add_argument('--team', help='Apple development team ID for device signing')
-    parser.add_argument('--bundle-id', help='bundle identifier covered by your signing profile (default org.haloce.ios / org.haloce.tvos)')
-    parser.add_argument('--tvos', action='store_true', help='build for Apple TV instead of iPhone/iPad')
+    parser.add_argument('--bundle-id', help='bundle identifier covered by your signing profile (default org.haloce.ios / org.haloce.tvos / org.haloce.visionos)')
+    target = parser.add_mutually_exclusive_group()
+    target.add_argument('--tvos', action='store_true', help='build for Apple TV instead of iPhone/iPad')
+    target.add_argument('--visionos', action='store_true', help='build for Apple Vision Pro (Metal only) instead of iPhone/iPad')
     parser.add_argument('--render-height', type=int, default=1080,
-                        help='tvOS: internal render height in pixels, 0 for native (default 1080)')
+                        help='tvOS and visionOS: internal render height in pixels, 0 for native (default 1080)')
+    parser.add_argument('--extended-virtual-addressing', action='store_true',
+                        help='visionOS: sign with the extended virtual addressing entitlement (paid developer teams), '
+                             'in case the device refuses the 4 GB guest arena')
     parser.add_argument('--ipa', type=Path, help='also package the device app at this path')
     parser.add_argument('--llvm', default='/opt/homebrew/opt/llvm')
     parser.add_argument('--lld', default='/opt/homebrew/opt/lld/bin/ld.lld')
@@ -49,13 +54,17 @@ def main():
         parser.error('--team is only used for signed device builds')
     if args.ipa and args.simulator:
         parser.error('--ipa requires a device build')
-    args.bundle_id = args.bundle_id or ('org.haloce.tvos' if args.tvos else 'org.haloce.ios')
+    if args.extended_virtual_addressing and not args.visionos:
+        parser.error('--extended-virtual-addressing is for --visionos builds')
+    platform_name = 'tvos' if args.tvos else 'visionos' if args.visionos else 'ios'
+    args.bundle_id = args.bundle_id or f'org.haloce.{platform_name}'
     if not re.fullmatch(r'[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+', args.bundle_id):
         parser.error('--bundle-id must be a reverse-DNS identifier (e.g. com.example.halo)')
     if args.jobs < 1:
         parser.error('--jobs must be positive')
     include=ROOT/'build/ios/gl_include'
-    for name,(registry,revision,source) in HEADERS.items():
+    # visionOS has no OpenGL ES; its build leaves the GL backend out
+    for name,(registry,revision,source) in ({} if args.visionos else HEADERS).items():
         target=include/name;target.parent.mkdir(parents=True,exist_ok=True)
         url=f'https://raw.githubusercontent.com/KhronosGroup/{registry}/{revision}/{source}'
         data=urllib.request.urlopen(url,timeout=30).read()
@@ -76,14 +85,18 @@ def main():
         ('port/third_party/tomlc17/LICENSE', 'tomlc17.txt'),
     ):
         shutil.copyfile(ROOT/source, notices/name)
-    build=ROOT/'build'/('tvos' if args.tvos else 'ios')/('app-simulator' if args.simulator else
+    build=ROOT/'build'/platform_name/('app-simulator' if args.simulator else
                 'app-unsigned' if args.unsigned else 'app-device')
     if args.tvos: sdk='appletvsimulator' if args.simulator else 'appletvos'
+    elif args.visionos: sdk='xrsimulator' if args.simulator else 'xros'
     else: sdk='iphonesimulator' if args.simulator else 'iphoneos'
-    command=['cmake','-S','port/ios','-B',build,'-G','Xcode',f'-DCMAKE_SYSTEM_NAME={"tvOS" if args.tvos else "iOS"}',
-             f'-DCMAKE_OSX_SYSROOT={sdk}','-DCMAKE_OSX_ARCHITECTURES=arm64','-DCMAKE_OSX_DEPLOYMENT_TARGET=16.0',
+    # visionOS 2.0 is the first with MTLCompileOptions.mathMode (gpu_metal.m)
+    system,deployment={'tvos':('tvOS','16.0'),'visionos':('visionOS','2.0'),'ios':('iOS','16.0')}[platform_name]
+    command=['cmake','-S','port/ios','-B',build,'-G','Xcode',f'-DCMAKE_SYSTEM_NAME={system}',
+             f'-DCMAKE_OSX_SYSROOT={sdk}','-DCMAKE_OSX_ARCHITECTURES=arm64',f'-DCMAKE_OSX_DEPLOYMENT_TARGET={deployment}',
              f'-DHALO_BUNDLE_IDENTIFIER={args.bundle_id}', f'-DHALO_DEVELOPMENT_TEAM={args.team or ""}',
-             f'-DHALO_RENDER_HEIGHT={args.render_height}']
+             f'-DHALO_RENDER_HEIGHT={args.render_height}',
+             f'-DHALO_EXTENDED_VIRTUAL_ADDRESSING={"ON" if args.extended_virtual_addressing else "OFF"}']
     run(*command)
     command=['cmake','--build',build,'--config','Release','--target','HaloCE','--','-quiet']
     if args.simulator or args.unsigned:command.append('CODE_SIGNING_ALLOWED=NO')

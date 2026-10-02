@@ -58,7 +58,16 @@ int main(int argc,char **argv) {
         host_logf(HOST_LOG_INFO,"Halo iOS native guest starting");
         UIApplication.sharedApplication.idleTimerDisabled=YES;
         host_ios_prepare_assets(data_root);
-        if(host_load_image(NULL,0))host_fatal("Could not map the signed game image. See ios-runtime.log in Files.");
+        /* the arena is the step a device can refuse (visionOS: see port/ios/README.md) */
+        if(host_load_image(NULL,0))host_fatal(host_arena?"Could not map the signed game image. See ios-runtime.log in Files.":
+            "Could not reserve the game's 4 GB memory arena. See ios-runtime.log in Files.");
+#if TARGET_OS_VISION
+        /* Closing the window is how a visionOS app is left, and an app reopened
+           into a new scene would have no game window: quit (the game saves at
+           checkpoints). Delivered while the guest pumps SDL's events. */
+        [NSNotificationCenter.defaultCenter addObserverForName:UISceneDidDisconnectNotification object:nil queue:nil
+            usingBlock:^(NSNotification *notification){(void)notification;host_exit(0);}];
+#endif
         host_install_signal_handlers();
         SDL_SetHint(SDL_HINT_ORIENTATIONS,"LandscapeLeft LandscapeRight");
         SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS,"0");
@@ -80,10 +89,18 @@ int main(int argc,char **argv) {
         snprintf(env_width,sizeof(env_width),"HALO_DISPLAY_WIDTH=%d",width);
         snprintf(env_pixel_width,sizeof(env_pixel_width),"HALO_DISPLAY_PIXEL_WIDTH=%d",pixel_width);
         snprintf(env_pixel_height,sizeof(env_pixel_height),"HALO_DISPLAY_PIXEL_HEIGHT=%d",pixel_height);
-        const char *env[10];size_t env_count=0;
+        const char *env[12];size_t env_count=0;
         env[env_count++]=env_data;env[env_count++]=env_save;env[env_count++]=env_width;
         env[env_count++]=env_pixel_width;env[env_count++]=env_pixel_height;
-#if TARGET_OS_TV
+#if TARGET_OS_VISION
+        /* No OpenGL ES on visionOS: the environment overrides config.toml's
+           display.renderer. The aspect is pinned to 16:9, since a visionOS
+           window's size is only a request and the game takes its aspect from
+           the first drawable it sees. */
+        env[env_count++]="HALO_RENDERER=metal";
+        env[env_count++]="HALO_SCREEN_WIDTH=852";
+#endif
+#if TARGET_OS_TV || TARGET_OS_VISION
         char env_render[64];
         /* The build chooses the render height (tools/ios_build.py --render-height). */
         int render_height=[[NSBundle.mainBundle objectForInfoDictionaryKey:@"HaloRenderHeight"] intValue];
