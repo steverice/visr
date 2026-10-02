@@ -106,7 +106,10 @@ void host_ios_touch_attach(SDL_Window *window) {
     [root addSubview:controller_note];
     [controller_note.centerXAnchor constraintEqualToAnchor:root.centerXAnchor].active=YES;
     [controller_note.bottomAnchor constraintEqualToAnchor:root.bottomAnchor constant:-40].active=YES;
-    [controller_note.widthAnchor constraintEqualToConstant:520].active=YES;
+    /* 520 points, or the window's width less a margin if the window is narrower */
+    NSLayoutConstraint *preferred=[controller_note.widthAnchor constraintEqualToConstant:520];
+    preferred.priority=UILayoutPriorityDefaultHigh;preferred.active=YES;
+    [controller_note.widthAnchor constraintLessThanOrEqualToAnchor:root.widthAnchor constant:-32].active=YES;
     [controller_note.heightAnchor constraintEqualToConstant:64].active=YES;
     host_logf(HOST_LOG_INFO,"visionOS window attached, %.0fx%.0f",native.bounds.size.width,native.bounds.size.height);
 #else
