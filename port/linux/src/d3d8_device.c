@@ -525,10 +525,12 @@ static void shader_dialect_initialize(struct nv2a_dialect *dialect, const struct
 	memset(dialect, 0, sizeof(*dialect));
 	dialect->es = capabilities->shader_es;
 	dialect->version = capabilities->shader_language;
+	dialect->msl = capabilities->shader_language == GPU_SHADER_LANGUAGE_MSL;
 	dialect->clip_y_flip = capabilities->clip_y_flip;
 	dialect->clip_z_remap = capabilities->clip_z_remap;
-	/* the mobile GPUs' precision workaround goes with OpenGL ES */
-	dialect->clip_capture = capabilities->shader_es;
+	/* the mobile GPUs' precision workaround goes with OpenGL ES, and with
+	Metal, which runs on the same GPUs */
+	dialect->clip_capture = capabilities->shader_es || dialect->msl;
 	dialect->shader_lod_bias = !capabilities->sampler_lod_bias;
 	dialect->debug_expression = config_string("debug.gpu_debug_expression");
 	dialect->debug_texture0 = config_boolean("debug.gpu_debug_texture0") != 0;
@@ -542,6 +544,21 @@ static void desktop_capabilities(struct gpu_capabilities *capabilities)
 	memset(capabilities, 0, sizeof(*capabilities));
 	capabilities->sampler_lod_bias = 1;
 	capabilities->shader_language = 450;
+}
+
+/* the dialect fields of the Metal backend's capabilities (gpu_metal.m), for
+replaying shaders as MSL on a GL context. sampler_lod_bias is 0: every MSL
+lookup takes a bias argument (nv2a_msl.c) */
+static void metal_capabilities(struct gpu_capabilities *capabilities)
+{
+	memset(capabilities, 0, sizeof(*capabilities));
+	capabilities->shader_language = GPU_SHADER_LANGUAGE_MSL;
+}
+
+/* the file extension of a dialect's shader source */
+static const char *shader_extension(const struct nv2a_dialect *dialect)
+{
+	return dialect->msl ? "metal" : "glsl";
 }
 
 /* ---------- shader replay (debug.gpu_shader_replay)
@@ -576,9 +593,11 @@ static void shader_replay(const char *directory)
 {
 	void *listing = posix_directory_open(directory);
 	char name[256], path[512], output[512];
-	unsigned long translated = 0, skipped = 0;
+	unsigned long translated = 0, skipped = 0, compiled = 0;
 	struct nv2a_dialect dialect;
-	struct gpu_capabilities desktop;
+	struct gpu_capabilities desktop, metal;
+	const char *replay_dialect = config_string("debug.gpu_shader_replay_dialect");
+	BOOL compile;
 
 	if (!listing)
 	{
@@ -588,10 +607,15 @@ static void shader_replay(const char *directory)
 	snprintf(output, sizeof(output), "%s/replay", directory);
 	posix_make_directory(output);
 	/* debug.gpu_shader_replay_dialect "450" replays through the desktop
-	dialect, which this build doesn't otherwise run */
+	dialect, which this build doesn't otherwise run, and "msl" through the
+	Metal backend's */
 	desktop_capabilities(&desktop);
-	shader_dialect_initialize(&dialect, !strcmp(config_string("debug.gpu_shader_replay_dialect"), "450") ?
-		&desktop : &device_capabilities);
+	metal_capabilities(&metal);
+	shader_dialect_initialize(&dialect, !strcmp(replay_dialect, "450") ? &desktop :
+		!strcmp(replay_dialect, "msl") ? &metal : &device_capabilities);
+	/* the Metal backend also compiles what it replays (GL's replay compiles
+	nothing, which keeps its GL calls as they were) */
+	compile = dialect.msl && shader_dialect.msl;
 	while (posix_directory_next(listing, name, sizeof(name)))
 	{
 		size_t length = strlen(name);
@@ -625,17 +649,21 @@ static void shader_replay(const char *directory)
 			skipped++;
 			continue;
 		}
-		snprintf(path, sizeof(path), "%s/%.*s.glsl", output, (int)(length - 4), name);
+		snprintf(path, sizeof(path), "%s/%.*s.%s", output, (int)(length - 4), name, shader_extension(&dialect));
 		if ((file = fopen(path, "w")) != NULL)
 		{
 			fputs(source, file);
 			fclose(file);
 		}
+		if (compile && gpu_shader_create(vertex ? GPU_SHADER_VERTEX : GPU_SHADER_PIXEL, source))
+			compiled++;
 		free(source);
 		translated++;
 	}
 	posix_directory_close(listing);
 	platform_log("shader replay: %lu translated, %lu skipped", translated, skipped);
+	if (compile)
+		platform_log("shader replay: %lu compiled, %lu failed", compiled, translated - compiled);
 }
 
 /* ---------- device creation */
@@ -1462,7 +1490,8 @@ static gpu_shader vertex_shader_get(struct vertex_shader_object *program, BOOL i
 			FILE *file;
 			DWORD header[2];
 
-			snprintf(path, sizeof(path), "%s/vs%03lu_%d.glsl", debug_settings.dump_shaders, program->id, variant);
+			snprintf(path, sizeof(path), "%s/vs%03lu_%d.%s", debug_settings.dump_shaders, program->id, variant,
+				shader_extension(&shader_dialect));
 			if ((file = fopen(path, "w")) != NULL)
 			{
 				fputs(source, file);
@@ -1512,7 +1541,7 @@ static gpu_shader fragment_shader_get(const struct nv2a_pixel_shader_key *key)
 		char path[512];
 		FILE *file;
 
-		snprintf(path, sizeof(path), "%s/ps_%08lx.glsl", debug_settings.dump_shaders, hash);
+		snprintf(path, sizeof(path), "%s/ps_%08lx.%s", debug_settings.dump_shaders, hash, shader_extension(&shader_dialect));
 		if ((file = fopen(path, "w")) != NULL)
 		{
 			fputs(source, file);

@@ -157,7 +157,7 @@ void nv2a_uniform_declarations(struct xgpu_text *text, const struct nv2a_dialect
 	GPU_UNIFORMS(DECLARE_UNIFORM)
 #undef DECLARE_UNIFORM
 }
-static const char shader_prologue[] =
+static const char shader_outputs[] =
 	"out vec4 xD0;\n"
 	"out vec4 xD1;\n"
 	"out vec4 xB0;\n"
@@ -167,7 +167,9 @@ static const char shader_prologue[] =
 	"out vec4 xT2;\n"
 	"out vec4 xT3;\n"
 	"out float xFog;\n"
-	"invariant gl_Position;\n"
+	"invariant gl_Position;\n";
+/* GLSL and MSL alike */
+static const char shader_helpers[] =
 	"vec4 unpack_normpacked3(uint p)\n"
 	"{\n"
 	"	int x = int(p << 21) >> 21;\n"
@@ -211,21 +213,31 @@ char *nv2a_vertex_shader_translate(const struct nv2a_dialect *dialect, const DWO
 		platform_log("vertex shader translated before the dialect was set");
 		return NULL;
 	}
-	if (dialect->es)
-		xgpu_text_append(&text, "#version %u es\nprecision highp float;\nprecision highp int;\n", (unsigned)dialect->version);
-	else
-		xgpu_text_append(&text, "#version %u core\n", (unsigned)dialect->version);
-	nv2a_uniform_declarations(&text, dialect, GPU_UNIFORM_VERTEX);
-	xgpu_text_append(&text, "%s", shader_prologue);
-	for (index = 0; index < XGPU_VERTEX_ATTRIBUTE_COUNT; index++)
+	if (dialect->msl)
 	{
-		if (packed_attribute_mask & (1UL << index))
-			xgpu_text_append(&text, "layout(location = %lu) in uint v%lu_packed;\n", index, index);
-		else
-			xgpu_text_append(&text, "layout(location = %lu) in vec4 v%lu_in;\n", index, index);
+		nv2a_msl_prelude(&text, GPU_UNIFORM_VERTEX);
+		nv2a_msl_vertex_outputs(&text);
+		xgpu_text_append(&text, "%s", shader_helpers);
+		nv2a_msl_vertex_main(&text, dialect, packed_attribute_mask);
 	}
+	else
+	{
+		if (dialect->es)
+			xgpu_text_append(&text, "#version %u es\nprecision highp float;\nprecision highp int;\n", (unsigned)dialect->version);
+		else
+			xgpu_text_append(&text, "#version %u core\n", (unsigned)dialect->version);
+		nv2a_uniform_declarations(&text, dialect, GPU_UNIFORM_VERTEX);
+		xgpu_text_append(&text, "%s%s", shader_outputs, shader_helpers);
+		for (index = 0; index < XGPU_VERTEX_ATTRIBUTE_COUNT; index++)
+		{
+			if (packed_attribute_mask & (1UL << index))
+				xgpu_text_append(&text, "layout(location = %lu) in uint v%lu_packed;\n", index, index);
+			else
+				xgpu_text_append(&text, "layout(location = %lu) in vec4 v%lu_in;\n", index, index);
+		}
 
-	xgpu_text_append(&text, "void main()\n{\n");
+		xgpu_text_append(&text, "void main()\n{\n");
+	}
 	for (index = 0; index < XGPU_VERTEX_ATTRIBUTE_COUNT; index++)
 	{
 		if (packed_attribute_mask & (1UL << index))
@@ -386,7 +398,9 @@ char *nv2a_vertex_shader_translate(const struct nv2a_dialect *dialect, const DWO
 		"\txT1 = oT1;\n"
 		"\txT2 = oT2;\n"
 		"\txT3 = oT3;\n"
-		"\txFog = oFog.x;\n"
-		"}\n");
+		"\txFog = oFog.x;\n");
+	if (dialect->msl)
+		nv2a_msl_vertex_return(&text);
+	xgpu_text_append(&text, "}\n");
 	return text.buffer;
 }

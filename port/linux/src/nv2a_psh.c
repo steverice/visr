@@ -512,7 +512,12 @@ char *nv2a_pixel_shader_translate(const struct nv2a_dialect *dialect, const stru
 		platform_log("pixel shader translated before the dialect was set");
 		return NULL;
 	}
-	if (dialect->es)
+	if (dialect->msl)
+	{
+		nv2a_msl_prelude(&text, GPU_UNIFORM_PIXEL);
+		nv2a_msl_fragment_inputs(&text);
+	}
+	else if (dialect->es)
 	{
 		xgpu_text_append(&text, "#version %u es\n", (unsigned)dialect->version);
 		/* samples that pass the depth and stencil tests, as the NV2A's
@@ -536,20 +541,24 @@ char *nv2a_pixel_shader_translate(const struct nv2a_dialect *dialect, const stru
 	{
 		xgpu_text_append(&text, "#version %u core\n", (unsigned)dialect->version);
 	}
-	xgpu_text_append(&text,
-		"in vec4 xD0;\n"
-		"in vec4 xD1;\n"
-		"in vec4 xB0;\n"
-		"in vec4 xB1;\n"
-		"in vec4 xT0;\n"
-		"in vec4 xT1;\n"
-		"in vec4 xT2;\n"
-		"in vec4 xT3;\n"
-		"in float xFog;\n"
-		"layout(location = 0) out vec4 fragment_color;\n");
-	nv2a_uniform_declarations(&text, dialect, GPU_UNIFORM_PIXEL);
-	for (stage = 0; stage < 4; stage++)
-		xgpu_text_append(&text, "uniform %s tex%d;\n", sampler_declaration(key->sampler_type[stage]), stage);
+	if (!dialect->msl)
+	{
+		xgpu_text_append(&text,
+			"in vec4 xD0;\n"
+			"in vec4 xD1;\n"
+			"in vec4 xB0;\n"
+			"in vec4 xB1;\n"
+			"in vec4 xT0;\n"
+			"in vec4 xT1;\n"
+			"in vec4 xT2;\n"
+			"in vec4 xT3;\n"
+			"in float xFog;\n"
+			"layout(location = 0) out vec4 fragment_color;\n");
+		nv2a_uniform_declarations(&text, dialect, GPU_UNIFORM_PIXEL);
+		for (stage = 0; stage < 4; stage++)
+			xgpu_text_append(&text, "uniform %s tex%d;\n", sampler_declaration(key->sampler_type[stage]), stage);
+	}
+	/* GLSL and MSL alike */
 	xgpu_text_append(&text,
 		"float signed_byte(float x)\n"
 		"{\n"
@@ -559,9 +568,12 @@ char *nv2a_pixel_shader_translate(const struct nv2a_dialect *dialect, const stru
 		"vec3 signed_bytes(vec3 x)\n"
 		"{\n"
 		"	return vec3(signed_byte(x.r), signed_byte(x.g), signed_byte(x.b));\n"
-		"}\n"
-		"void main()\n"
-		"{\n"
+		"}\n");
+	if (dialect->msl)
+		nv2a_msl_fragment_main(&text, dialect, key);
+	else
+		xgpu_text_append(&text, "void main()\n{\n");
+	xgpu_text_append(&text,
 		"\tvec4 v0 = xD0;\n"
 		"\tvec4 v1 = xD1;\n"
 		"\tvec4 t0 = vec4(0.0), t1 = vec4(0.0), t2 = vec4(0.0), t3 = vec4(0.0);\n"
@@ -649,6 +661,9 @@ char *nv2a_pixel_shader_translate(const struct nv2a_dialect *dialect, const stru
 		xgpu_text_append(&text, "\tresult = xD0.a > 0.0 ? vec4(xD0.rgb, 1.0) : vec4(1.0, 0.0, 1.0, 1.0);\n");
 	if (dialect->es && key->count_samples)
 		xgpu_text_append(&text, "\tatomicCounterIncrement(visible_samples);\n");
-	xgpu_text_append(&text, "\tfragment_color = clamp(result, 0.0, 1.0);\n}\n");
+	xgpu_text_append(&text, "\tfragment_color = clamp(result, 0.0, 1.0);\n");
+	if (dialect->msl)
+		xgpu_text_append(&text, "\treturn fragment_color;\n");
+	xgpu_text_append(&text, "}\n");
 	return text.buffer;
 }

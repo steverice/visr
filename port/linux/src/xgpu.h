@@ -30,15 +30,19 @@ void xgpu_text_append(struct xgpu_text *text, const char *format, ...) __attribu
 /* ---------- shader dialects
 
 What the translators (nv2a_vsh.c, nv2a_psh.c) emit, filled from the
-context's capabilities (d3d8_device.c). GLSL only; Metal Shading Language joins
-in Phase 1. */
+context's capabilities (d3d8_device.c): GLSL, or with msl the Metal Shading
+Language (nv2a_msl.c). */
 
 struct nv2a_dialect
 {
 	/* OpenGL ES: precision statements and an "es" #version */
 	unsigned char es;
-	/* the #version number: 450, 300 or 310 */
+	/* the #version number: 450, 300 or 310; GPU_SHADER_LANGUAGE_MSL (which
+	is never 0) with msl */
 	unsigned short version;
+	/* Metal Shading Language: the GLSL dialect's shader bodies in nv2a_msl.c's
+	frame */
+	unsigned char msl;
 	/* emulate glClipControl(GL_UPPER_LEFT, GL_ZERO_TO_ONE): rows from the top
 	(which also flips the winding, d3d8_device.c), depth from 0..1 to -1..1 */
 	unsigned char clip_y_flip;
@@ -108,6 +112,20 @@ struct nv2a_pixel_shader_key
 };
 
 char *nv2a_pixel_shader_translate(const struct nv2a_dialect *dialect, const struct nv2a_pixel_shader_key *key);
+
+/* the Metal Shading Language frame around the shader bodies (nv2a_msl.c),
+in the order the translators emit it: the prelude (stage GPU_UNIFORM_VERTEX
+or GPU_UNIFORM_PIXEL); the vertex shader's outputs, its entry point's
+opening and its return; the pixel shader's inputs and its entry point's
+opening */
+void nv2a_msl_prelude(struct xgpu_text *text, int stage);
+void nv2a_msl_vertex_outputs(struct xgpu_text *text);
+void nv2a_msl_vertex_main(struct xgpu_text *text, const struct nv2a_dialect *dialect,
+	unsigned long packed_attribute_mask);
+void nv2a_msl_vertex_return(struct xgpu_text *text);
+void nv2a_msl_fragment_inputs(struct xgpu_text *text);
+void nv2a_msl_fragment_main(struct xgpu_text *text, const struct nv2a_dialect *dialect,
+	const struct nv2a_pixel_shader_key *key);
 
 /* ---------- textures */
 
