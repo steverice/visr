@@ -1,0 +1,57 @@
+/* prints _Static_asserts pinning every gpu.h struct's size and field offsets
+as this (64-bit host) compiler lays them out; tools/ios_test.py compiles the
+output with the guest's arm64_32 flags, where a mismatch fails the build */
+#include "gpu.h"
+
+#include <stddef.h>
+#include <stdio.h>
+
+#define SIZE(type) printf("_Static_assert(sizeof(struct " #type ") == %zu, \"struct " #type "\");\n", sizeof(struct type))
+#define FIELD(type, field) printf("_Static_assert(offsetof(struct " #type ", " #field ") == %zu, \"" #type "." #field "\");\n", offsetof(struct type, field))
+
+int main(void)
+{
+	printf("#include <stddef.h>\n#include \"gpu.h\"\n");
+	SIZE(gpu_capabilities);
+	FIELD(gpu_capabilities, shader_language);
+	FIELD(gpu_capabilities, max_texture_size);
+	SIZE(gpu_texture_description);
+	FIELD(gpu_texture_description, width);
+	FIELD(gpu_texture_description, levels);
+	SIZE(gpu_constant_store);
+	FIELD(gpu_constant_store, serials);
+	FIELD(gpu_constant_store, serial);
+	FIELD(gpu_constant_store, log);
+	SIZE(gpu_uniforms);
+	FIELD(gpu_uniforms, serial);
+	SIZE(gpu_viewport);
+	SIZE(gpu_rect);
+	SIZE(gpu_depth_stencil_state);
+	SIZE(gpu_blend_state);
+	SIZE(gpu_raster_state);
+	SIZE(gpu_sampler_state);
+	FIELD(gpu_sampler_state, max_mip_level);
+	FIELD(gpu_sampler_state, lod_bias);
+	FIELD(gpu_sampler_state, border_color);
+	SIZE(gpu_stage);
+	FIELD(gpu_stage, sampler);
+	SIZE(gpu_vertex_stream);
+	SIZE(gpu_vertex_attribute);
+	FIELD(gpu_vertex_attribute, offset);
+	SIZE(gpu_draw);
+	FIELD(gpu_draw, viewport);
+	FIELD(gpu_draw, scissor);
+	FIELD(gpu_draw, depth_stencil);
+	FIELD(gpu_draw, blend);
+	FIELD(gpu_draw, raster);
+	FIELD(gpu_draw, stages);
+	FIELD(gpu_draw, streams);
+	FIELD(gpu_draw, attributes);
+	FIELD(gpu_draw, constant_values);
+	FIELD(gpu_draw, index_buffer);
+	FIELD(gpu_draw, base_vertex);
+	SIZE(gpu_clear);
+	FIELD(gpu_clear, depth);
+	FIELD(gpu_clear, stencil);
+	return 0;
+}

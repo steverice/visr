@@ -23,6 +23,13 @@ run('python3', 'tools/ios_embed_guest.py', BUILD/'probe.elf', BUILD/'embed')
 run('xcrun','clang','-O2',f'-I{BUILD}/embed','port/ios/tests/probe_runner.c',
     'port/ios/host/guest_call.S',BUILD/'embed/guest_image.S','-o',BUILD/'runner')
 run(BUILD/'runner')
+# gpu.h crosses the guest/host boundary (step 4): the host's layout of its structs, as
+# _Static_asserts, must hold under the guest's arm64_32 flags too
+run('xcrun', 'clang', '-O2', '-Iport/linux/src', 'port/ios/tests/gpu_layout_probe.c', '-o', BUILD / 'gpu-layout-probe')
+with open(BUILD / 'gpu_layout_check.h', 'w') as layout_check:
+    subprocess.run([str(BUILD / 'gpu-layout-probe')], cwd=ROOT, check=True, stdout=layout_check)
+run(clang, '--target=arm64_32-apple-watchos', '-mcpu=cortex-a53', '-ffixed-x15', '-ffixed-x27',
+    '-fno-stack-protector', '-ffreestanding', '-Iport/linux/src', '-fsyntax-only', '-x', 'c', BUILD / 'gpu_layout_check.h')
 run('xcrun','clang','-O2','-Iport/ios/host','-Iport/ios/host','-Iport/runtime/include',
     '-Iport/runtime/guest/runtime','port/ios/tests/memory_probe.c','port/ios/host/host_memory.c','-o',BUILD/'memory-probe')
 run(BUILD/'memory-probe')
