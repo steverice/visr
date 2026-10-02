@@ -53,11 +53,11 @@ static uint32_t frame_pacing_flags(void)
 
 	if (!strcmp(pacing, "refresh"))
 		return GPU_INITIALIZE_PACING_ANY_RATE;
-	if (!strcmp(pacing, "off"))
-		return GPU_INITIALIZE_PACING_OFF;
-	if (strcmp(pacing, "tick"))
-		platform_log("display.frame_pacing: unknown value \"%s\"; using \"tick\"", pacing);
-	return 0;
+	if (!strcmp(pacing, "tick"))
+		return 0;
+	if (strcmp(pacing, "off"))
+		platform_log("display.frame_pacing: unknown value \"%s\"; using \"off\"", pacing);
+	return GPU_INITIALIZE_PACING_OFF;
 }
 
 /* ---------- the screen's width

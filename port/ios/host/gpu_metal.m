@@ -1645,6 +1645,9 @@ PACING_SETTLE frames that would fit in fewer with room to spare. With
 display.frame_pacing = "tick" only numbers that give a multiple of 30 frames a
 second are used (1 or 3 at 90 Hz, 1 or 2 at 60 Hz), so every game tick spans
 the same number of frames; "refresh" allows any (2 at 90 Hz: 45 a second).
+Pacing is off by default (display.frame_pacing = "off"): in a visionOS
+window the presented handlers never report a time, so it can't see a frame
+stay up too long.
 
 The refresh period comes from a display link on a thread of its own, since
 the game's thread doesn't return to its run loop. Every 600 frames the log
