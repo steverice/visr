@@ -822,8 +822,40 @@ unsigned long platform_clock_frames(void)
 	return __atomic_load_n(&clock_frames, __ATOMIC_RELAXED);
 }
 
+/* debug.fixed_timestep_paced: each frame is held for at least 1/30 s of real
+time, so the game plays at its own speed while frame N stays the same moment
+in every run (for watching with debug.frame_counter). Without it a fixed
+timestep runs as fast as the device presents: twice the game's speed at 60 Hz. */
+static void clock_pace(void)
+{
+	static int paced = -1;
+	static struct timespec next;
+	struct timespec now;
+
+	if (paced < 0)
+		paced = platform_fixed_timestep() && config_boolean("debug.fixed_timestep_paced");
+	if (!paced)
+		return;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	if (next.tv_sec && (now.tv_sec < next.tv_sec || (now.tv_sec == next.tv_sec && now.tv_nsec < next.tv_nsec)))
+	{
+		clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL);
+		now = next;
+	}
+	/* the next frame is due 1/30 s after this one; a frame that ran late
+	moves the schedule rather than rushing the frames after it */
+	next = now;
+	next.tv_nsec += 1000000000L / HALO_VIRTUAL_CLOCK_RATE;
+	if (next.tv_nsec >= 1000000000L)
+	{
+		next.tv_sec++;
+		next.tv_nsec -= 1000000000L;
+	}
+}
+
 void platform_clock_frame(void)
 {
+	clock_pace();
 	__atomic_add_fetch(&clock_frames, 1, __ATOMIC_RELAXED);
 }
 

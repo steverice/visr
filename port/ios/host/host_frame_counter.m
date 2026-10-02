@@ -44,16 +44,14 @@ static UILabel *make_label(void) {
 
 void host_frame_counter_show(unsigned long frame) {
     @autoreleasepool {
-        /* in the log too, to check the count against debug.gpu_stats' frames */
-        if(frame%600==0)host_logf(HOST_LOG_INFO,"frame counter: %lu",frame);
+        struct timespec now;clock_gettime(CLOCK_MONOTONIC,&now);
+        if(!frame)first=now;
+        double elapsed=(double)(now.tv_sec-first.tv_sec)+(now.tv_nsec-first.tv_nsec)/1e9;
+        /* in the log too, with the real time since frame 0: to check the count
+           against debug.gpu_stats' frames, and the pace */
+        if(frame%600==0)host_logf(HOST_LOG_INFO,"frame counter: %lu, %.2f s since frame 0",frame,elapsed);
         if(!label && !(label=make_label()))return;
-        double seconds;
-        if(fixed) seconds=frame/30.0;
-        else {
-            struct timespec now;clock_gettime(CLOCK_MONOTONIC,&now);
-            if(!frame)first=now;
-            seconds=(double)(now.tv_sec-first.tv_sec)+(now.tv_nsec-first.tv_nsec)/1e9;
-        }
+        double seconds=fixed?frame/30.0:elapsed;
         unsigned long whole=(unsigned long)seconds;
         /* game time as video timecode, minutes:seconds:frames (30 frames a
            second); wall time with hundredths */
