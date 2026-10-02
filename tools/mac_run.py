@@ -483,10 +483,14 @@ def collect(documents, out):
         shutil.copytree(documents / "runner", out / "runner", dirs_exist_ok=True)
 
 
+def simulator_pattern(udid):
+    """a pgrep -f pattern matching the game's executable in simulator udid"""
+    return f"CoreSimulator/Devices/{udid}/.*/HaloCE.app/HaloCE"
+
+
 def simulator_running(udid):
     """the game is running in simulator udid"""
-    pattern = f"CoreSimulator/Devices/{udid}/.*/HaloCE.app/HaloCE"
-    return subprocess.run(["pgrep", "-f", pattern], capture_output=True).returncode == 0
+    return subprocess.run(["pgrep", "-f", simulator_pattern(udid)], capture_output=True).returncode == 0
 
 
 def run_simulator(args):
@@ -508,7 +512,9 @@ def run_simulator(args):
         run_command("cp", "-c", "-R", args.maps, documents / "maps")
     prepare(args, documents)
     run_command("xcrun", "simctl", "launch", udid, bundle_id, stdout=subprocess.DEVNULL)
-    wait_for(lambda: simulator_running(udid), 60)
+    if not wait_for(lambda: simulator_running(udid), 60):
+        collect(documents, args.out)
+        sys.exit(f"the game did not start in simulator {udid} within 60 seconds; logs are in {args.out}")
     limit = args.time_limit or args.exit_after + 120
     finished = wait_for(lambda: not simulator_running(udid), limit)
     if not finished:

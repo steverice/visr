@@ -340,3 +340,24 @@ def test_shader_validation_is_its_own_flag():
     assert api["MTL_DEBUG_LAYER"] == "1" and "MTL_SHADER_VALIDATION" not in api
     assert shader["MTL_SHADER_VALIDATION"] == "1" and shader["MTL_DEBUG_LAYER"] == "1"
     assert mac_run.validation_environment(metal_validation=False, metal_shader_validation=False) == {}
+
+
+def test_simulator_pattern_matches_only_that_simulators_game():
+    import re
+    udid = "3BA81FB2-1A04-49EF-BF13-5B2598B8FBF9"
+    path = (f"/Users/x/Library/Developer/CoreSimulator/Devices/{udid}/data/Containers/Bundle/Application/"
+            "47C658A7-DADC-45F2-969B-7E6A4FB5CB5C/HaloCE.app/HaloCE")
+    assert re.search(mac_run.simulator_pattern(udid), path)
+    assert not re.search(mac_run.simulator_pattern("00000000-0000-0000-0000-000000000000"), path)
+    assert not re.search(mac_run.simulator_pattern(udid), path.replace("HaloCE.app/HaloCE", "Other.app/Other"))
+
+
+def test_simulator_run_refuses_a_missing_app(tmp_path):
+    import argparse
+    args = argparse.Namespace(simulator="3BA81FB2-1A04-49EF-BF13-5B2598B8FBF9", app=tmp_path / "HaloCE.app")
+    try:
+        mac_run.run_simulator(args)
+    except SystemExit as stop:
+        assert "no simulator app" in str(stop)
+    else:
+        raise AssertionError("run_simulator accepted a missing app")
