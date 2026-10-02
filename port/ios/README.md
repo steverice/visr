@@ -1,7 +1,7 @@
 # Build and install Halo: CE on iPhone and iPad
 
 This directory builds a native ARM64 iOS app around the existing game's ILP32
-runtime. It uses SDL3, OpenGL ES 3, UIKit touch controls, and the user's original
+runtime. It uses SDL3, OpenGL ES 3 or Metal, UIKit touch controls, and the user's original
 Xbox map files. The game files are separate from the application and are never
 included in source control.
 
@@ -262,6 +262,49 @@ small `xcodegen` project because macOS kills the app the CMake project signs. It
 runs without a debugger because `memory_watch.c`'s deliberate page faults would
 stop one; to debug, use `process handle SIGSEGV SIGBUS --stop false --pass true`
 in LLDB.
+
+`run --simulator UDID` runs a simulator build in that simulator instead (the
+visionOS one by default; `--app` picks another), with the same settings and
+result folders. `--maps` copies an already imported `maps` folder into a new
+container, which is quicker than importing the XISO:
+
+```sh
+python3 tools/ios_build.py --visionos --simulator
+python3 tools/mac_run.py run --simulator UDID --maps path/to/Documents/maps --exit-after 40 \
+  --screenshot-every 300 --set display.screen_width=852 --set display.render_height=1080 --out results/vision-menu
+```
+
+## Apple Vision Pro
+
+`tools/ios_build.py --visionos` builds the app for visionOS 2.0 and later
+(`--simulator`, `--unsigned` and `--team` work as for iPhone). The game runs in
+an ordinary window and draws with Metal only: visionOS has no OpenGL ES, so the
+build leaves the GL backend out and the app always sets `display.renderer` to
+`"metal"`. The internal render height is 1080 lines (`--render-height`), shown
+letterboxed at 16:9 in the window.
+
+- **Controls.** A game controller plays. Looking at the window and pinching
+  does nothing in the game; a "Connect a game controller" note shows while
+  none is connected. A keyboard's arrows, Return and Escape work the menus.
+- **Game data.** As on iPhone: the setup screen offers the Files picker, and
+  an XISO placed in the app's Documents folder is imported.
+- **Closing the window quits the game.** It saves at checkpoints.
+- **Memory.** The game reserves a 4 GB address range for its 32-bit memory at
+  launch. If a Vision Pro refuses it, launching shows "Could not reserve the
+  game's 4 GB memory arena"; rebuild with `--extended-virtual-addressing`
+  (needs a paid developer team), which signs with that entitlement. The build
+  always signs with `increased-memory-limit`.
+
+On a Vision Pro, after installing a `--team` build:
+
+1. Launch the app. `ios-runtime.log` in the app's Documents folder (Files)
+   should show `guest arena at …`, not the arena error, then `visionOS window
+   attached`.
+2. Import the XISO. `stderr.log`, if you create an empty one in Documents
+   before launching, shows `Metal on …` and the `GPU capabilities` line.
+3. Pair a controller and play the menu and the first level. Check the frame
+   rate, the window's size, and what pinching does (`ios-runtime.log` logs the
+   first finger and mouse events it sees).
 
 ## Troubleshooting
 

@@ -84,3 +84,38 @@ jobs:
           path: dist/Halo-CE-tvOS-simulator.zip
           if-no-files-found: error
           retention-days: 14
+  visionos:
+    runs-on: macos-26
+    timeout-minutes: 45
+    # until the runner image's visionOS platform is known to work
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          test "$(uname -m)" = arm64
+          brew install cmake ninja llvm lld sdl3 pkgconf
+          xcodebuild -version
+          xcrun --sdk xros --show-sdk-path || xcodebuild -downloadPlatform visionOS
+      # Metal only; the XISO comes in through Files or the Documents folder
+      # (port/ios/host/host_import.m).
+      - name: Build unsigned Apple Vision Pro IPA
+        run: python3 tools/ios_build.py --visionos --unsigned --jobs 3 --ipa dist/Halo-CE-visionOS-unsigned.ipa
+      - name: Build ARM64 Apple Vision Pro simulator app
+        run: python3 tools/ios_build.py --visionos --simulator --jobs 3
+      - name: Archive simulator app
+        run: ditto -c -k --keepParent build/visionos/app-simulator/Release-xrsimulator/HaloCE.app dist/Halo-CE-visionOS-simulator.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: halo-ce-visionos-unsigned
+          path: |
+            dist/Halo-CE-visionOS-unsigned.ipa
+            dist/Halo-CE-visionOS-unsigned.ipa.sha256
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        with:
+          name: halo-ce-visionos-simulator
+          path: dist/Halo-CE-visionOS-simulator.zip
+          if-no-files-found: error
+          retention-days: 14
