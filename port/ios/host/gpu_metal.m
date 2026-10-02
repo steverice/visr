@@ -1595,9 +1595,10 @@ static uint32_t gpu_metal_visibility_result(uint32_t slot, uint32_t *samples)
 			return 1;
 		if (visibility.slots[slot].serial == current_serial)
 			commit(NO);
-		/* waitUntilCompleted can return before the completion handler has
-		run, and the handler writes the answer */
-		while (busy(visibility.slots[slot].serial))
+		/* wait for the answer itself: waitUntilCompleted can return before
+		the completion handler has run, and a later command buffer's handler
+		can raise completed_serial before this one's has written the answer */
+		while ((atomic_load(&visibility_answers[slot]) >> 1) < visibility.slots[slot].serial)
 			[last_committed waitUntilCompleted];
 		*samples = (uint32_t)(atomic_load(&visibility_answers[slot]) & 1);
 		return 1;
