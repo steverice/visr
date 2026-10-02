@@ -784,10 +784,10 @@ void gpu_initialize(uint32_t flags, struct gpu_capabilities *capabilities)
 	memset(capabilities, 0, sizeof(*capabilities));
 #ifdef GPU_GL_HOST
 	/* the host resolves the entry points here (the guest did in
-	platform_video_initialize, sdl_platform.c); Apple's ES 3.0 lacks the 3.1
-	and 3.2 ones, whose callers the probes below never reach */
-	if (!gl_functions_load())
-		platform_log("OpenGL ES: some entry points are unavailable; the capability probe keeps them unused");
+	platform_video_initialize, sdl_platform.c); Apple's ES 3.0 lacks the 3.2
+	ones, whose callers the probes below never reach, and a missing ES 3.0
+	one is fatal there (gl_functions.c) */
+	gl_functions_load();
 	/* counted, as the guest's two calls were */
 	platform_log("OpenGL %s on %s", (const char *)glGetString(GL_VERSION), (const char *)glGetString(GL_RENDERER));
 #endif
