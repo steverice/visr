@@ -66,6 +66,15 @@ Handles index tables of these; 0 is none. */
 @implementation MetalBuffer
 @end
 
+@interface MetalShader : NSObject
+{
+@public
+	id<MTLFunction> function;
+}
+@end
+@implementation MetalShader
+@end
+
 /* a handle table: index 0 holds NSNull */
 @interface MetalTable : NSObject
 {
@@ -619,11 +628,39 @@ static uint32_t gpu_metal_stream(uint32_t kind, const void *data, uint32_t size,
 	}
 }
 
-/* ---------- shaders (Task 6) */
+/* ---------- shaders */
 
+static MTLCompileOptions *compile_options;
+
+/* the translators' MSL (nv2a_msl.c); 0 if it doesn't compile, which the front
+end counts as a draw skipped for its program, as under GL */
 static gpu_shader gpu_metal_shader_create(uint32_t stage, const char *source)
 {
-	return 0;
+	@autoreleasepool
+	{
+		NSError *error = nil;
+		id<MTLLibrary> library = [device newLibraryWithSource:@(source) options:compile_options error:&error];
+		MetalShader *record;
+
+		/* debug.gl_debug: the warnings of a shader that compiled */
+		if (library && error && metal_debug)
+			platform_log("the %s shader compiled with warnings:\n%s", stage == GPU_SHADER_VERTEX ? "vertex" : "pixel",
+				error.localizedDescription.UTF8String);
+		if (!library)
+		{
+			platform_log("cannot compile the %s shader:\n%s\n%s", stage == GPU_SHADER_VERTEX ? "vertex" : "pixel",
+				error.localizedDescription.UTF8String, source);
+			return 0;
+		}
+		record = [MetalShader new];
+		record->function = [library newFunctionWithName:stage == GPU_SHADER_VERTEX ? @"vertex_main" : @"fragment_main"];
+		if (!record->function)
+		{
+			platform_log("the %s shader has no entry point", stage == GPU_SHADER_VERTEX ? "vertex" : "pixel");
+			return 0;
+		}
+		return [shaders add:record];
+	}
 }
 
 /* ---------- render passes */
@@ -634,6 +671,27 @@ static void target_size(gpu_texture color, gpu_texture depth, unsigned long *wid
 
 	*width = record && record->texture ? record->texture.width : 0;
 	*height = record && record->texture ? record->texture.height : 0;
+}
+
+/* the color attachment of depth-only passes, by size */
+static NSMutableDictionary<NSString *, id<MTLTexture>> *scratch_colors;
+
+static id<MTLTexture> scratch_color(NSUInteger width, NSUInteger height)
+{
+	NSString *key = [NSString stringWithFormat:@"%lux%lu", (unsigned long)width, (unsigned long)height];
+	id<MTLTexture> texture = scratch_colors[key];
+
+	if (!texture)
+	{
+		MTLTextureDescriptor *descriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+			width:width height:height mipmapped:NO];
+
+		descriptor.usage = MTLTextureUsageRenderTarget;
+		descriptor.storageMode = MTLStorageModeMemoryless;
+		texture = [device newTextureWithDescriptor:descriptor];
+		scratch_colors[key] = texture;
+	}
+	return texture;
 }
 
 /* opens a pass on the pair, unless it is the open one; a load action of
@@ -650,7 +708,16 @@ static BOOL pass_begin(gpu_texture color, gpu_texture depth, const struct gpu_cl
 		return NO;
 	pass_end();
 	pass = [MTLRenderPassDescriptor renderPassDescriptor];
-	if (color)
+	if (!color)
+	{
+		/* a depth-only pass: the game's pixel shaders still write a color
+		(and may discard), so they need an attachment to write it to, which
+		never leaves the GPU's tile memory */
+		pass.colorAttachments[0].texture = scratch_color(depth_record->texture.width, depth_record->texture.height);
+		pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+		pass.colorAttachments[0].storeAction = MTLStoreActionDontCare;
+	}
+	else
 	{
 		pass.colorAttachments[0].texture = color_record->texture;
 		pass.colorAttachments[0].loadAction = MTLLoadActionLoad;
@@ -733,9 +800,7 @@ static id<MTLRenderPipelineState> clear_pipeline(MTLPixelFormat color, MTLPixelF
 		NSError *error = nil;
 
 		descriptor.vertexFunction = clear_vertex;
-		/* a fragment function that writes a color with no color attachment
-		is rejected; depth and stencil need none */
-		descriptor.fragmentFunction = color == MTLPixelFormatInvalid ? nil : clear_fragment;
+		descriptor.fragmentFunction = clear_fragment;
 		descriptor.colorAttachments[0].pixelFormat = color;
 		descriptor.colorAttachments[0].writeMask = (mask & GPU_CHANNEL_RED ? MTLColorWriteMaskRed : 0) |
 			(mask & GPU_CHANNEL_GREEN ? MTLColorWriteMaskGreen : 0) | (mask & GPU_CHANNEL_BLUE ? MTLColorWriteMaskBlue : 0) |
@@ -802,6 +867,7 @@ static void gpu_metal_clear(const struct gpu_clear *clear, const struct gpu_rect
 		unsigned long width, height, index;
 		uint32_t mask = flags & GPU_CLEAR_COLOR ? clear->channel_mask & 0xf : 0;
 		MetalTexture *color = texture_record(clear->color_target), *depth = texture_record(clear->depth_target);
+
 		float color_value[4], depth_value = clear->depth;
 
 		frame_begin();
@@ -828,8 +894,10 @@ static void gpu_metal_clear(const struct gpu_clear *clear, const struct gpu_rect
 		color_value[1] = (float)((clear->color >> 8) & 0xff) / 255.0f;
 		color_value[2] = (float)(clear->color & 0xff) / 255.0f;
 		color_value[3] = (float)(clear->color >> 24) / 255.0f;
-		[encoder setRenderPipelineState:clear_pipeline(color && color->texture ? color->texture.pixelFormat :
-			MTLPixelFormatInvalid, depth && depth->texture ? depth->texture.pixelFormat : MTLPixelFormatInvalid, mask)];
+		/* every pass has a BGRA8 color attachment: a depth-only pass a scratch
+		one (pass_begin), which a clear leaves alone */
+		[encoder setRenderPipelineState:clear_pipeline(MTLPixelFormatBGRA8Unorm,
+			depth && depth->texture ? depth->texture.pixelFormat : MTLPixelFormatInvalid, color ? mask : 0)];
 		[encoder setDepthStencilState:clear_depth_state((flags & GPU_CLEAR_DEPTH) != 0, (flags & GPU_CLEAR_STENCIL) != 0)];
 		[encoder setStencilReferenceValue:clear->stencil & 0xff];
 		[encoder setCullMode:MTLCullModeNone];
@@ -850,12 +918,542 @@ static void gpu_metal_clear(const struct gpu_clear *clear, const struct gpu_rect
 	}
 }
 
-/* ---------- draws (Task 6) */
+/* ---------- draws */
+
+/* per-attribute vertex buffers start here (nv2a_msl.c's bindings) */
+#define VERTEX_STREAM_BINDING 10
+
+/* the vertex shader's description of each attribute (AttributeTable,
+nv2a_msl.c): the GPU_ATTRIBUTE_* format; the stream (GPU_STREAM_CONSTANT or
+above: the constant); its byte offset in the buffer bound for it; and the
+vertex stride */
+struct metal_attribute
+{
+	uint32_t format, stream, offset, stride;
+};
+
+struct metal_attribute_table
+{
+	struct metal_attribute entries[GPU_ATTRIBUTE_COUNT];
+	float constants[GPU_ATTRIBUTE_COUNT][4];
+};
+
+/* what a pipeline is made of besides the shaders' text */
+struct pipeline_key
+{
+	gpu_shader vertex_shader, pixel_shader;
+	uint8_t blend, source, destination, operation, write_mask, pad[3];
+	uint32_t color_format, depth_format;
+};
+
+static NSMutableDictionary<NSData *, id> *pipelines;
+static NSMutableDictionary<NSData *, id<MTLDepthStencilState>> *depth_states;
+static NSMutableDictionary<NSData *, id<MTLSamplerState>> *samplers;
+/* bound where a draw has nothing: black textures of each type (as GL samples
+a texture with no storage), a sampler, and a vertex buffer for constant
+attributes */
+static id<MTLTexture> empty_textures[4];
+static id<MTLSamplerState> empty_sampler;
+static id<MTLBuffer> empty_buffer;
+/* the frame's last constant snapshot, which draws share until a serial moves */
+static struct
+{
+	unsigned long frame;
+	uint32_t constants_serial, uniforms_serial;
+	gpu_buffer buffer;
+	uint32_t offset;
+	BOOL valid;
+} snapshot;
+static BOOL layout_checked;
+
+static MTLBlendFactor blend_factor(uint8_t factor)
+{
+	switch (factor)
+	{
+	case GPU_BLEND_ONE: return MTLBlendFactorOne;
+	case GPU_BLEND_SOURCE_COLOR: return MTLBlendFactorSourceColor;
+	case GPU_BLEND_ONE_MINUS_SOURCE_COLOR: return MTLBlendFactorOneMinusSourceColor;
+	case GPU_BLEND_SOURCE_ALPHA: return MTLBlendFactorSourceAlpha;
+	case GPU_BLEND_ONE_MINUS_SOURCE_ALPHA: return MTLBlendFactorOneMinusSourceAlpha;
+	case GPU_BLEND_DESTINATION_ALPHA: return MTLBlendFactorDestinationAlpha;
+	case GPU_BLEND_ONE_MINUS_DESTINATION_ALPHA: return MTLBlendFactorOneMinusDestinationAlpha;
+	case GPU_BLEND_DESTINATION_COLOR: return MTLBlendFactorDestinationColor;
+	case GPU_BLEND_ONE_MINUS_DESTINATION_COLOR: return MTLBlendFactorOneMinusDestinationColor;
+	case GPU_BLEND_SOURCE_ALPHA_SATURATE: return MTLBlendFactorSourceAlphaSaturated;
+	case GPU_BLEND_CONSTANT_COLOR: return MTLBlendFactorBlendColor;
+	case GPU_BLEND_ONE_MINUS_CONSTANT_COLOR: return MTLBlendFactorOneMinusBlendColor;
+	case GPU_BLEND_CONSTANT_ALPHA: return MTLBlendFactorBlendAlpha;
+	case GPU_BLEND_ONE_MINUS_CONSTANT_ALPHA: return MTLBlendFactorOneMinusBlendAlpha;
+	default: return MTLBlendFactorZero;
+	}
+}
+
+static MTLBlendOperation blend_operation(uint8_t operation)
+{
+	switch (operation)
+	{
+	case GPU_BLEND_OP_SUBTRACT: return MTLBlendOperationSubtract;
+	case GPU_BLEND_OP_REVERSE_SUBTRACT: return MTLBlendOperationReverseSubtract;
+	case GPU_BLEND_OP_MIN: return MTLBlendOperationMin;
+	case GPU_BLEND_OP_MAX: return MTLBlendOperationMax;
+	default: return MTLBlendOperationAdd;
+	}
+}
+
+/* GPU_COMPARE_* is MTLCompareFunction's order */
+static MTLCompareFunction compare_function(uint8_t function)
+{
+	return function <= GPU_COMPARE_ALWAYS ? (MTLCompareFunction)function : MTLCompareFunctionNever;
+}
+
+static MTLStencilOperation stencil_operation(uint8_t operation)
+{
+	switch (operation)
+	{
+	case GPU_STENCIL_ZERO: return MTLStencilOperationZero;
+	case GPU_STENCIL_REPLACE: return MTLStencilOperationReplace;
+	case GPU_STENCIL_INCREMENT_CLAMP: return MTLStencilOperationIncrementClamp;
+	case GPU_STENCIL_DECREMENT_CLAMP: return MTLStencilOperationDecrementClamp;
+	case GPU_STENCIL_INVERT: return MTLStencilOperationInvert;
+	case GPU_STENCIL_INCREMENT_WRAP: return MTLStencilOperationIncrementWrap;
+	case GPU_STENCIL_DECREMENT_WRAP: return MTLStencilOperationDecrementWrap;
+	default: return MTLStencilOperationKeep;
+	}
+}
+
+static MTLColorWriteMask write_mask(uint8_t mask)
+{
+	return (mask & 1 ? MTLColorWriteMaskRed : 0) | (mask & 2 ? MTLColorWriteMaskGreen : 0) |
+		(mask & 4 ? MTLColorWriteMaskBlue : 0) | (mask & 8 ? MTLColorWriteMaskAlpha : 0);
+}
+
+/* with debug.gl_debug, once: struct Uniforms (nv2a_msl.c) must have struct
+gpu_uniforms' layout, which the backend copies as is */
+static void check_uniform_layout(MTLRenderPipelineReflection *reflection)
+{
+	NSMutableArray<id<MTLBinding>> *bindings = [NSMutableArray arrayWithArray:reflection.vertexBindings];
+	unsigned long checked = 0, wrong = 0;
+
+	[bindings addObjectsFromArray:reflection.fragmentBindings];
+	for (id<MTLBinding> binding in bindings)
+	{
+		MTLStructType *type;
+
+		if (![binding.name isEqualToString:@"u"] || binding.type != MTLBindingTypeBuffer || !binding.used)
+			continue;
+		type = ((id<MTLBufferBinding>)binding).bufferStructType;
+#define CHECK_ROW(name, glsl_type, count, uniform_stage) GPU_UNIFORM_IF_NOT_CONSTANTS_##uniform_stage( \
+		{ \
+			MTLStructMember *member = [type memberByName:@#name]; \
+			if (!member || member.offset != offsetof(struct gpu_uniforms, name)) \
+			{ \
+				platform_log("uniform layout: " #name " is at %ld in MSL, %lu in C", \
+					member ? (long)member.offset : -1L, (unsigned long)offsetof(struct gpu_uniforms, name)); \
+				wrong++; \
+			} \
+			checked++; \
+		})
+		GPU_UNIFORMS(CHECK_ROW)
+#undef CHECK_ROW
+	}
+	platform_log("uniform layout: %lu rows checked, %lu wrong", checked, wrong);
+}
+
+/* the pipeline for a draw, or nil if it can't be made (cached either way) */
+static id<MTLRenderPipelineState> draw_pipeline(const struct gpu_draw *draw, MetalShader *vertex, MetalShader *pixel,
+	MTLPixelFormat color, MTLPixelFormat depth)
+{
+	struct pipeline_key key;
+	NSData *name;
+	id pipeline;
+
+	memset(&key, 0, sizeof(key));
+	key.vertex_shader = draw->vertex_shader;
+	key.pixel_shader = draw->pixel_shader;
+	key.blend = draw->blend.enable != 0;
+	/* GL sets blending's factors only while it is on (gpu_gl.c) */
+	if (key.blend)
+	{
+		key.source = draw->blend.source;
+		key.destination = draw->blend.destination;
+		key.operation = draw->blend.operation;
+	}
+	key.write_mask = draw->color_target ? draw->blend.color_write_mask & 0xf : 0;
+	key.color_format = (uint32_t)color;
+	key.depth_format = (uint32_t)depth;
+	name = [NSData dataWithBytes:&key length:sizeof(key)];
+	pipeline = pipelines[name];
+	if (!pipeline)
+	{
+		MTLRenderPipelineDescriptor *descriptor = [MTLRenderPipelineDescriptor new];
+		MTLRenderPipelineColorAttachmentDescriptor *attachment = descriptor.colorAttachments[0];
+		MTLRenderPipelineReflection *reflection = nil;
+		NSError *error = nil;
+
+		descriptor.vertexFunction = vertex->function;
+		descriptor.fragmentFunction = pixel->function;
+		attachment.pixelFormat = color;
+		attachment.writeMask = write_mask(key.write_mask);
+		if (key.blend)
+		{
+			attachment.blendingEnabled = YES;
+			attachment.sourceRGBBlendFactor = attachment.sourceAlphaBlendFactor = blend_factor(key.source);
+			attachment.destinationRGBBlendFactor = attachment.destinationAlphaBlendFactor = blend_factor(key.destination);
+			attachment.rgbBlendOperation = attachment.alphaBlendOperation = blend_operation(key.operation);
+		}
+		descriptor.depthAttachmentPixelFormat = depth;
+		descriptor.stencilAttachmentPixelFormat = depth;
+		if (metal_debug && !layout_checked)
+		{
+			pipeline = [device newRenderPipelineStateWithDescriptor:descriptor
+				options:MTLPipelineOptionBindingInfo | MTLPipelineOptionBufferTypeInfo reflection:&reflection error:&error];
+			if (pipeline)
+			{
+				check_uniform_layout(reflection);
+				layout_checked = YES;
+			}
+		}
+		else
+		{
+			pipeline = [device newRenderPipelineStateWithDescriptor:descriptor error:&error];
+		}
+		if (!pipeline)
+		{
+			/* as a GL link failure: logged once, the draws skipped */
+			platform_log("cannot link a shader program: %s", error.localizedDescription.UTF8String);
+			pipeline = [NSNull null];
+		}
+		pipelines[name] = pipeline;
+	}
+	return pipeline == [NSNull null] ? nil : pipeline;
+}
+
+static id<MTLDepthStencilState> depth_state(const struct gpu_depth_stencil_state *state)
+{
+	struct gpu_depth_stencil_state key;
+	NSData *name;
+	id<MTLDepthStencilState> result;
+
+	/* the reference is the encoder's; tests that are off ignore the rest,
+	as GL does (gpu_gl.c sets them only while on) */
+	memset(&key, 0, sizeof(key));
+	if (state->depth_test)
+	{
+		key.depth_test = 1;
+		key.depth_write = state->depth_write != 0;
+		key.depth_function = state->depth_function;
+	}
+	if (state->stencil_test)
+	{
+		key.stencil_test = 1;
+		key.stencil_function = state->stencil_function;
+		key.stencil_fail = state->stencil_fail;
+		key.stencil_depth_fail = state->stencil_depth_fail;
+		key.stencil_pass = state->stencil_pass;
+		key.stencil_read_mask = state->stencil_read_mask & 0xff;
+		key.stencil_write_mask = state->stencil_write_mask & 0xff;
+	}
+	name = [NSData dataWithBytes:&key length:sizeof(key)];
+	result = depth_states[name];
+	if (!result)
+	{
+		MTLDepthStencilDescriptor *descriptor = [MTLDepthStencilDescriptor new];
+
+		descriptor.depthCompareFunction = key.depth_test ? compare_function(key.depth_function) : MTLCompareFunctionAlways;
+		descriptor.depthWriteEnabled = key.depth_write;
+		if (key.stencil_test)
+		{
+			MTLStencilDescriptor *stencil = [MTLStencilDescriptor new];
+
+			stencil.stencilCompareFunction = compare_function(key.stencil_function);
+			stencil.stencilFailureOperation = stencil_operation(key.stencil_fail);
+			stencil.depthFailureOperation = stencil_operation(key.stencil_depth_fail);
+			stencil.depthStencilPassOperation = stencil_operation(key.stencil_pass);
+			stencil.readMask = key.stencil_read_mask;
+			stencil.writeMask = key.stencil_write_mask;
+			descriptor.frontFaceStencil = stencil;
+			descriptor.backFaceStencil = stencil;
+		}
+		result = [device newDepthStencilStateWithDescriptor:descriptor];
+		depth_states[name] = result;
+	}
+	return result;
+}
+
+/* a stage's sampler, mapped as gpu_gl.c maps it on OpenGL ES: every filter
+but POINT is linear, ANISOTROPIC turns on anisotropy, the first level sampled
+is D3D's MAXMIPLEVEL, BORDER addressing clamps to the edge (border_clamp is 0),
+and the LOD bias is the shader's */
+static id<MTLSamplerState> sampler_state(const struct gpu_sampler_state *state)
+{
+	NSData *name = [NSData dataWithBytes:state length:sizeof(*state)];
+	id<MTLSamplerState> result = samplers[name];
+
+	if (!result)
+	{
+		MTLSamplerDescriptor *descriptor = [MTLSamplerDescriptor new];
+		const uint8_t addresses[3] = { state->address_u, state->address_v, state->address_w };
+		MTLSamplerAddressMode modes[3];
+		int axis;
+
+		descriptor.minFilter = state->min_filter == GPU_FILTER_POINT ? MTLSamplerMinMagFilterNearest : MTLSamplerMinMagFilterLinear;
+		descriptor.magFilter = state->mag_filter == GPU_FILTER_POINT ? MTLSamplerMinMagFilterNearest : MTLSamplerMinMagFilterLinear;
+		descriptor.mipFilter = state->mip_filter == GPU_FILTER_NONE ? MTLSamplerMipFilterNotMipmapped :
+			state->mip_filter == GPU_FILTER_POINT ? MTLSamplerMipFilterNearest : MTLSamplerMipFilterLinear;
+		for (axis = 0; axis < 3; axis++)
+			modes[axis] = addresses[axis] == GPU_ADDRESS_WRAP ? MTLSamplerAddressModeRepeat :
+				addresses[axis] == GPU_ADDRESS_MIRROR ? MTLSamplerAddressModeMirrorRepeat : MTLSamplerAddressModeClampToEdge;
+		descriptor.sAddressMode = modes[0];
+		descriptor.tAddressMode = modes[1];
+		descriptor.rAddressMode = modes[2];
+		descriptor.lodMinClamp = (float)state->max_mip_level;
+		descriptor.maxAnisotropy = state->min_filter == GPU_FILTER_ANISOTROPIC && state->max_anisotropy > 1 ?
+			(state->max_anisotropy > 16 ? 16 : state->max_anisotropy) : 1;
+		result = [device newSamplerStateWithDescriptor:descriptor];
+		samplers[name] = result;
+	}
+	return result;
+}
+
+/* the bytes of one vertex of a format, for a stride of 0, which GL reads as
+tightly packed */
+static uint32_t attribute_size(uint8_t format)
+{
+	if (format >= GPU_ATTRIBUTE_FLOAT1 && format <= GPU_ATTRIBUTE_FLOAT4)
+		return 4u * (format - GPU_ATTRIBUTE_FLOAT1 + 1);
+	if (format >= GPU_ATTRIBUTE_SHORT1 && format <= GPU_ATTRIBUTE_SHORT4)
+		return 2u * (format - GPU_ATTRIBUTE_SHORT1 + 1);
+	if (format >= GPU_ATTRIBUTE_NORMSHORT1 && format <= GPU_ATTRIBUTE_NORMSHORT4)
+		return 2u * (format - GPU_ATTRIBUTE_NORMSHORT1 + 1);
+	if (format >= GPU_ATTRIBUTE_UBYTE1 && format <= GPU_ATTRIBUTE_UBYTE4)
+		return format - GPU_ATTRIBUTE_UBYTE1 + 1u;
+	return 4;
+}
+
+/* c[192] and struct gpu_uniforms, as the shaders read them, shared by the
+frame's draws until a serial moves: a Metal draw reads everything bound, so
+each snapshot is whole */
+static void bind_constants(const struct gpu_constant_store *constants, const struct gpu_uniforms *uniforms)
+{
+	MetalBuffer *record;
+
+	if (!snapshot.valid || snapshot.frame != frames || snapshot.constants_serial != constants->serial ||
+		snapshot.uniforms_serial != uniforms->serial)
+	{
+		struct transient *memory = &snapshots[frame_slot];
+		unsigned char *base;
+
+		record = transient_room(memory, sizeof(constants->c) + sizeof(*uniforms), CONSTANT_ALIGNMENT);
+		snapshot.offset = (uint32_t)memory->offset;
+		snapshot.buffer = memory->chunks[memory->chunk];
+		base = (unsigned char *)record->buffer.contents + snapshot.offset;
+		memcpy(base, constants->c, sizeof(constants->c));
+		memcpy(base + sizeof(constants->c), uniforms, sizeof(*uniforms));
+		memory->offset += sizeof(constants->c) + sizeof(*uniforms);
+		snapshot.frame = frames;
+		snapshot.constants_serial = constants->serial;
+		snapshot.uniforms_serial = uniforms->serial;
+		snapshot.valid = YES;
+	}
+	record = buffer_record(snapshot.buffer);
+	use_buffer(record);
+	[encoder setVertexBuffer:record->buffer offset:snapshot.offset atIndex:0];
+	[encoder setVertexBuffer:record->buffer offset:snapshot.offset + sizeof(constants->c) atIndex:1];
+	[encoder setFragmentBuffer:record->buffer offset:snapshot.offset + sizeof(constants->c) atIndex:0];
+}
+
+static void bind_attributes(const struct gpu_draw *draw)
+{
+	struct metal_attribute_table table;
+	int index;
+
+	memset(&table, 0, sizeof(table));
+	for (index = 0; index < GPU_ATTRIBUTE_COUNT; index++)
+	{
+		const struct gpu_vertex_attribute *attribute = &draw->attributes[index];
+		struct metal_attribute *entry = &table.entries[index];
+		MetalBuffer *record = attribute->stream < GPU_STREAM_CONSTANT ?
+			buffer_record(draw->streams[attribute->stream].buffer) : nil;
+
+		entry->format = attribute->format;
+		if (!record)
+		{
+			/* a constant (GPU_STREAM_NONE never arrives: the front end makes
+			every unused attribute a constant) */
+			entry->stream = GPU_STREAM_CONSTANT;
+			memcpy(table.constants[index], draw->constant_values[index], sizeof(table.constants[index]));
+			[encoder setVertexBuffer:empty_buffer offset:0 atIndex:VERTEX_STREAM_BINDING + index];
+			continue;
+		}
+		entry->stream = attribute->stream;
+		entry->offset = draw->streams[attribute->stream].offset + attribute->offset;
+		entry->stride = draw->streams[attribute->stream].stride ? draw->streams[attribute->stream].stride :
+			attribute_size(attribute->format);
+		use_buffer(record);
+		[encoder setVertexBuffer:record->buffer offset:0 atIndex:VERTEX_STREAM_BINDING + index];
+	}
+	[encoder setVertexBytes:&table length:sizeof(table) atIndex:2];
+}
+
+static void bind_stages(const struct gpu_draw *draw)
+{
+	int stage;
+
+	for (stage = 0; stage < GPU_STAGE_COUNT; stage++)
+	{
+		const struct gpu_stage *packet = &draw->stages[stage];
+		MetalTexture *record = packet->type ? texture_record(packet->texture) : nil;
+		id<MTLTexture> texture = record ? record->texture : nil;
+
+		/* a stage with no texture, or one with no storage yet, samples black,
+		as GL's texture 0 or an incomplete texture does */
+		if (!texture)
+			texture = empty_textures[packet->type <= GPU_TEXTURE_CUBE ? packet->type : 0];
+		use_texture(record);
+		[encoder setFragmentTexture:texture atIndex:stage];
+		[encoder setFragmentSamplerState:packet->type ? sampler_state(&packet->sampler) : empty_sampler atIndex:stage];
+	}
+}
+
+/* fans and loops, which Metal can't draw, as 32-bit indexed lists of the
+original vertices; returns the vertex count, 0 if there's nothing to draw */
+static uint32_t convert_primitive(const struct gpu_draw *draw, MTLPrimitiveType *type, gpu_buffer *buffer, uint32_t *offset)
+{
+	const uint16_t *source = NULL;
+	uint32_t count = draw->count, converted, index, *indices;
+	MetalBuffer *record;
+	NSMutableData *list;
+
+	if (draw->index_buffer)
+	{
+		MetalBuffer *index_record = buffer_record(draw->index_buffer);
+
+		if (!index_record || draw->index_offset + (uint64_t)count * 2 > index_record->buffer.length)
+			return 0;
+		source = (const uint16_t *)((const unsigned char *)index_record->buffer.contents + draw->index_offset);
+	}
+#define VERTEX(i) (source ? (uint32_t)source[i] : (uint32_t)(i))
+	if (draw->primitive == GPU_PRIMITIVE_TRIANGLE_FAN)
+	{
+		if (count < 3)
+			return 0;
+		converted = (count - 2) * 3;
+		list = [NSMutableData dataWithLength:converted * sizeof(uint32_t)];
+		indices = list.mutableBytes;
+		for (index = 0; index + 2 < count; index++)
+		{
+			indices[index * 3] = VERTEX(0);
+			indices[index * 3 + 1] = VERTEX(index + 1);
+			indices[index * 3 + 2] = VERTEX(index + 2);
+		}
+		*type = MTLPrimitiveTypeTriangle;
+	}
+	else
+	{
+		if (count < 2)
+			return 0;
+		converted = count + 1;
+		list = [NSMutableData dataWithLength:converted * sizeof(uint32_t)];
+		indices = list.mutableBytes;
+		for (index = 0; index < count; index++)
+			indices[index] = VERTEX(index);
+		indices[count] = VERTEX(0);
+		*type = MTLPrimitiveTypeLineStrip;
+	}
+#undef VERTEX
+	*offset = transient_copy(&streams[frame_slot], list.bytes, (uint32_t)list.length, 4, buffer);
+	record = buffer_record(*buffer);
+	use_buffer(record);
+	return converted;
+}
 
 static uint32_t gpu_metal_draw(const struct gpu_draw *draw, const struct gpu_constant_store *constants,
 	const struct gpu_uniforms *uniforms)
 {
-	return 0;
+	@autoreleasepool
+	{
+		MetalShader *vertex = [shaders get:draw->vertex_shader], *pixel = [shaders get:draw->pixel_shader];
+		MetalTexture *depth = texture_record(draw->depth_target);
+		id<MTLRenderPipelineState> pipeline;
+		unsigned long width, height;
+		struct gpu_rect area;
+		MTLScissorRect scissor;
+		MTLPrimitiveType type;
+
+		/* as GL's program_get: no program, no draw */
+		if (!vertex || !pixel)
+			return 0;
+		pipeline = draw_pipeline(draw, vertex, pixel, MTLPixelFormatBGRA8Unorm,
+			depth && depth->texture ? depth->texture.pixelFormat : MTLPixelFormatInvalid);
+		if (!pipeline)
+			return 0;
+		if (!pass_begin(draw->color_target, draw->depth_target, NULL))
+			return 1;
+		target_size(draw->color_target, draw->depth_target, &width, &height);
+		/* GL takes a scissor outside the target, Metal doesn't; an empty one
+		draws nothing, but the draw happened */
+		area = draw->scissor.width > 0 && draw->scissor.height > 0 ? draw->scissor :
+			(struct gpu_rect){ 0, 0, (int32_t)width, (int32_t)height };
+		if (!clamp_rect(&area, width, height, &scissor))
+			return 1;
+		[encoder setRenderPipelineState:pipeline];
+		[encoder setDepthStencilState:depth_state(&draw->depth_stencil)];
+		[encoder setStencilReferenceValue:draw->depth_stencil.stencil_reference & 0xff];
+		[encoder setViewport:(MTLViewport){ (double)draw->viewport.x, (double)draw->viewport.y,
+			(double)draw->viewport.width, (double)draw->viewport.height, draw->viewport.min_z, draw->viewport.max_z }];
+		[encoder setScissorRect:scissor];
+		[encoder setCullMode:draw->raster.cull_mode == GPU_CULL_FRONT ? MTLCullModeFront :
+			draw->raster.cull_mode == GPU_CULL_BACK ? MTLCullModeBack : MTLCullModeNone];
+		[encoder setFrontFacingWinding:draw->raster.front_face == GPU_FRONT_COUNTER_CLOCKWISE ?
+			MTLWindingCounterClockwise : MTLWindingClockwise];
+		/* glPolygonOffset(slope, constant); filled polygons only, as on ES */
+		if (draw->raster.depth_bias_enable)
+			[encoder setDepthBias:draw->raster.depth_bias_constant slopeScale:draw->raster.depth_bias_slope clamp:0.0f];
+		else
+			[encoder setDepthBias:0.0f slopeScale:0.0f clamp:0.0f];
+		[encoder setBlendColorRed:(float)((draw->blend.color >> 16) & 0xff) / 255.0f
+			green:(float)((draw->blend.color >> 8) & 0xff) / 255.0f blue:(float)(draw->blend.color & 0xff) / 255.0f
+			alpha:(float)(draw->blend.color >> 24) / 255.0f];
+		bind_stages(draw);
+		bind_constants(constants, uniforms);
+		bind_attributes(draw);
+		pass_commands++;
+		switch (draw->primitive)
+		{
+		case GPU_PRIMITIVE_TRIANGLE_FAN:
+		case GPU_PRIMITIVE_LINE_LOOP:
+		{
+			gpu_buffer indices;
+			uint32_t offset, count = convert_primitive(draw, &type, &indices, &offset);
+
+			if (count)
+				[encoder drawIndexedPrimitives:type indexCount:count indexType:MTLIndexTypeUInt32
+					indexBuffer:buffer_record(indices)->buffer indexBufferOffset:offset];
+			return 1;
+		}
+		case GPU_PRIMITIVE_POINTS: type = MTLPrimitiveTypePoint; break;
+		case GPU_PRIMITIVE_LINES: type = MTLPrimitiveTypeLine; break;
+		case GPU_PRIMITIVE_LINE_STRIP: type = MTLPrimitiveTypeLineStrip; break;
+		case GPU_PRIMITIVE_TRIANGLE_STRIP: type = MTLPrimitiveTypeTriangleStrip; break;
+		default: type = MTLPrimitiveTypeTriangle; break;
+		}
+		if (draw->index_buffer)
+		{
+			MetalBuffer *record = buffer_record(draw->index_buffer);
+
+			if (!record)
+				return 1;
+			use_buffer(record);
+			/* the base vertex is ignored, as on Apple's GL (base_vertex is 0) */
+			[encoder drawIndexedPrimitives:type indexCount:draw->count indexType:MTLIndexTypeUInt16
+				indexBuffer:record->buffer indexBufferOffset:draw->index_offset];
+		}
+		else
+		{
+			[encoder drawPrimitives:type vertexStart:0 vertexCount:draw->count];
+		}
+		return 1;
+	}
 }
 
 /* ---------- visibility tests (the a10 plan)
@@ -986,6 +1584,40 @@ static void gpu_metal_initialize(uint32_t flags, struct gpu_capabilities *capabi
 		linear.minFilter = MTLSamplerMinMagFilterLinear;
 		linear.magFilter = MTLSamplerMinMagFilterLinear;
 		present_sampler = [device newSamplerStateWithDescriptor:linear];
+		pipelines = [NSMutableDictionary dictionary];
+		depth_states = [NSMutableDictionary dictionary];
+		samplers = [NSMutableDictionary dictionary];
+		scratch_colors = [NSMutableDictionary dictionary];
+		compile_options = [MTLCompileOptions new];
+		/* no fast math: the GLSL is highp, and the compiler mustn't reorder
+		its arithmetic; invariance keeps a position computed in two passes
+		identical, as GLSL's invariant gl_Position does */
+		if (@available(iOS 18.0, tvOS 18.0, *))
+			compile_options.mathMode = MTLMathModeSafe;
+		else
+			compile_options.fastMathEnabled = NO;
+		compile_options.preserveInvariance = YES;
+		{
+			static const uint8_t black[4] = { 0, 0, 0, 0xff };
+			MTLTextureType types[4] = { MTLTextureType2D, MTLTextureType2D, MTLTextureType3D, MTLTextureTypeCube };
+			int type, face;
+
+			for (type = 0; type < 4; type++)
+			{
+				MTLTextureDescriptor *descriptor = [MTLTextureDescriptor new];
+
+				descriptor.textureType = types[type];
+				descriptor.pixelFormat = MTLPixelFormatBGRA8Unorm;
+				descriptor.width = descriptor.height = descriptor.depth = 1;
+				descriptor.storageMode = MTLStorageModeShared;
+				empty_textures[type] = [device newTextureWithDescriptor:descriptor];
+				for (face = 0; face < (types[type] == MTLTextureTypeCube ? 6 : 1); face++)
+					[empty_textures[type] replaceRegion:MTLRegionMake3D(0, 0, 0, 1, 1, 1) mipmapLevel:0 slice:face
+						withBytes:black bytesPerRow:4 bytesPerImage:4];
+			}
+		}
+		empty_sampler = [device newSamplerStateWithDescriptor:[MTLSamplerDescriptor new]];
+		empty_buffer = [device newBufferWithLength:64 options:MTLResourceStorageModeShared];
 		platform_log("Metal on %s", device.name.UTF8String);
 
 		/* what GL reports on Apple's OpenGL ES 3.0 (gpu_gl.c's gpu_gl_initialize),
