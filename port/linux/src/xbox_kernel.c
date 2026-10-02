@@ -817,6 +817,15 @@ int platform_fixed_timestep(void)
 	return enabled;
 }
 
+/* real time for debug.frame_trace (render_interpolation.c), in milliseconds */
+double halo_frame_trace_milliseconds(void)
+{
+	struct timespec now;
+
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	return (double)now.tv_sec * 1000.0 + (double)now.tv_nsec / 1e6;
+}
+
 unsigned long platform_clock_frames(void)
 {
 	return __atomic_load_n(&clock_frames, __ATOMIC_RELAXED);

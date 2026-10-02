@@ -170,6 +170,9 @@ static const struct config_setting config_settings[] =
 	{ "debug.fixed_timestep_paced", _config_boolean, "false", "HALO_FIXED_TIMESTEP_PACED", _environment_set_is_true, _platform_all,
 		"With fixed_timestep, hold each frame for at least 1/30 s, so the game\n"
 		"plays at its own speed instead of as fast as frames are presented." },
+	{ "debug.frame_trace", _config_boolean, "false", "HALO_FRAME_TRACE", _environment_set_is_true, _platform_all,
+		"Log every frame's time, the blend between ticks and the camera's yaw,\n"
+		"to see how smoothly the view turns." },
 	{ "debug.frame_counter", _config_boolean, "false", "HALO_FRAME_COUNTER", _environment_set_is_true, _platform_ios,
 		"Show the frame number and the game time in a corner of the screen, to\n"
 		"point at a moment; with debug.fixed_timestep the same frame is the same\n"

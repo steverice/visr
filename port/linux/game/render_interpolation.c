@@ -33,6 +33,11 @@ Particles, contrails and other effects already move every frame
 #include <stdlib.h>
 #include <string.h>
 
+/* the platform layer's (sdl_platform.c, xbox_kernel.c) */
+int halo_frame_trace_enabled(void);
+double halo_frame_trace_milliseconds(void);
+void platform_log(const char *format, ...);
+
 /* ---------- constants */
 
 #define MAXIMUM_INTERPOLATED_OBJECTS (MAXIMUM_OBJECTS_PER_MAP * 5)
@@ -389,6 +394,22 @@ real_matrix4x3 *render_interpolation_object_node_matrices(long object_index)
 
 /* ---------- camera */
 
+static real trace_yaw(real_vector3d const *forward)
+{
+	return (real)(atan2(forward->j, forward->i) * 180.0 / 3.14159265358979);
+}
+
+/* debug.frame_trace: one line a frame for player one's camera: the real
+time, the tick and blend, and the yaw the frame shows against the two ticks
+it blends between */
+static void trace_camera(struct interpolated_camera const *camera, struct observer_result const *drawn,
+	char const *how)
+{
+	platform_log("frame trace: %.3f ms tick %ld t %.3f yaw %.2f (previous %.2f latest %.2f) %s",
+		halo_frame_trace_milliseconds(), interpolation_tick, interpolation_fraction,
+		trace_yaw(&drawn->forward), trace_yaw(&camera->previous.forward), trace_yaw(&camera->latest.forward), how);
+}
+
 struct observer_result const *render_interpolation_camera(
 	short local_player_index,
 	struct observer_result const *observer)
@@ -419,6 +440,8 @@ struct observer_result const *render_interpolation_camera(
 			camera->previous.forward.j * camera->latest.forward.j +
 			camera->previous.forward.k * camera->latest.forward.k < CAMERA_CUT_COSINE)
 	{
+		if (local_player_index == 0 && halo_frame_trace_enabled())
+			trace_camera(camera, observer, camera->has_previous ? "cut" : "first");
 		return observer;
 	}
 
@@ -449,6 +472,8 @@ struct observer_result const *render_interpolation_camera(
 		}
 	}
 	camera->blended.field_of_view = lerp(camera->previous.field_of_view, camera->latest.field_of_view, t);
+	if (local_player_index == 0 && halo_frame_trace_enabled())
+		trace_camera(camera, &camera->blended, "blended");
 	return &camera->blended;
 }
 

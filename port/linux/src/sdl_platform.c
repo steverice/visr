@@ -71,6 +71,17 @@ BOOL platform_sdl_initialize(void)
 	return TRUE;
 }
 
+/* debug.frame_trace: log each frame's timing and camera blend
+(port/linux/game/render_interpolation.c) */
+int halo_frame_trace_enabled(void)
+{
+	static int enabled = -1;
+
+	if (enabled < 0)
+		enabled = config_boolean("debug.frame_trace");
+	return enabled;
+}
+
 int halo_interpolation_enabled(void)
 {
 	static int enabled = -1;
