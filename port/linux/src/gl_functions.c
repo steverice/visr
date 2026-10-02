@@ -4,7 +4,8 @@ GL_FUNCTIONS.C
 Run-time resolution of the OpenGL entry points listed in gl.h.
 */
 
-#include "platform.h"
+/* the platform layer's (xbox_kernel.c; host_gpu.c in the iOS host) */
+void platform_log(const char *format, ...) __attribute__((format(printf, 1, 2)));
 #define GL_FUNCTIONS_DEFINE
 #include "gl.h"
 
@@ -21,14 +22,14 @@ void halo_gl_count_call(void)
 
 int gl_functions_load(void)
 {
-	int success = TRUE;
+	int success = 1;
 
 #define GL_LOAD_FUNCTION(name) \
 	halo_##name = (__typeof__(halo_##name))SDL_GL_GetProcAddress(#name); \
 	if (!halo_##name) \
 	{ \
 		platform_log("OpenGL function %s is unavailable", #name); \
-		success = FALSE; \
+		success = 0; \
 	}
 	GL_FUNCTIONS(GL_LOAD_FUNCTION)
 #undef GL_LOAD_FUNCTION

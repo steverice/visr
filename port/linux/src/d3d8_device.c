@@ -644,7 +644,7 @@ static void gl_initialize(void)
 {
 	int index;
 
-	gpu_initialize(&device_capabilities);
+	gpu_initialize(config_boolean("debug.gl_debug") ? GPU_INITIALIZE_DEBUG : 0, &device_capabilities);
 	screen_maximum_texture_size = (int32_t)device_capabilities.max_texture_size;
 #ifdef HALO_ILP32
 	/* Select the real Retina drawable before allocating any screen targets. */

@@ -66,6 +66,8 @@ void nv2a_uniform_declarations(struct xgpu_text *text, const struct nv2a_dialect
 #define XGPU_VERTEX_CONSTANT_COUNT 192
 /* D3D constant register -96 is hardware register 0 */
 #define XGPU_VERTEX_CONSTANT_BIAS 96
+_Static_assert(GPU_STAGE_COUNT == D3DTSS_MAXSTAGES && GPU_ATTRIBUTE_COUNT == XGPU_VERTEX_ATTRIBUTE_COUNT &&
+	GPU_CONSTANT_COUNT == XGPU_VERTEX_CONSTANT_COUNT, "gpu.h's counts disagree with the front end's");
 
 /* GLSL for an NV2A vertex program (the instruction words after the program
 header). Attributes whose bit is set in packed_attribute_mask are fed as

@@ -6,14 +6,19 @@ end (d3d8_device.c, xbox_textures.c) needs, behind the handles and packets
 gpu.h declares.
 */
 
-#include "xgpu.h"
+#include "gpu.h"
 #include "gl.h"
-#include "sdl_platform.h"
-#include "port_config.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* the platform layer's (xbox_kernel.c and sdl_platform.c on Linux and in the
+guest; host_gpu.c in the iOS host); the format attribute matches the Linux
+build's declaration, so the format strings here stay checked */
+void platform_log(const char *format, ...) __attribute__((format(printf, 1, 2)));
+void platform_video_drawable_size(int *width, int *height);
+void platform_video_swap(void);
 
 #ifdef HALO_ILP32
 /* OpenGL ES 3 (port/ios/README.md): the desktop format, enumerants and entry
@@ -35,14 +40,14 @@ points used below that ES lacks */
 /* OpenGL ES features that are optional (gpu_initialize) */
 struct xgpu_capabilities
 {
-	BOOL copy_image;
-	BOOL border_clamp;
-	BOOL anisotropy;
-	BOOL s3tc;
+	int copy_image;
+	int border_clamp;
+	int anisotropy;
+	int s3tc;
 	/* ES 3.2: glDrawElementsBaseVertex */
-	BOOL base_vertex;
+	int base_vertex;
 	/* ES 3.1 with fragment atomic counters: exact visibility test counts */
-	BOOL atomic_counters;
+	int atomic_counters;
 	/* "300 es" or "310 es" */
 	const char *shading_language;
 };
@@ -136,15 +141,15 @@ static struct gpu_gl_state
 	GLenum active_texture;
 	/* per unit: the GL_TEXTURE_2D, GL_TEXTURE_CUBE_MAP and GL_TEXTURE_3D
 	bindings */
-	GLuint textures[D3DTSS_MAXSTAGES][3];
-	GLuint samplers[D3DTSS_MAXSTAGES];
+	GLuint textures[GPU_STAGE_COUNT][3];
+	GLuint samplers[GPU_STAGE_COUNT];
 	GLuint array_buffer;
 	GLuint element_array_buffer;
-	unsigned char attribute_enabled[XGPU_VERTEX_ATTRIBUTE_COUNT];
-	struct attribute_pointer attribute_pointers[XGPU_VERTEX_ATTRIBUTE_COUNT];
+	unsigned char attribute_enabled[GPU_ATTRIBUTE_COUNT];
+	struct attribute_pointer attribute_pointers[GPU_ATTRIBUTE_COUNT];
 	/* a disabled attribute's value; kind 1 is the integer zero */
-	unsigned char attribute_value_kind[XGPU_VERTEX_ATTRIBUTE_COUNT];
-	float attribute_values[XGPU_VERTEX_ATTRIBUTE_COUNT][4];
+	unsigned char attribute_value_kind[GPU_ATTRIBUTE_COUNT];
+	float attribute_values[GPU_ATTRIBUTE_COUNT][4];
 } gl_state;
 
 static void state_invalidate(void)
@@ -152,7 +157,7 @@ static void state_invalidate(void)
 	memset(&gl_state, 0xff, sizeof(gl_state));
 }
 
-static void state_enable(unsigned char *shadow, GLenum capability, BOOL enabled)
+static void state_enable(unsigned char *shadow, GLenum capability, int enabled)
 {
 	unsigned char value = enabled ? 1 : 0;
 
@@ -226,7 +231,7 @@ static void state_element_array_buffer(GLuint buffer)
 }
 
 static void state_attribute_pointer(GLuint index, GLuint buffer, GLint size, GLenum type, GLboolean normalized,
-	BOOL integer, GLsizei stride, unsigned long offset)
+	int integer, GLsizei stride, unsigned long offset)
 {
 	struct attribute_pointer *pointer = &gl_state.attribute_pointers[index];
 
@@ -583,14 +588,14 @@ bound, and the sampler configured when the stage's sampler state changed */
 /* one sampler object per texture stage, and the state each was last
 configured with (not part of gl_state: a sampler object keeps its
 parameters whatever GL state changes behind the cache) */
-static GLuint samplers[D3DTSS_MAXSTAGES];
-static struct gpu_sampler_state configured[D3DTSS_MAXSTAGES];
-static BOOL configured_valid[D3DTSS_MAXSTAGES];
+static GLuint samplers[GPU_STAGE_COUNT];
+static struct gpu_sampler_state configured[GPU_STAGE_COUNT];
+static int configured_valid[GPU_STAGE_COUNT];
 /* gpu_capabilities.border_clamp: without it BORDER addressing clamps to the
 edge */
-static BOOL border_clamp;
+static int border_clamp;
 /* gpu_capabilities.base_vertex: indexed draws take a base vertex */
-static BOOL base_vertex;
+static int base_vertex;
 
 /* the GL target of a GPU_TEXTURE_* type */
 static GLenum texture_target(uint32_t type)
@@ -627,7 +632,7 @@ static void apply_stage(int stage, const struct gpu_stage *packet_stage)
 	if (configured_valid[stage] && !memcmp(&configured[stage], state, sizeof(*state)))
 		return;
 	configured[stage] = *state;
-	configured_valid[stage] = TRUE;
+	configured_valid[stage] = 1;
 
 	if (state->min_filter == GPU_FILTER_POINT)
 		minification = state->mip_filter == GPU_FILTER_NONE ? GL_NEAREST :
@@ -680,9 +685,9 @@ buffer, so a result never waits. */
 static struct
 {
 	GLuint queries[GPU_VISIBILITY_SLOTS];
-	BOOL active;
+	int active;
 #ifdef HALO_ILP32
-	BOOL counters;                  /* GPU_OCCLUSION_SHADER_COUNTER */
+	int counters;                  /* GPU_OCCLUSION_SHADER_COUNTER */
 	GLuint counter_buffer;
 	unsigned long counter_next;
 	unsigned long counter_active;
@@ -703,10 +708,15 @@ static void GLAPIENTRY gl_debug_callback(GLenum source, GLenum type, GLuint id, 
 }
 #endif
 
-void gpu_initialize(struct gpu_capabilities *capabilities)
+/* GPU_INITIALIZE_DEBUG: report GL errors (the debug callback on desktop GL,
+check_errors on ES) */
+static int gl_debug;
+
+void gpu_initialize(uint32_t flags, struct gpu_capabilities *capabilities)
 {
 	GLint major = 0, minor = 0, maximum_texture_size = 0;
 
+	gl_debug = (flags & GPU_INITIALIZE_DEBUG) != 0;
 	memset(capabilities, 0, sizeof(*capabilities));
 	glGetIntegerv(GL_MAJOR_VERSION, &major);
 	glGetIntegerv(GL_MINOR_VERSION, &minor);
@@ -716,8 +726,8 @@ void gpu_initialize(struct gpu_capabilities *capabilities)
 	capabilities->line_loops = 1;
 #ifdef HALO_ILP32
 	{
-		BOOL es31 = major > 3 || (major == 3 && minor >= 1);
-		BOOL es32 = major > 3 || (major == 3 && minor >= 2);
+		int es31 = major > 3 || (major == 3 && minor >= 1);
+		int es32 = major > 3 || (major == 3 && minor >= 2);
 
 		/* clip control is emulated in the vertex shader (nv2a_vsh.c) */
 		xgpu_capabilities.copy_image = es32 || host_gl_has_extension("GL_EXT_copy_image") ||
@@ -755,7 +765,7 @@ void gpu_initialize(struct gpu_capabilities *capabilities)
 		capabilities->clip_z_remap = 1;
 	}
 #else
-	if (config_boolean("debug.gl_debug"))
+	if (gl_debug)
 	{
 		glEnable(GL_DEBUG_OUTPUT);
 		glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
@@ -798,9 +808,9 @@ void gpu_initialize(struct gpu_capabilities *capabilities)
 	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, streams.index_buffer);
 	glBufferData(GL_ELEMENT_ARRAY_BUFFER, INDEX_BUFFER_SIZE, NULL, GL_STREAM_DRAW);
 #endif
-	border_clamp = capabilities->border_clamp ? TRUE : FALSE;
-	base_vertex = capabilities->base_vertex ? TRUE : FALSE;
-	glGenSamplers(D3DTSS_MAXSTAGES, samplers);
+	border_clamp = capabilities->border_clamp ? 1 : 0;
+	base_vertex = capabilities->base_vertex ? 1 : 0;
+	glGenSamplers(GPU_STAGE_COUNT, samplers);
 	glGenQueries(GPU_VISIBILITY_SLOTS, visibility.queries);
 #ifndef HALO_ILP32
 	glGenBuffers(1, &visibility.results_buffer);
@@ -828,7 +838,7 @@ void gpu_initialize(struct gpu_capabilities *capabilities)
 		static const float initial[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
 		GLuint index;
 
-		for (index = 0; index < XGPU_VERTEX_ATTRIBUTE_COUNT; index++)
+		for (index = 0; index < GPU_ATTRIBUTE_COUNT; index++)
 			glVertexAttrib4fv(index, initial);
 	}
 	state_invalidate();
@@ -924,7 +934,7 @@ void gpu_texture_upload(gpu_texture texture, uint32_t face, uint32_t level, cons
 {
 	struct texture_record *record = texture_record(texture);
 	const struct gpu_texture_description *description = &record->description;
-	BOOL compressed = description->format >= GPU_FORMAT_BC1 && description->format <= GPU_FORMAT_BC3;
+	int compressed = description->format >= GPU_FORMAT_BC1 && description->format <= GPU_FORMAT_BC3;
 	GLenum image_target = description->type == GPU_TEXTURE_CUBE ? GL_TEXTURE_CUBE_MAP_POSITIVE_X + face : record->target;
 	GLsizei width = texture_level_dimension(description->width, level);
 	GLsizei height = texture_level_dimension(description->height, level);
@@ -1273,7 +1283,7 @@ struct gpu_gl_program
 	/* the vertex constants c[0..constant_count) the program uses; with
 	consecutive locations, a changed range is uploaded by itself */
 	unsigned long constant_count;
-	BOOL constants_consecutive;
+	int constants_consecutive;
 	/* gpu_constant_store.serial at the program's last constant upload */
 	uint32_t constants_serial;
 	/* gpu_uniforms.serial when the uniforms below were brought up to date */
@@ -1332,15 +1342,15 @@ static struct gpu_gl_program *program_get(gpu_shader vertex_shader, gpu_shader f
 	}
 	state_program(entry->program);
 	entry->constants = glGetUniformLocation(entry->program, "c");
-	entry->constant_count = XGPU_VERTEX_CONSTANT_COUNT;
+	entry->constant_count = GPU_CONSTANT_COUNT;
 	if (entry->constants >= 0)
 	{
 		unsigned long index;
 
 		/* c[i] is usually at c's location plus i, and the compiler may
 		drop registers past the last one the program reads */
-		entry->constants_consecutive = TRUE;
-		for (index = 1; index < XGPU_VERTEX_CONSTANT_COUNT; index++)
+		entry->constants_consecutive = 1;
+		for (index = 1; index < GPU_CONSTANT_COUNT; index++)
 		{
 			char name[16];
 			GLint location;
@@ -1354,8 +1364,8 @@ static struct gpu_gl_program *program_get(gpu_shader vertex_shader, gpu_shader f
 			}
 			if (location != entry->constants + (GLint)index)
 			{
-				entry->constants_consecutive = FALSE;
-				entry->constant_count = XGPU_VERTEX_CONSTANT_COUNT;
+				entry->constants_consecutive = 0;
+				entry->constant_count = GPU_CONSTANT_COUNT;
 				break;
 			}
 		}
@@ -1364,7 +1374,7 @@ static struct gpu_gl_program *program_get(gpu_shader vertex_shader, gpu_shader f
 	GPU_UNIFORM_IF_NOT_CONSTANTS_##stage(entry->name = glGetUniformLocation(entry->program, #name);)
 	GPU_UNIFORMS(GPU_GL_LOCATE)
 #undef GPU_GL_LOCATE
-	for (stage = 0; stage < D3DTSS_MAXSTAGES; stage++)
+	for (stage = 0; stage < GPU_STAGE_COUNT; stage++)
 	{
 		char name[8];
 
@@ -1403,7 +1413,7 @@ static void program_constants(struct gpu_gl_program *entry, const struct gpu_con
 	{
 		unsigned long first = entry->constant_count, last = 0, index;
 
-		if (store->serial - entry->constants_serial <= XGPU_VERTEX_CONSTANT_COUNT)
+		if (store->serial - entry->constants_serial <= GPU_CONSTANT_COUNT)
 		{
 			uint32_t serial;
 
@@ -1435,7 +1445,7 @@ static void program_constants(struct gpu_gl_program *entry, const struct gpu_con
 			if (entry->constants_consecutive)
 				glUniform4fv(entry->constants + (GLint)first, (GLsizei)(last - first + 1), store->c[first]);
 			else
-				glUniform4fv(entry->constants, XGPU_VERTEX_CONSTANT_COUNT, &store->c[0][0]);
+				glUniform4fv(entry->constants, GPU_CONSTANT_COUNT, &store->c[0][0]);
 		}
 		entry->constants_serial = store->serial;
 	}
@@ -1469,13 +1479,10 @@ static unsigned long frames;
 each draw instead, reporting each distinct error a few times */
 static void check_errors(const char *where)
 {
-	static int enabled = -1;
 	static unsigned long reports;
 	GLenum error;
 
-	if (enabled < 0)
-		enabled = config_boolean("debug.gl_debug");
-	if (!enabled)
+	if (!gl_debug)
 		return;
 	while ((error = glGetError()) != GL_NO_ERROR)
 	{
@@ -1524,12 +1531,12 @@ uint32_t gpu_draw(const struct gpu_draw *draw, const struct gpu_constant_store *
 	}
 	state_framebuffer(framebuffer_get(draw->color_target, draw->depth_target));
 	apply_raster_state(&draw->viewport, &draw->scissor, &draw->depth_stencil, &draw->blend, &draw->raster);
-	for (stage = 0; stage < D3DTSS_MAXSTAGES; stage++)
+	for (stage = 0; stage < GPU_STAGE_COUNT; stage++)
 		apply_stage(stage, &draw->stages[stage]);
 	program_use(program);
 	program_constants(program, constants);
 	program_uniforms(program, uniforms);
-	for (index = 0; index < XGPU_VERTEX_ATTRIBUTE_COUNT; index++)
+	for (index = 0; index < GPU_ATTRIBUTE_COUNT; index++)
 	{
 		const struct gpu_vertex_attribute *attribute = &draw->attributes[index];
 
@@ -1596,7 +1603,7 @@ void gpu_clear(const struct gpu_clear *clear, const struct gpu_rect *rectangles,
 
 void gpu_visibility_begin(void)
 {
-	visibility.active = TRUE;
+	visibility.active = 1;
 #ifdef HALO_ILP32
 	if (visibility.counters)
 	{
@@ -1618,7 +1625,7 @@ void gpu_visibility_end(uint32_t slot)
 {
 	GLuint scratch;
 
-	visibility.active = FALSE;
+	visibility.active = 0;
 #ifdef HALO_ILP32
 	if (visibility.counters)
 	{

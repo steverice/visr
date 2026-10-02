@@ -145,6 +145,8 @@ index of the register that changed at each serial, modulo its size: a
 backend that saw serial s can upload just what changed since. */
 
 enum { GPU_CONSTANT_COUNT = 192, GPU_CONSTANT_LOG_SIZE = 1024 };
+/* texture stages and vertex attributes (D3DTSS_MAXSTAGES, XGPU_VERTEX_ATTRIBUTE_COUNT) */
+enum { GPU_STAGE_COUNT = 4, GPU_ATTRIBUTE_COUNT = 16 };
 
 struct gpu_constant_store
 {
@@ -394,7 +396,9 @@ void gpu_present(gpu_texture back_buffer);
 debug.gpu_stats */
 uint32_t gpu_call_count_take(void);
 
+/* gpu_initialize flags */
+enum { GPU_INITIALIZE_DEBUG = 1 };   /* debug.gl_debug: report GPU errors */
 /* probe the context, which must be current, and set it up */
-void gpu_initialize(struct gpu_capabilities *capabilities);
+void gpu_initialize(uint32_t flags, struct gpu_capabilities *capabilities);
 
 #endif
