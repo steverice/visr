@@ -131,6 +131,9 @@ static id<MTLCommandQueue> queue;
 static CAMetalLayer *layer;
 static MetalTable *textures, *buffers, *shaders;
 static int metal_debug;
+/* display.compressed_textures, where the GPU has BC formats: DXT textures
+upload as they are, not decoded to BGRA8 (gpu_capabilities.s3tc) */
+static BOOL compressed_textures;
 /* debug.fixed_timestep: visibility answers wait for the GPU (visibility_result) */
 static BOOL visibility_wait;
 
@@ -395,8 +398,37 @@ static unsigned long level_dimension(uint32_t size, unsigned long level)
 
 static MTLPixelFormat texture_format(const struct gpu_texture_description *description)
 {
-	return description->format == GPU_FORMAT_DEPTH_STENCIL ? MTLPixelFormatDepth32Float_Stencil8 :
-		MTLPixelFormatBGRA8Unorm;
+	if (description->format == GPU_FORMAT_DEPTH_STENCIL)
+		return MTLPixelFormatDepth32Float_Stencil8;
+	/* compressed_textures is set only where these exist */
+	if (@available(iOS 16.4, tvOS 16.4, visionOS 1.0, *))
+	{
+		if (description->format == GPU_FORMAT_BC1)
+			return MTLPixelFormatBC1_RGBA;
+		if (description->format == GPU_FORMAT_BC2)
+			return MTLPixelFormatBC2_RGBA;
+		if (description->format == GPU_FORMAT_BC3)
+			return MTLPixelFormatBC3_RGBA;
+	}
+	return MTLPixelFormatBGRA8Unorm;
+}
+
+/* a level's bytes per row and per image: 4x4 blocks of 8 bytes (BC1) or 16
+(BC2, BC3) for the compressed formats (gpu_capabilities.s3tc), else 4 bytes
+a texel */
+static void level_layout(uint32_t format, unsigned long width, unsigned long height,
+	unsigned long *row, unsigned long *image)
+{
+	if (format == GPU_FORMAT_BC1 || format == GPU_FORMAT_BC2 || format == GPU_FORMAT_BC3)
+	{
+		*row = (width + 3) / 4 * (format == GPU_FORMAT_BC1 ? 8 : 16);
+		*image = *row * ((height + 3) / 4);
+	}
+	else
+	{
+		*row = width * 4;
+		*image = *row * height;
+	}
 }
 
 /* the storage a texture's description asks for */
@@ -476,8 +508,11 @@ static gpu_texture gpu_metal_texture_create(const struct gpu_texture_description
 		(xbox_textures.c); GL ignores levels past the smallest, Metal can't
 		create them */
 		record->levels = description->levels < 1 ? 1 : description->levels > possible ? possible : description->levels;
-		if (description->format != GPU_FORMAT_BGRA8 && description->format != GPU_FORMAT_DEPTH_STENCIL)
-			platform_log("Metal: texture format %u is not supported yet; it samples black", description->format);
+		if (description->format != GPU_FORMAT_BGRA8 && description->format != GPU_FORMAT_DEPTH_STENCIL &&
+			!(compressed_textures && description->usage != GPU_USAGE_RENDER_TARGET &&
+				(description->format == GPU_FORMAT_BC1 || description->format == GPU_FORMAT_BC2 ||
+				description->format == GPU_FORMAT_BC3)))
+			platform_log("Metal: texture format %u is not supported; it samples black", description->format);
 		/* render targets have storage at once; upload textures get theirs
 		from their first upload, as under GL, and sample black until then */
 		else if (description->usage == GPU_USAGE_RENDER_TARGET)
@@ -495,9 +530,10 @@ static void gpu_metal_texture_upload(gpu_texture texture, uint32_t face, uint32_
 	{
 		MetalTexture *record = texture_record(texture);
 		const struct gpu_texture_description *description;
-		unsigned long width, height, depth, row;
+		unsigned long width, height, depth, row, image;
 
-		if (!record || record->description.format != GPU_FORMAT_BGRA8 || level >= record->levels)
+		if (!record || record->description.format == GPU_FORMAT_DEPTH_STENCIL || level >= record->levels ||
+			(record->description.format != GPU_FORMAT_BGRA8 && !compressed_textures))
 			return;
 		description = &record->description;
 		if (!record->texture || busy(record->used))
@@ -521,12 +557,15 @@ static void gpu_metal_texture_upload(gpu_texture texture, uint32_t face, uint32_
 						unsigned long w = level_dimension(description->width, copy_level);
 						unsigned long h = level_dimension(description->height, copy_level);
 						unsigned long d = description->type == GPU_TEXTURE_3D ? level_dimension(description->depth, copy_level) : 1;
-						NSMutableData *texels = [NSMutableData dataWithLength:w * h * d * 4];
+						unsigned long copy_row, copy_image;
+						NSMutableData *texels;
 
-						[previous getBytes:texels.mutableBytes bytesPerRow:w * 4 bytesPerImage:w * h * 4
+						level_layout(description->format, w, h, &copy_row, &copy_image);
+						texels = [NSMutableData dataWithLength:copy_image * d];
+						[previous getBytes:texels.mutableBytes bytesPerRow:copy_row bytesPerImage:copy_image
 							fromRegion:MTLRegionMake3D(0, 0, 0, w, h, d) mipmapLevel:copy_level slice:copy_face];
 						[record->texture replaceRegion:MTLRegionMake3D(0, 0, 0, w, h, d) mipmapLevel:copy_level
-							slice:copy_face withBytes:texels.bytes bytesPerRow:w * 4 bytesPerImage:w * h * 4];
+							slice:copy_face withBytes:texels.bytes bytesPerRow:copy_row bytesPerImage:copy_image];
 					}
 			}
 			if (previous)
@@ -535,12 +574,12 @@ static void gpu_metal_texture_upload(gpu_texture texture, uint32_t face, uint32_
 		width = level_dimension(description->width, level);
 		height = level_dimension(description->height, level);
 		depth = description->type == GPU_TEXTURE_3D ? level_dimension(description->depth, level) : 1;
-		row = width * 4;
-		if (size < row * height * depth)
+		level_layout(description->format, width, height, &row, &image);
+		if (size < image * depth)
 			return;
 		[record->texture replaceRegion:MTLRegionMake3D(0, 0, 0, width, height, depth) mipmapLevel:level
 			slice:description->type == GPU_TEXTURE_CUBE ? face : 0 withBytes:data bytesPerRow:row
-			bytesPerImage:row * height];
+			bytesPerImage:image];
 	}
 }
 
@@ -2020,6 +2059,13 @@ static void gpu_metal_initialize(uint32_t flags, struct gpu_capabilities *capabi
 		/* the class shows whether Metal's API validation wraps the device
 		(MTLDebugDevice; tools/mac_run.py run --metal-validation) */
 		platform_log("Metal on %s (%s)", device.name.UTF8String, NSStringFromClass([device class]).UTF8String);
+		if (flags & GPU_INITIALIZE_COMPRESSED_TEXTURES)
+		{
+			if (@available(iOS 16.4, tvOS 16.4, visionOS 1.0, *))
+				compressed_textures = device.supportsBCTextureCompression;
+			platform_log("Metal: compressed textures %s", compressed_textures ? "upload as BC1-3" :
+				"are decoded (this GPU has no BC formats)");
+		}
 
 		/* what GL reports on Apple's OpenGL ES 3.0 (gpu_gl.c's gpu_gl_initialize),
 		so the front end behaves exactly as it does under GL */
@@ -2029,7 +2075,7 @@ static void gpu_metal_initialize(uint32_t flags, struct gpu_capabilities *capabi
 		capabilities->line_loops = 1;
 		capabilities->sampler_lod_bias = 0;
 		capabilities->occlusion_mode = GPU_OCCLUSION_ANY_SAMPLE;
-		capabilities->s3tc = 0;
+		capabilities->s3tc = compressed_textures ? 1 : 0;
 		capabilities->border_clamp = 0;
 		capabilities->max_texture_size = 16384;
 		capabilities->shader_language = GPU_SHADER_LANGUAGE_MSL;

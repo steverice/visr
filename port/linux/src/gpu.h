@@ -420,6 +420,9 @@ enum
 	/* display.frame_pacing = "off": present each frame as soon as it's
 	drawn (Metal) */
 	GPU_INITIALIZE_PACING_OFF = 32,
+	/* display.compressed_textures: DXT textures upload as BC1-3 where the
+	GPU has them (Metal; GL decides from its extensions) */
+	GPU_INITIALIZE_COMPRESSED_TEXTURES = 64,
 };
 /* probe the context, which must be current, and set it up */
 void gpu_initialize(uint32_t flags, struct gpu_capabilities *capabilities);

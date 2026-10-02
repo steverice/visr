@@ -94,6 +94,10 @@ static const struct config_setting config_settings[] =
 	{ "display.effect_resolution", _config_boolean, "true", "HALO_EFFECT_RESOLUTION", _environment_value, _platform_all,
 		"Draw the active-camouflage effect at the screen's resolution rather than the\n"
 		"Xbox's 320x240." },
+	{ "display.compressed_textures", _config_boolean, "true", "HALO_COMPRESSED_TEXTURES", _environment_value, _platform_ios,
+		"With the Metal renderer, keep the game's DXT textures compressed on the GPU\n"
+		"where it supports them (BC1-3): a quarter to an eighth of the memory, and\n"
+		"faster loads. false decodes them, as OpenGL ES must." },
 	{ "display.renderer", _config_string, "\"gl\"", "HALO_RENDERER", _environment_value, _platform_ios,
 		"What draws the game: \"gl\" (default) OpenGL ES, or \"metal\" Metal.\n"
 		"Changes apply on relaunch." },
