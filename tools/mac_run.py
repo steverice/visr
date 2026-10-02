@@ -10,6 +10,10 @@ write-protects pages and expects their faults, which would stop a debugger),
 waits for the game to quit (debug.exit_after), and copies the logs,
 screenshots and shader files out of the app's container. `compare` checks two
 such result folders against each other.
+
+`run --simulator UDID` runs a simulator build (an iOS or visionOS simulator app,
+tools/ios_build.py --simulator) in that simulator instead, with the same
+config.toml, init.txt and result folders, so its runs compare with the Mac's.
 """
 
 import argparse
@@ -479,7 +483,49 @@ def collect(documents, out):
         shutil.copytree(documents / "runner", out / "runner", dirs_exist_ok=True)
 
 
+def simulator_running(udid):
+    """the game is running in simulator udid"""
+    pattern = f"CoreSimulator/Devices/{udid}/.*/HaloCE.app/HaloCE"
+    return subprocess.run(["pgrep", "-f", pattern], capture_output=True).returncode == 0
+
+
+def run_simulator(args):
+    udid = args.simulator
+    app = args.app or ROOT / "build/visionos/app-simulator/Release-xrsimulator/HaloCE.app"
+    if not (app / "HaloCE").is_file():
+        sys.exit(f"no simulator app at {app}; run tools/ios_build.py --simulator (--visionos) first")
+    with (app / "Info.plist").open("rb") as file:
+        bundle_id = plistlib.load(file)["CFBundleIdentifier"]
+    # boots the simulator if it isn't, and waits until it has
+    run_command("xcrun", "simctl", "bootstatus", udid, "-b", stdout=subprocess.DEVNULL)
+    subprocess.run(["xcrun", "simctl", "terminate", udid, bundle_id], capture_output=True)
+    run_command("xcrun", "simctl", "install", udid, app)
+    container = subprocess.run(["xcrun", "simctl", "get_app_container", udid, bundle_id, "data"],
+                               capture_output=True, text=True, check=True).stdout.strip()
+    documents = Path(container) / "Documents"
+    if args.maps and not (documents / "maps").is_dir():
+        documents.mkdir(parents=True, exist_ok=True)
+        run_command("cp", "-c", "-R", args.maps, documents / "maps")
+    prepare(args, documents)
+    run_command("xcrun", "simctl", "launch", udid, bundle_id, stdout=subprocess.DEVNULL)
+    wait_for(lambda: simulator_running(udid), 60)
+    limit = args.time_limit or args.exit_after + 120
+    finished = wait_for(lambda: not simulator_running(udid), limit)
+    if not finished:
+        subprocess.run(["xcrun", "simctl", "terminate", udid, bundle_id], capture_output=True)
+    collect(documents, args.out)
+    if not finished:
+        sys.exit(f"the game was still running {limit} seconds after launch and was stopped; logs are in {args.out}")
+    print(f"results: {args.out}")
+
+
 def run(args):
+    if args.simulator:
+        run_simulator(args)
+        return
+    if not args.team:
+        sys.exit("--team is required, except with --simulator")
+    args.app = args.app or ROOT / "build/ios/app-device/Release-iphoneos/HaloCE.app"
     if not (args.app / "HaloCE").is_file():
         sys.exit(f"no CMake-built app at {args.app}; run tools/ios_build.py --team ... first")
     build_wrapper(args)
@@ -501,10 +547,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
     run_parser = commands.add_parser("run", help="run the game once and collect its results")
-    run_parser.add_argument("--team", required=True, help="Apple development team ID")
+    run_parser.add_argument("--team", help="Apple development team ID (not needed with --simulator)")
     run_parser.add_argument("--bundle-id", default="org.haloce.macrunner")
-    run_parser.add_argument("--app", type=Path, default=ROOT / "build/ios/app-device/Release-iphoneos/HaloCE.app",
-                            help="the CMake-built device app (tools/ios_build.py --team ...)")
+    run_parser.add_argument("--app", type=Path,
+                            help="the CMake-built device app (tools/ios_build.py --team ...; the default), or "
+                                 "with --simulator the simulator app (default: the visionOS one)")
+    run_parser.add_argument("--simulator", metavar="UDID",
+                            help="run the simulator app in this simulator (xcrun simctl list devices)")
+    run_parser.add_argument("--maps", type=Path,
+                            help="with --simulator: a folder of imported maps to copy into a new container, "
+                                 "in place of importing --xiso")
     run_parser.add_argument("--out", type=Path, required=True, help="folder to copy the results to")
     run_parser.add_argument("--xiso", type=Path, help="the player's XISO, imported on the first run")
     run_parser.add_argument("--exit-after", type=float, default=60.0, help="seconds before the game quits")
