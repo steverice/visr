@@ -280,8 +280,9 @@ python3 tools/mac_run.py run --simulator UDID --maps path/to/Documents/maps --ex
 (`--simulator`, `--unsigned` and `--team` work as for iPhone). The game runs in
 an ordinary window and draws with Metal only: visionOS has no OpenGL ES, so the
 build leaves the GL backend out and the app always sets `display.renderer` to
-`"metal"`. The internal render height is 1080 lines (`--render-height`), shown
-letterboxed at 16:9 in the window.
+`"metal"`. The game renders at the window's own resolution (2556×1440 at its
+default size), follows the window when it's resized, and is letterboxed at 16:9;
+`--render-height` fixes a lower render height instead.
 
 - **Controls.** A game controller plays. Looking at the window and pinching
   does nothing in the game; a "Connect a game controller" note shows while

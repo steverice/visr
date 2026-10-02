@@ -39,9 +39,9 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "visionOS")
     # game imported through Files or the Documents folder (host/host_import.m).
     # visionOS has no OpenGL ES: Metal is the only renderer.
     set(HALO_VISIONOS ON)
-    # the window's drawable is about 2560x1440; 1080 lines keeps the GPU cost
-    # at the Apple TV's until a device shows what it can afford (0 = native)
-    set(HALO_RENDER_HEIGHT 1080 CACHE STRING "Internal render height (display.render_height)")
+    # native (0): the window's drawable, about 2560x1440 at its default size,
+    # following the window when it's resized (d3d8_device.c's halo_screen_commit)
+    set(HALO_RENDER_HEIGHT 0 CACHE STRING "Internal render height (display.render_height)")
     option(HALO_EXTENDED_VIRTUAL_ADDRESSING "Sign with the extended virtual addressing entitlement" OFF)
     set(HALO_PLATFORM_SOURCES Assets-visionOS.xcassets host/host_tv.m host/host_import.m host/host_orientation.m)
     set(HALO_INFO_PLIST Info-visionOS.plist)

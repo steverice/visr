@@ -36,8 +36,9 @@ def main():
     target = parser.add_mutually_exclusive_group()
     target.add_argument('--tvos', action='store_true', help='build for Apple TV instead of iPhone/iPad')
     target.add_argument('--visionos', action='store_true', help='build for Apple Vision Pro (Metal only) instead of iPhone/iPad')
-    parser.add_argument('--render-height', type=int, default=1080,
-                        help='tvOS and visionOS: internal render height in pixels, 0 for native (default 1080)')
+    parser.add_argument('--render-height', type=int,
+                        help='tvOS and visionOS: internal render height in pixels, 0 for native '
+                             '(default 1080 on tvOS; native on visionOS, which follows the window\'s size)')
     parser.add_argument('--extended-virtual-addressing', action='store_true',
                         help='visionOS: sign with the extended virtual addressing entitlement (paid developer teams), '
                              'in case the device refuses the 4 GB guest arena')
@@ -54,6 +55,8 @@ def main():
         parser.error('--team is only used for signed device builds')
     if args.ipa and args.simulator:
         parser.error('--ipa requires a device build')
+    if args.render_height is None:
+        args.render_height = 0 if args.visionos else 1080
     if args.extended_virtual_addressing and not args.visionos:
         parser.error('--extended-virtual-addressing is for --visionos builds')
     platform_name = 'tvos' if args.tvos else 'visionos' if args.visionos else 'ios'
