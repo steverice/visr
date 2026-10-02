@@ -85,6 +85,9 @@ static const struct config_setting config_settings[] =
 		"Internal rendering height in physical pixels: 0 (default) uses native\n"
 		"display resolution. Try 1080, 720 or 480 for lower GPU/battery use.\n"
 		"The selected aspect ratio is preserved; changes apply on relaunch." },
+	{ "display.anisotropic_filtering", _config_integer, "16", "HALO_ANISOTROPIC_FILTERING", _environment_value, _platform_all,
+		"Anisotropic filtering of the game's textures, 1 (off, as on the Xbox) to 16:\n"
+		"sharper floors and terrain at a distance, for a few percent of GPU time." },
 	{ "display.renderer", _config_string, "\"gl\"", "HALO_RENDERER", _environment_value, _platform_ios,
 		"What draws the game: \"gl\" (default) OpenGL ES, or \"metal\" Metal.\n"
 		"Changes apply on relaunch." },

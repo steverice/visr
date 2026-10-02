@@ -65,6 +65,7 @@ DEFAULTS = {
     "display.vsync": "true",
     "display.renderer": '"gl"',
     "display.interpolation": "true",
+    "display.anisotropic_filtering": "1",
     "debug.null_renderer": "false",
     "debug.gl_debug": "false",
     "debug.fixed_timestep": "false",

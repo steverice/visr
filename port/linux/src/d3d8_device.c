@@ -1608,6 +1608,24 @@ static void sampler_state_fill(int stage, BOOL mipmapped, struct gpu_sampler_sta
 	sampler->max_anisotropy = (uint32_t)state[D3DTSS_MAXANISOTROPY];
 	sampler->lod_bias = dword_to_float(state[D3DTSS_MIPMAPLODBIAS]);
 	sampler->border_color = (uint32_t)state[D3DTSS_BORDERCOLOR];
+	/* display.anisotropic_filtering: the game never asks for anisotropic
+	filtering (the Xbox ran 1x), so every linear, mipmapped stage gets it.
+	Point-sampled and unmipmapped stages (the HUD, text, render targets)
+	stay as they are. */
+	{
+		static long anisotropy = -1;
+
+		if (anisotropy < 0)
+		{
+			anisotropy = config_integer("display.anisotropic_filtering");
+			anisotropy = anisotropy < 1 ? 1 : anisotropy > 16 ? 16 : anisotropy;
+		}
+		if (anisotropy > 1 && sampler->min_filter == GPU_FILTER_LINEAR && sampler->mip_filter != GPU_FILTER_NONE)
+		{
+			sampler->min_filter = GPU_FILTER_ANISOTROPIC;
+			sampler->max_anisotropy = (uint32_t)anisotropy;
+		}
+	}
 }
 
 /* ---------- render targets sampled with their mip chain
