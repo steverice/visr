@@ -137,6 +137,8 @@ static unsigned long pass_commands;
 /* the open command buffer's serial; every earlier one has been committed */
 static uint64_t current_serial = 1;
 static _Atomic uint64_t completed_serial;
+/* the latest command buffer committed, which completes after every earlier one */
+static id<MTLCommandBuffer> last_committed;
 
 /* frames */
 static dispatch_semaphore_t frame_slots;
@@ -144,6 +146,45 @@ static int frame_started;
 static unsigned long frame_slot;
 static unsigned long frames;
 static unsigned long renames;
+
+/* ---------- visibility tests: state (the functions are after the draws)
+
+A test counts into entries of a ring in a shared buffer, in Metal's boolean
+mode, one entry for each render pass its draws reach: a pass writes its
+entries when it ends, over what they held. When a test ends, its slot and
+entries join the open command buffer's list, and that buffer's completion
+handler ORs each test's entries into the slot's answer, so an answer read
+frames later doesn't depend on a ring entry that has since been reused. */
+
+/* Metal's largest visibility offset on iOS is 65,528 bytes */
+#define VISIBILITY_ENTRIES 8191
+
+/* what a command buffer's completion handler resolves */
+struct visibility_pending
+{
+	uint32_t slot, first, count;
+};
+
+static id<MTLBuffer> visibility_buffer;
+/* each slot's answer as (serial << 1) | answer, written by completion
+handlers before they store completed_serial. Metal doesn't promise handlers
+run in commit order, so a handler keeps the answer from the latest serial */
+static _Atomic uint64_t visibility_answers[GPU_VISIBILITY_SLOTS];
+/* the serial of the command buffer each ring entry was last handed to */
+static uint64_t visibility_entry_serials[VISIBILITY_ENTRIES];
+static struct
+{
+	int active;
+	unsigned long next;                /* the ring's next entry */
+	unsigned long first, count;        /* the active test's entries */
+	int entry_open;                    /* the open pass counts into entry first + count - 1 */
+	NSMutableData *pending;            /* the open command buffer's struct visibility_pending list */
+	struct
+	{
+		unsigned long first, count;
+		uint64_t serial;
+	} slots[GPU_VISIBILITY_SLOTS];
+} visibility;
 
 /* ---------- transient memory: a frame slot's streams and constant snapshots,
 in chunks that live until the slot's frame comes around again */
@@ -254,6 +295,7 @@ static void pass_end(void)
 {
 	[encoder endEncoding];
 	encoder = nil;
+	visibility.entry_open = 0;
 	pass_color = pass_depth = 0;
 	pass_commands = 0;
 }
@@ -265,18 +307,48 @@ static void commit(BOOL frame_end)
 	id<MTLCommandBuffer> committed;
 	uint64_t serial = current_serial;
 
+	NSData *pending = visibility.pending;
+	id<MTLBuffer> results = visibility_buffer;
+
 	pass_end();
 	committed = command_buffer();
+	visibility.pending = [NSMutableData data];
 	[committed addCompletedHandler:^(id<MTLCommandBuffer> completed)
 	{
+		const struct visibility_pending *tests = pending.bytes;
+		const uint64_t *entries = results.contents;
+		unsigned long test, entry;
+
 		if (completed.status == MTLCommandBufferStatusError)
 			platform_log("Metal: command buffer %llu failed: %s", (unsigned long long)serial,
 				completed.error.description.UTF8String);
-		atomic_store(&completed_serial, serial);
+		for (test = 0; test < pending.length / sizeof(*tests); test++)
+		{
+			uint8_t answer = 0;
+
+			for (entry = 0; entry < tests[test].count; entry++)
+				if (entries[(tests[test].first + entry) % VISIBILITY_ENTRIES])
+					answer = 1;
+			{
+				uint64_t value = (serial << 1) | answer;
+				uint64_t seen = atomic_load(&visibility_answers[tests[test].slot]);
+
+				while (seen >> 1 <= serial &&
+					!atomic_compare_exchange_weak(&visibility_answers[tests[test].slot], &seen, value))
+					;
+			}
+		}
+		{
+			uint64_t seen = atomic_load(&completed_serial);
+
+			while (seen < serial && !atomic_compare_exchange_weak(&completed_serial, &seen, serial))
+				;
+		}
 		if (frame_end)
 			dispatch_semaphore_signal(frame_slots);
 	}];
 	[committed commit];
+	last_committed = committed;
 	commands = nil;
 	current_serial++;
 	if (frame_end)
@@ -708,6 +780,7 @@ static BOOL pass_begin(gpu_texture color, gpu_texture depth, const struct gpu_cl
 		return NO;
 	pass_end();
 	pass = [MTLRenderPassDescriptor renderPassDescriptor];
+	pass.visibilityResultBuffer = visibility_buffer;
 	if (!color)
 	{
 		/* a depth-only pass: the game's pixel shaders still write a color
@@ -905,6 +978,9 @@ static void gpu_metal_clear(const struct gpu_clear *clear, const struct gpu_rect
 		[encoder setViewport:(MTLViewport){ 0.0, 0.0, (double)width, (double)height, 0.0, 1.0 }];
 		[encoder setVertexBytes:&depth_value length:sizeof(depth_value) atIndex:0];
 		[encoder setFragmentBytes:color_value length:sizeof(color_value) atIndex:0];
+		/* a clear passes no samples to a visibility test, as glClear doesn't */
+		if (visibility.entry_open)
+			[encoder setVisibilityResultMode:MTLVisibilityResultModeDisabled offset:0];
 		for (index = 0; index < count; index++)
 		{
 			MTLScissorRect scissor;
@@ -915,6 +991,9 @@ static void gpu_metal_clear(const struct gpu_clear *clear, const struct gpu_rect
 			[encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
 			pass_commands++;
 		}
+		/* the test's next draw opens a new entry rather than counting into
+		this one again in the same pass */
+		visibility.entry_open = 0;
 	}
 }
 
@@ -1396,6 +1475,27 @@ static uint32_t gpu_metal_draw(const struct gpu_draw *draw, const struct gpu_con
 			(struct gpu_rect){ 0, 0, (int32_t)width, (int32_t)height };
 		if (!clamp_rect(&area, width, height, &scissor))
 			return 1;
+		if (visibility.active && !visibility.entry_open)
+		{
+			unsigned long entry = visibility.next;
+			static int lapped;
+
+			/* 8,191 entries in flight at once: three frames of lens flares
+			are far fewer */
+			if (busy(visibility_entry_serials[entry]) && !lapped)
+			{
+				platform_log("Metal: the visibility ring lapped a test still on the GPU; answers may be wrong");
+				lapped = 1;
+			}
+			visibility_entry_serials[entry] = current_serial;
+			if (!visibility.count)
+				visibility.first = entry;
+			visibility.next = (entry + 1) % VISIBILITY_ENTRIES;
+			visibility.count++;
+			visibility.entry_open = 1;
+			((uint64_t *)visibility_buffer.contents)[entry] = 0;
+			[encoder setVisibilityResultMode:MTLVisibilityResultModeBoolean offset:entry * sizeof(uint64_t)];
+		}
 		[encoder setRenderPipelineState:pipeline];
 		[encoder setDepthStencilState:depth_state(&draw->depth_stencil)];
 		[encoder setStencilReferenceValue:draw->depth_stencil.stencil_reference & 0xff];
@@ -1456,23 +1556,52 @@ static uint32_t gpu_metal_draw(const struct gpu_draw *draw, const struct gpu_con
 	}
 }
 
-/* ---------- visibility tests (the a10 plan)
-
-Every test answers "visible" until Metal's visibility results are wired up:
-an unanswered test would make the game ask again forever. */
+/* ---------- visibility tests (the state is declared before the transient memory) */
 
 static void gpu_metal_visibility_begin(void)
 {
+	visibility.active = 1;
+	visibility.count = 0;
+	visibility.entry_open = 0;
 }
 
 static void gpu_metal_visibility_end(uint32_t slot)
 {
+	if (visibility.entry_open)
+		[encoder setVisibilityResultMode:MTLVisibilityResultModeDisabled offset:0];
+	visibility.active = 0;
+	visibility.entry_open = 0;
+	visibility.slots[slot].first = visibility.first;
+	visibility.slots[slot].count = visibility.count;
+	visibility.slots[slot].serial = current_serial;
+	if (visibility.count)
+	{
+		struct visibility_pending test = { slot, (uint32_t)visibility.first, (uint32_t)visibility.count };
+
+		[visibility.pending appendBytes:&test length:sizeof(test)];
+	}
 }
 
+/* whether any sample passed (GPU_OCCLUSION_ANY_SAMPLE). A result the GPU
+hasn't written yet is waited for, committing the open command buffer if it
+writes it: the game asks again until it has an answer (lens flares), so an
+answer now keeps runs repeatable, as a wait under GL does */
 static uint32_t gpu_metal_visibility_result(uint32_t slot, uint32_t *samples)
 {
-	*samples = 1;
-	return 1;
+	@autoreleasepool
+	{
+		*samples = 0;
+		if (!visibility.slots[slot].count)
+			return 1;
+		if (visibility.slots[slot].serial == current_serial)
+			commit(NO);
+		/* waitUntilCompleted can return before the completion handler has
+		run, and the handler writes the answer */
+		while (busy(visibility.slots[slot].serial))
+			[last_committed waitUntilCompleted];
+		*samples = (uint32_t)(atomic_load(&visibility_answers[slot]) & 1);
+		return 1;
+	}
 }
 
 /* ---------- frames */
@@ -1618,7 +1747,12 @@ static void gpu_metal_initialize(uint32_t flags, struct gpu_capabilities *capabi
 		}
 		empty_sampler = [device newSamplerStateWithDescriptor:[MTLSamplerDescriptor new]];
 		empty_buffer = [device newBufferWithLength:64 options:MTLResourceStorageModeShared];
-		platform_log("Metal on %s", device.name.UTF8String);
+		visibility_buffer = [device newBufferWithLength:VISIBILITY_ENTRIES * sizeof(uint64_t)
+			options:MTLResourceStorageModeShared];
+		visibility.pending = [NSMutableData data];
+		/* the class shows whether Metal's API validation wraps the device
+		(MTLDebugDevice; tools/mac_run.py run --metal-validation) */
+		platform_log("Metal on %s (%s)", device.name.UTF8String, NSStringFromClass([device class]).UTF8String);
 
 		/* what GL reports on Apple's OpenGL ES 3.0 (gpu_gl.c's gpu_gl_initialize),
 		so the front end behaves exactly as it does under GL */
