@@ -88,6 +88,12 @@ static const struct config_setting config_settings[] =
 	{ "display.anisotropic_filtering", _config_integer, "16", "HALO_ANISOTROPIC_FILTERING", _environment_value, _platform_all,
 		"Anisotropic filtering of the game's textures, 1 (off, as on the Xbox) to 16:\n"
 		"sharper floors and terrain at a distance, for a few percent of GPU time." },
+	{ "display.shadow_map_size", _config_integer, "512", "HALO_SHADOW_MAP_SIZE", _environment_value, _platform_all,
+		"The size of the textures characters' and vehicles' shadows are drawn into,\n"
+		"128 (as on the Xbox) to 2048: larger is smoother." },
+	{ "display.effect_resolution", _config_boolean, "true", "HALO_EFFECT_RESOLUTION", _environment_value, _platform_all,
+		"Draw the active-camouflage effect at the screen's resolution rather than the\n"
+		"Xbox's 320x240." },
 	{ "display.renderer", _config_string, "\"gl\"", "HALO_RENDERER", _environment_value, _platform_ios,
 		"What draws the game: \"gl\" (default) OpenGL ES, or \"metal\" Metal.\n"
 		"Changes apply on relaunch." },

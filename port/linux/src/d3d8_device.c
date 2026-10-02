@@ -408,7 +408,7 @@ void WINAPI D3DDevice_BlockUntilVerticalBlank(void)
 
 /* ---------- render targets */
 
-static void surface_dimensions(const D3DSurface *surface, unsigned long *width, unsigned long *height, BOOL *depth)
+static DWORD surface_dimensions(const D3DSurface *surface, unsigned long *width, unsigned long *height, BOOL *depth)
 {
 	struct xgpu_texture_description description;
 	DWORD format;
@@ -419,6 +419,32 @@ static void surface_dimensions(const D3DSurface *surface, unsigned long *width, 
 	format = description.format;
 	*depth = format == D3DFMT_D24S8 || format == D3DFMT_F24S8 || format == D3DFMT_D16 || format == D3DFMT_F16 ||
 		format == D3DFMT_LIN_D24S8 || format == D3DFMT_LIN_F24S8 || format == D3DFMT_LIN_D16 || format == D3DFMT_LIN_F16;
+	return format;
+}
+
+/* the Xbox-sized offscreen targets drawn larger than the Xbox drew them:
+the 128x128 R5G6B5 shadow maps (and their blur) at display.shadow_map_size,
+and with display.effect_resolution the 320x240 active-camouflage source (and
+its depth) at the screen's scale. Their users address them in normalized or
+logical coordinates, so only the pixel count changes. */
+static void offscreen_target_scale(unsigned long width, unsigned long height, DWORD format, float scale[2])
+{
+	static long shadow_size = -1;
+	static int effect_resolution = -1;
+
+	if (shadow_size < 0)
+	{
+		shadow_size = config_integer("display.shadow_map_size");
+		shadow_size = shadow_size < 128 ? 128 : shadow_size > 2048 ? 2048 : shadow_size;
+		effect_resolution = config_boolean("display.effect_resolution");
+	}
+	if (width == 128 && height == 128 && (format == D3DFMT_R5G6B5 || format == D3DFMT_LIN_R5G6B5))
+		scale[0] = scale[1] = (float)shadow_size / 128.0f;
+	else if (width == 320 && height == 240 && effect_resolution)
+	{
+		scale[0] = screen_scale[1];
+		scale[1] = screen_scale[1];
+	}
 }
 
 static struct render_target_entry *render_target_get(const D3DSurface *surface)
@@ -426,18 +452,21 @@ static struct render_target_entry *render_target_get(const D3DSurface *surface)
 	struct render_target_entry *entry;
 	unsigned long width, height;
 	BOOL depth;
+	DWORD format;
 
 	if (!surface || !surface->Data)
 		return NULL;
 	float scale[2] = { 1.0f, 1.0f };
 
-	surface_dimensions(surface, &width, &height, &depth);
+	format = surface_dimensions(surface, &width, &height, &depth);
 	/* the screen's targets are drawn at the screen's scale */
 	if (width == (unsigned long)halo_screen_width() && height == SCREEN_HEIGHT)
 	{
 		scale[0] = screen_scale[0];
 		scale[1] = screen_scale[1];
 	}
+	else
+		offscreen_target_scale(width, height, format, scale);
 	for (entry = *render_target_bucket(surface->Data); entry; entry = entry->next_in_bucket)
 	{
 		if (entry->target.data == surface->Data && entry->target.width == width &&

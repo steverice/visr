@@ -66,6 +66,8 @@ DEFAULTS = {
     "display.renderer": '"gl"',
     "display.interpolation": "true",
     "display.anisotropic_filtering": "1",
+    "display.shadow_map_size": "128",
+    "display.effect_resolution": "false",
     "debug.null_renderer": "false",
     "debug.gl_debug": "false",
     "debug.fixed_timestep": "false",
