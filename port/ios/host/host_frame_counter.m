@@ -1,4 +1,5 @@
-/* debug.frame_counter: the frame number and the game time over the game, so a
+/* debug.frame_counter: the renderer ("Metal" or "GL"), the frame number and
+   the game time over the game, so a
 moment can be named ("frame 840") and found again. With debug.fixed_timestep
 a frame is the same moment in every run and under either renderer. A UIKit
 label over the game's view: the renderer never draws it, so screenshots and
@@ -10,11 +11,13 @@ game runs on. */
 
 static UILabel *label;
 static int fixed;
+static NSString *renderer;
 static struct timespec first;
 
-void host_frame_counter_start(int fixed_timestep) {
+void host_frame_counter_start(int fixed_timestep,int metal) {
     fixed=fixed_timestep;
-    host_logf(HOST_LOG_INFO,"frame counter on (%s time)",fixed?"game":"wall");
+    renderer=metal?@"Metal":@"GL";
+    host_logf(HOST_LOG_INFO,"frame counter on (%s, %s time)",renderer.UTF8String,fixed?"game":"wall");
 }
 
 static UILabel *make_label(void) {
@@ -37,7 +40,7 @@ static UILabel *make_label(void) {
     [root addSubview:made];
     [made.leadingAnchor constraintEqualToAnchor:root.safeAreaLayoutGuide.leadingAnchor constant:8].active=YES;
     [made.topAnchor constraintEqualToAnchor:root.safeAreaLayoutGuide.topAnchor constant:8].active=YES;
-    [made.widthAnchor constraintEqualToConstant:190].active=YES;
+    [made.widthAnchor constraintEqualToConstant:250].active=YES;
     [made.heightAnchor constraintEqualToConstant:26].active=YES;
     return made;
 }
@@ -56,7 +59,7 @@ void host_frame_counter_show(unsigned long frame) {
         /* game time as video timecode, minutes:seconds:frames (30 frames a
            second); wall time with hundredths */
         label.text=fixed?
-            [NSString stringWithFormat:@"%lu  %lu:%02lu:%02lu",frame,whole/60,whole%60,frame%30]:
-            [NSString stringWithFormat:@"%lu  %lu:%05.2f",frame,whole/60,seconds-60*(whole/60)];
+            [NSString stringWithFormat:@"%@  %lu  %lu:%02lu:%02lu",renderer,frame,whole/60,whole%60,frame%30]:
+            [NSString stringWithFormat:@"%@  %lu  %lu:%05.2f",renderer,frame,whole/60,seconds-60*(whole/60)];
     }
 }

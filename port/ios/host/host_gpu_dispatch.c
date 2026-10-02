@@ -37,7 +37,7 @@ void gpu_initialize(uint32_t flags, struct gpu_capabilities *capabilities)
 		counted = *backend;
 		counted.present = present_counted;
 		backend = &counted;
-		host_frame_counter_start((flags & GPU_INITIALIZE_FIXED_TIMESTEP) != 0);
+		host_frame_counter_start((flags & GPU_INITIALIZE_FIXED_TIMESTEP) != 0, (flags & GPU_INITIALIZE_METAL) != 0);
 	}
 	backend->initialize(flags, capabilities);
 }
