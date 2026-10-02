@@ -26,6 +26,11 @@ from pathlib import Path
 STATS = re.compile(r"frame \d+: (.*)$")
 # the GL call total at the end of a debug.gpu_stats summary
 GL_CALLS = re.compile(r",? \d+ GL calls$")
+# what a backend reports it can do (gpu_gl.c, gpu_metal.m), the same in every backend
+CAPABILITIES = re.compile(r"GPU capabilities: (.*)$")
+# a translated shader's source (.glsl or .metal) and the inputs it was translated from
+SHADER_SOURCES = ("*.glsl", "*.metal")
+SHADER_INPUTS = ("*.vsh", "*.key")
 
 
 def merge_config(text, settings):
@@ -58,6 +63,7 @@ DEFAULTS = {
     "display.screen_width": "0",
     "display.render_height": "0",
     "display.vsync": "true",
+    "display.renderer": '"gl"',
     "display.interpolation": "true",
     "debug.null_renderer": "false",
     "debug.gl_debug": "false",
@@ -117,27 +123,36 @@ def read_bmp(data):
     return width, height, data[offset:offset + width * height * 4]
 
 
-def bmp_difference(a, b):
-    """(pixels whose color differs, largest channel difference); alpha is ignored,
-    since write_screenshot forces it opaque"""
+def bmp_difference(a, b, channel_tolerance=0):
+    """(pixels whose color differs by more than channel_tolerance in some channel,
+    largest channel difference, (x, y) of the first pixel that difference is at, or
+    None); alpha is ignored, since write_screenshot forces it opaque"""
     width_a, height_a, pixels_a = read_bmp(a)
     width_b, height_b, pixels_b = read_bmp(b)
     if (width_a, height_a) != (width_b, height_b):
-        return max(width_a * height_a, width_b * height_b), 255
+        return max(width_a * height_a, width_b * height_b), 255, None
     if pixels_a == pixels_b:
-        return 0, 0
+        return 0, 0, None
     differing = largest = 0
+    where = None
     row = width_a * 4
     for start in range(0, len(pixels_a), row):
         line_a, line_b = pixels_a[start:start + row], pixels_b[start:start + row]
         if line_a == line_b:
             continue
         for pixel in range(0, row, 4):
-            deltas = [abs(line_a[pixel + channel] - line_b[pixel + channel]) for channel in range(3)]
-            if any(deltas):
+            delta = max(abs(line_a[pixel + channel] - line_b[pixel + channel]) for channel in range(3))
+            if delta > channel_tolerance:
                 differing += 1
-                largest = max(largest, *deltas)
-    return differing, largest
+            if delta > largest:
+                largest, where = delta, (pixel // 4, start // row)
+    return differing, largest, where
+
+
+def bmp_pixels(data):
+    """the pixel count of a BMP"""
+    width, height, _ = read_bmp(data)
+    return width * height
 
 
 def stats_lines(log):
@@ -149,37 +164,74 @@ def _files(folder, pattern):
     return {path.name: path for path in folder.glob(pattern)} if folder.is_dir() else {}
 
 
-def compare(a, b, tolerance, ignore_gl_calls=False):
-    """the differences between two result folders (empty: they match); a frame
-    matches when no more than tolerance pixels differ; with ignore_gl_calls the
-    gpu_stats lines are compared without their GL call totals"""
-    a, b = Path(a), Path(b)
-    problems = []
-    for folder in ("runner/shaders", "runner/replay/replay"):
-        files_a, files_b = _files(a / folder, "*.glsl"), _files(b / folder, "*.glsl")
-        for name in sorted(files_a.keys() ^ files_b.keys()):
-            problems.append(f"{folder}/{name} only in {a if name in files_a else b}")
+def _shader_files(folder, patterns):
+    files = {}
+    for pattern in patterns:
+        files.update(_files(folder, pattern))
+    return files
+
+
+def _compare_files(problems, folder, a, b, files_a, files_b, contents):
+    for name in sorted(files_a.keys() ^ files_b.keys()):
+        problems.append(f"{folder}/{name} only in {a if name in files_a else b}")
+    if contents:
         for name in sorted(files_a.keys() & files_b.keys()):
             if files_a[name].read_bytes() != files_b[name].read_bytes():
                 problems.append(f"{folder}/{name} differs")
+
+
+def capability_lines(log):
+    """the GPU capability lines in a log"""
+    return [match.group(1) for match in map(CAPABILITIES.search, log.splitlines()) if match]
+
+
+def compare(a, b, tolerance=0, ignore_gl_calls=False, channel_tolerance=0, fraction=0.0, across_backends=False):
+    """the differences between two result folders (empty: they match). A pixel
+    differs when a channel differs by more than channel_tolerance, and a frame
+    matches when no more than tolerance pixels, or fraction of its pixels,
+    differ. With ignore_gl_calls the gpu_stats lines are compared without their
+    GL call totals. across_backends compares a GL run with a Metal run: the
+    shaders' inputs (.vsh, .key) must be the same files and their sources the
+    same names, whatever their language; GL calls are ignored; and the two
+    backends must report the same capabilities."""
+    a, b = Path(a), Path(b)
+    problems = []
+    for folder in ("runner/shaders", "runner/replay/replay"):
+        if across_backends:
+            stems_a = {Path(name).stem: path for name, path in _shader_files(a / folder, SHADER_SOURCES).items()}
+            stems_b = {Path(name).stem: path for name, path in _shader_files(b / folder, SHADER_SOURCES).items()}
+            _compare_files(problems, folder, a, b, stems_a, stems_b, contents=False)
+            _compare_files(problems, folder, a, b, _shader_files(a / folder, SHADER_INPUTS),
+                           _shader_files(b / folder, SHADER_INPUTS), contents=True)
+        else:
+            _compare_files(problems, folder, a, b, _shader_files(a / folder, SHADER_SOURCES),
+                           _shader_files(b / folder, SHADER_SOURCES), contents=True)
     shots_a, shots_b = _files(a / "runner/shots", "*.bmp"), _files(b / "runner/shots", "*.bmp")
     for name in sorted(shots_a.keys() ^ shots_b.keys()):
         problems.append(f"{name} only in {a if name in shots_a else b}")
     for name in sorted(shots_a.keys() & shots_b.keys()):
         try:
-            differing, largest = bmp_difference(shots_a[name].read_bytes(), shots_b[name].read_bytes())
+            data_a = shots_a[name].read_bytes()
+            differing, largest, where = bmp_difference(data_a, shots_b[name].read_bytes(), channel_tolerance)
+            allowed = max(tolerance, int(fraction * bmp_pixels(data_a)))
         except ValueError as error:
             problems.append(f"{name}: unreadable ({error})")
             continue
-        if differing > tolerance:
-            problems.append(f"{name}: {differing} pixels differ, by up to {largest}")
+        if differing > allowed:
+            at = f" at {where[0]},{where[1]}" if where else ""
+            problems.append(f"{name}: {differing} pixels differ, by up to {largest}{at}")
     logs = [folder / "stderr.log" for folder in (a, b)]
     missing = [str(log) for log in logs if not log.is_file()]
     if missing:
         problems += [f"{log} missing" for log in missing]
     else:
-        stats_a, stats_b = (stats_lines(log.read_text(errors="replace")) for log in logs)
-        if ignore_gl_calls:
+        texts = [log.read_text(errors="replace") for log in logs]
+        stats_a, stats_b = (stats_lines(text) for text in texts)
+        if across_backends:
+            capabilities_a, capabilities_b = (capability_lines(text) for text in texts)
+            if not capabilities_a or capabilities_a != capabilities_b:
+                problems.append(f"capabilities differ:\n  {a}: {capabilities_a}\n  {b}: {capabilities_b}")
+        if ignore_gl_calls or across_backends:
             stats_a, stats_b = ([GL_CALLS.sub("", line) for line in lines] for lines in (stats_a, stats_b))
         if stats_a != stats_b:
             problems.append(f"gpu_stats differ:\n  {a}: {stats_a}\n  {b}: {stats_b}")
@@ -224,7 +276,39 @@ schemes:
     run:
       config: Debug
       debugEnabled: false
-"""
+{environment}"""
+
+# Metal's API validation (gpu_metal.m), reported to the logs rather than
+# stopping the app, so a run still reaches its screenshots
+METAL_VALIDATION = {
+    "MTL_DEBUG_LAYER": "1",
+    "MTL_DEBUG_LAYER_ERROR_MODE": "nslog",
+    "MTL_DEBUG_LAYER_WARNING_MODE": "nslog",
+}
+# shader validation on top: it checks every memory access the shaders make,
+# which slows a10 past the run's time limit, and it reports the game's own
+# NaN texture coordinates, which GL passes on silently
+METAL_SHADER_VALIDATION = {
+    "MTL_SHADER_VALIDATION": "1",
+    "MTL_SHADER_VALIDATION_REPORT_TO_STDERR": "1",
+}
+
+
+def validation_environment(metal_validation, metal_shader_validation):
+    """the scheme's environment for the validation a run asks for"""
+    environment = {}
+    if metal_validation or metal_shader_validation:
+        environment.update(METAL_VALIDATION)
+    if metal_shader_validation:
+        environment.update(METAL_SHADER_VALIDATION)
+    return environment
+
+
+def scheme_environment(variables):
+    """the run scheme's environmentVariables block for PROJECT ("" for none)"""
+    if not variables:
+        return ""
+    return "      environmentVariables:\n" + "".join(f'        {name}: "{value}"\n' for name, value in variables.items())
 
 # open -a returns before a cold Xcode has the project open, and a freshly
 # loaded project lists its run destinations a little later still
@@ -317,7 +401,9 @@ def build_wrapper(args):
     RUNNER.mkdir(parents=True, exist_ok=True)
     (RUNNER / "stub.c").write_text("int main(void) { return 0; }\n")
     (RUNNER / "project.yml").write_text(PROJECT.format(
-        target=TARGET, team=args.team, bundle_id=args.bundle_id, app=args.app.resolve()))
+        target=TARGET, team=args.team, bundle_id=args.bundle_id, app=args.app.resolve(),
+        environment=scheme_environment(validation_environment(getattr(args, "metal_validation", False),
+                                                             getattr(args, "metal_shader_validation", False)))))
     run_command("xcodegen", "generate", "--spec", RUNNER / "project.yml", "--project", RUNNER, "--quiet")
     run_command("xcodebuild", "-project", RUNNER / f"{TARGET}.xcodeproj", "-scheme", TARGET,
                 "-destination", DESTINATION, "-allowProvisioningUpdates", "build",
@@ -397,12 +483,13 @@ def run(args):
     documents = container_documents(args)
     prepare(args, documents)
     launch(documents)
-    finished = wait_for(lambda: not running(), args.exit_after + 120)
+    limit = args.time_limit or args.exit_after + 120
+    finished = wait_for(lambda: not running(), limit)
     if not finished:
         subprocess.run(["pkill", "-x", TARGET])
     collect(documents, args.out)
     if not finished:
-        sys.exit(f"{TARGET} was still running {args.exit_after + 120} seconds after launch and was killed; "
+        sys.exit(f"{TARGET} was still running {limit} seconds after launch and was killed; "
                  f"logs are in {args.out}")
     print(f"results: {args.out}")
 
@@ -418,6 +505,9 @@ def main():
     run_parser.add_argument("--out", type=Path, required=True, help="folder to copy the results to")
     run_parser.add_argument("--xiso", type=Path, help="the player's XISO, imported on the first run")
     run_parser.add_argument("--exit-after", type=float, default=60.0, help="seconds before the game quits")
+    run_parser.add_argument("--time-limit", type=float, default=0.0,
+                            help="seconds after launch before the run is killed (default --exit-after + 120); "
+                                 "with debug.fixed_timestep --exit-after counts frames, which validation slows")
     run_parser.add_argument("--set", action="append", default=[], metavar="SECTION.KEY=VALUE",
                             help="a config.toml setting, value in TOML syntax (repeatable)")
     run_parser.add_argument("--init", action="append", default=[], metavar="COMMAND",
@@ -425,17 +515,28 @@ def main():
     run_parser.add_argument("--screenshot-every", type=int, default=0, metavar="FRAMES")
     run_parser.add_argument("--dump-shaders", action="store_true")
     run_parser.add_argument("--replay", type=Path, help="a folder of recorded .vsh/.key shader inputs")
+    run_parser.add_argument("--metal-validation", action="store_true",
+                            help="turn on Metal's API validation (for display.renderer=\"metal\" runs)")
+    run_parser.add_argument("--metal-shader-validation", action="store_true",
+                            help="turn on Metal's shader validation too (slow: a10 needs a longer --time-limit)")
     compare_parser = commands.add_parser("compare", help="compare two result folders")
     compare_parser.add_argument("a", type=Path)
     compare_parser.add_argument("b", type=Path)
     compare_parser.add_argument("--tolerance", type=int, default=0, help="pixels a frame may differ by")
+    compare_parser.add_argument("--channel-tolerance", type=int, default=0, metavar="LEVELS",
+                                help="channel difference a pixel may have and still match (0-255)")
+    compare_parser.add_argument("--fraction", type=float, default=0.0,
+                                help="fraction of a frame's pixels that may differ (overrides a smaller --tolerance)")
     compare_parser.add_argument("--ignore-gl-calls", action="store_true",
                                 help="compare gpu_stats without the GL call totals")
+    compare_parser.add_argument("--across-backends", action="store_true",
+                                help="a GL run against a Metal run: shader inputs, not sources; capabilities; no GL calls")
     args = parser.parse_args()
     if args.command == "run":
         run(args)
     else:
-        problems = compare(args.a, args.b, args.tolerance, args.ignore_gl_calls)
+        problems = compare(args.a, args.b, args.tolerance, args.ignore_gl_calls, args.channel_tolerance,
+                           args.fraction, args.across_backends)
         print("\n".join(problems) if problems else "match")
         sys.exit(1 if problems else 0)
 

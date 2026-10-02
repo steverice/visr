@@ -99,19 +99,19 @@ def test_read_bmp_returns_dimensions_and_pixels():
 
 def test_bmp_difference_identical_is_zero():
     image = _bmp(2, 1, b"\x01\x02\x03\xff\x04\x05\x06\xff")
-    assert mac_run.bmp_difference(image, image) == (0, 0)
+    assert mac_run.bmp_difference(image, image) == (0, 0, None)
 
 
 def test_bmp_difference_counts_pixels_and_largest_delta_ignoring_alpha():
     a = _bmp(2, 1, b"\x10\x10\x10\xff\x20\x20\x20\xff")
     b = _bmp(2, 1, b"\x10\x10\x10\x00\x20\x2a\x20\xff")
-    assert mac_run.bmp_difference(a, b) == (1, 10)
+    assert mac_run.bmp_difference(a, b) == (1, 10, (1, 0))
 
 
 def test_bmp_difference_different_sizes_counts_every_pixel():
     a = _bmp(2, 1, bytes(8))
     b = _bmp(1, 1, bytes(4))
-    assert mac_run.bmp_difference(a, b) == (2, 255)
+    assert mac_run.bmp_difference(a, b) == (2, 255, None)
 
 
 def test_stats_lines_strip_prefix_and_frame_number():
@@ -266,3 +266,77 @@ def test_compare_can_ignore_only_the_gl_call_total(tmp_path):
     assert any("gpu_stats" in p for p in mac_run.compare(a, b, tolerance=0))
     assert mac_run.compare(a, b, tolerance=0, ignore_gl_calls=True) == []
     assert any("gpu_stats" in p for p in mac_run.compare(a, c, tolerance=0, ignore_gl_calls=True))
+
+
+def test_bmp_difference_ignores_pixels_within_the_channel_tolerance():
+    a = _bmp(3, 1, b"\x10\x10\x10\xff\x20\x20\x20\xff\x30\x30\x30\xff")
+    b = _bmp(3, 1, b"\x12\x10\x10\xff\x20\x23\x20\xff\x30\x30\x30\xff")
+    assert mac_run.bmp_difference(a, b, channel_tolerance=2) == (1, 3, (1, 0))
+
+
+def test_compare_allows_a_fraction_of_pixels_beyond_the_channel_tolerance(tmp_path):
+    """the GL-against-Metal threshold: within 2 levels, except a few pixels"""
+    base = bytes([0x40, 0x40, 0x40, 0xff]) * 1000
+    near = bytearray(base)
+    near[0] = 0x42                      # within 2 levels: not a differing pixel
+    far = bytearray(near)
+    far[4] = 0x60                       # one pixel off by 32
+    a = _result(tmp_path / "a", {}, {"frame00300.bmp": _bmp(1000, 1, base)}, "")
+    b = _result(tmp_path / "b", {}, {"frame00300.bmp": _bmp(1000, 1, bytes(near))}, "")
+    c = _result(tmp_path / "c", {}, {"frame00300.bmp": _bmp(1000, 1, bytes(far))}, "")
+    assert mac_run.compare(a, b, channel_tolerance=2) == []
+    problems = mac_run.compare(a, c, channel_tolerance=2)
+    assert any("frame00300.bmp: 1 pixels differ, by up to 32 at 1,0" in p for p in problems)
+    assert mac_run.compare(a, c, channel_tolerance=2, fraction=0.001) == []
+
+
+def test_compare_across_backends_checks_shader_inputs_and_names_not_sources(tmp_path):
+    log = "halo-linux: GPU capabilities: copy image 0, anisotropy 1\nframe 60: 5 draws, 7 GL calls\n"
+    gl = _result(tmp_path / "gl", {"vs001_0.glsl": "#version 300 es", "vs001_0.vsh": "v", "ps_1.glsl": "g",
+                                   "ps_1.key": "k"}, {}, log)
+    metal = _result(tmp_path / "metal", {"vs001_0.metal": "#include <metal_stdlib>", "vs001_0.vsh": "v",
+                                         "ps_1.metal": "m", "ps_1.key": "k"}, {},
+                    log.replace("7 GL calls", "0 GL calls"))
+    assert mac_run.compare(gl, metal, across_backends=True) == []
+    (metal / "runner/shaders/ps_1.key").write_text("other")
+    (metal / "runner/shaders/ps_1.metal").rename(metal / "runner/shaders/ps_2.metal")
+    problems = mac_run.compare(gl, metal, across_backends=True)
+    assert any("ps_1.key differs" in p for p in problems)
+    assert any("ps_1 only in" in p for p in problems)
+    assert any("ps_2 only in" in p for p in problems)
+
+
+def test_compare_across_backends_requires_matching_capabilities(tmp_path):
+    gl = _result(tmp_path / "gl", {}, {}, "GPU capabilities: copy image 0, anisotropy 1\n")
+    metal = _result(tmp_path / "metal", {}, {}, "GPU capabilities: copy image 0, anisotropy 0\n")
+    silent = _result(tmp_path / "silent", {}, {}, "")
+    assert any("capabilities differ" in p for p in mac_run.compare(gl, metal, across_backends=True))
+    assert any("capabilities differ" in p for p in mac_run.compare(silent, silent, across_backends=True))
+
+
+def test_compare_same_backend_compares_metal_sources_too(tmp_path):
+    a = _result(tmp_path / "a", {"ps_1.metal": "x"}, {}, "")
+    b = _result(tmp_path / "b", {"ps_1.metal": "y"}, {}, "")
+    assert any("ps_1.metal differs" in p for p in mac_run.compare(a, b))
+
+
+def test_reset_settings_return_to_the_gl_renderer(tmp_path):
+    settings = mac_run.reset_settings(tmp_path, screenshot_every=0, dump_shaders=False, replay=False)
+    assert settings["display.renderer"] == '"gl"'
+
+
+def test_project_turns_on_metal_validation_only_when_asked():
+    plain = mac_run.PROJECT.format(target="T", team="X", bundle_id="b", app="/a", environment=mac_run.scheme_environment({}))
+    validated = mac_run.PROJECT.format(target="T", team="X", bundle_id="b", app="/a",
+                                       environment=mac_run.scheme_environment(mac_run.METAL_VALIDATION))
+    assert "environmentVariables" not in plain
+    assert '        MTL_DEBUG_LAYER: "1"\n' in validated
+    assert validated.index("debugEnabled: false") < validated.index("environmentVariables")
+
+
+def test_shader_validation_is_its_own_flag():
+    api = mac_run.validation_environment(metal_validation=True, metal_shader_validation=False)
+    shader = mac_run.validation_environment(metal_validation=False, metal_shader_validation=True)
+    assert api["MTL_DEBUG_LAYER"] == "1" and "MTL_SHADER_VALIDATION" not in api
+    assert shader["MTL_SHADER_VALIDATION"] == "1" and shader["MTL_DEBUG_LAYER"] == "1"
+    assert mac_run.validation_environment(metal_validation=False, metal_shader_validation=False) == {}
