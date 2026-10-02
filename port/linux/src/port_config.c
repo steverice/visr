@@ -169,6 +169,15 @@ static const struct config_setting config_settings[] =
 		"The Discord application internet play invites go through while the\n"
 		"Discord desktop client runs; empty for none." },
 
+	{ "debug.input_record", _config_string, "\"\"", "HALO_INPUT_RECORD", _environment_value, _platform_all,
+		"Record controller 1 while a map plays, to <name>.input in the data folder\n"
+		"(port/linux/src/input_replay.c); empty records nothing." },
+	{ "debug.input_replay", _config_string, "\"\"", "HALO_INPUT_REPLAY", _environment_value, _platform_all,
+		"Replay a recording made with debug.input_record in place of controller 1,\n"
+		"at the same moments of the game time." },
+	{ "debug.benchmark", _config_boolean, "false", "HALO_BENCHMARK", _environment_value, _platform_all,
+		"With debug.input_replay: time every frame of the replay, write\n"
+		"benchmark-<name>-<time>.txt and quit when the replay ends." },
 	{ "debug.exit_after", _config_real, "0.0", "HALO_EXIT_AFTER", _environment_value, _platform_all,
 		"Quit this many seconds after the window opens; 0 never." },
 	{ "debug.fixed_timestep", _config_boolean, "false", "HALO_FIXED_TIMESTEP", _environment_set_is_true, _platform_all,

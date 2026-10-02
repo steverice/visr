@@ -48,6 +48,8 @@ drive the controller.
 
 /* main/console.c */
 extern unsigned char console_is_active(void);
+/* input_replay.c */
+void input_replay_filter(XINPUT_GAMEPAD *pad);
 
 /* ---------- device tables */
 
@@ -449,6 +451,7 @@ DWORD WINAPI XInputGetState(HANDLE device, PXINPUT_STATE state)
 			keyboard_gamepad(&input, &state->Gamepad);
 		if (count > 0)
 			sdl_gamepad_state(gamepads[0], &state->Gamepad);
+		input_replay_filter(&state->Gamepad);
 	}
 	else if (port < count)
 	{

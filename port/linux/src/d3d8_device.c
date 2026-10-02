@@ -41,6 +41,8 @@ void d3d8_surface_initialize(D3DSurface *surface, D3DFORMAT format, unsigned lon
 void d3d8_surface_resize(D3DSurface *surface, D3DFORMAT format, unsigned long width, unsigned long height);
 /* port/linux/game/render_interpolation.c */
 void render_interpolation_next_frame_due(unsigned long microseconds);
+/* input_replay.c */
+void input_replay_frame(long width, long height);
 
 struct gpu_capabilities device_capabilities;
 
@@ -2994,6 +2996,7 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 		xgpu_texture_cache_begin_frame();
 	}
 	device.frame++;
+	input_replay_frame(lroundf(screen_width * screen_scale[0]), lroundf(SCREEN_HEIGHT * screen_scale[1]));
 	/* debug.fixed_timestep: a frame ends once the workers are idle */
 	platform_quiescence_wait();
 	platform_clock_frame();
