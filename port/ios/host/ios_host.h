@@ -22,6 +22,13 @@ void host_ios_touch_reset(void);
 /* debug.frame_counter (host_frame_counter.m): a label in the window's corner
 showing the renderer, the frame number and the game time, 1/30 s a frame with
 fixed_timestep, else the time since the first frame */
+/* the app in the background (host_lifecycle.m): the game's audio pauses and
+the game holds at its next Present until the app is back, since iOS ends an
+app that submits GPU work in the background and a closed visionOS window only
+backgrounds the app */
+void host_lifecycle_install(void);
+void host_lifecycle_hold(void);
+void host_sdl_audio_pause(int paused);
 void host_frame_counter_start(int fixed_timestep, int metal);
 void host_frame_counter_show(unsigned long frame);
 int host_ios_gamepads(uint32_t *out, int capacity);

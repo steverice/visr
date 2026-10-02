@@ -329,6 +329,24 @@ static void SDLCALL audio_callback(void *userdata, SDL_AudioStream *stream, int 
 	pthread_mutex_unlock(&binding->lock);
 }
 
+/* the open audio streams, which host_sdl_audio_pause stops while the app is
+in the background (host_lifecycle.m) */
+static SDL_AudioStream *audio_streams[4];
+
+void host_sdl_audio_pause(int paused)
+{
+	size_t index;
+
+	for (index = 0; index < SDL_arraysize(audio_streams); index++)
+		if (audio_streams[index])
+		{
+			if (paused)
+				SDL_PauseAudioStreamDevice(audio_streams[index]);
+			else
+				SDL_ResumeAudioStreamDevice(audio_streams[index]);
+		}
+}
+
 uint32_t host_sdl_open_audio_stream(uint32_t device, const void *spec, uint32_t callback, uint32_t userdata)
 {
 	struct audio_binding *binding = SDL_calloc(1, sizeof(*binding));
@@ -354,6 +372,16 @@ uint32_t host_sdl_open_audio_stream(uint32_t device, const void *spec, uint32_t 
 	}
 	/* the device starts paused, so no callback can run before this */
 	binding->handle = handle_new(_handle_audio, stream);
+	{
+		size_t index;
+
+		for (index = 0; index < SDL_arraysize(audio_streams); index++)
+			if (!audio_streams[index])
+			{
+				audio_streams[index] = stream;
+				break;
+			}
+	}
 	if (callback && host_native_thread_create(audio_thread, binding, 256 * 1024) != 0)
 		host_fatal("cannot start the audio thread");
 	return binding->handle;

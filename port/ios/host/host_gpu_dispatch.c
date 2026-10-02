@@ -15,30 +15,34 @@ extern const struct gpu_backend gpu_backend_gl, gpu_backend_metal;
 /* nothing calls gpu.h before gpu_initialize (d3d8_device.c's gl_initialize) */
 static const struct gpu_backend *backend = &gpu_backend_gl;
 
-/* debug.frame_counter: the chosen backend's table with a gpu_present that
-also counts the frame, so the count is the front end's frame number (one
+/* the chosen backend's table with a gpu_present that first holds while the
+app is in the background (host_lifecycle.m) and, with debug.frame_counter,
+then counts the frame, so the count is the front end's frame number (one
 Present each) under either backend */
-static struct gpu_backend counted;
-static const struct gpu_backend *counted_backend;
+static struct gpu_backend wrapped;
+static const struct gpu_backend *wrapped_backend;
+static int frame_counter;
 static unsigned long presented;
 
-static void present_counted(gpu_texture back_buffer)
+static void present_wrapped(gpu_texture back_buffer)
 {
-	counted_backend->present(back_buffer);
-	host_frame_counter_show(presented++);
+	host_lifecycle_hold();
+	wrapped_backend->present(back_buffer);
+	if (frame_counter)
+		host_frame_counter_show(presented++);
 }
 
 void gpu_initialize(uint32_t flags, struct gpu_capabilities *capabilities)
 {
 	backend = (flags & GPU_INITIALIZE_METAL) ? &gpu_backend_metal : &gpu_backend_gl;
-	if (flags & GPU_INITIALIZE_FRAME_COUNTER)
-	{
-		counted_backend = backend;
-		counted = *backend;
-		counted.present = present_counted;
-		backend = &counted;
+	wrapped_backend = backend;
+	wrapped = *backend;
+	wrapped.present = present_wrapped;
+	backend = &wrapped;
+	frame_counter = (flags & GPU_INITIALIZE_FRAME_COUNTER) != 0;
+	if (frame_counter)
 		host_frame_counter_start((flags & GPU_INITIALIZE_FIXED_TIMESTEP) != 0, (flags & GPU_INITIALIZE_METAL) != 0);
-	}
+	host_lifecycle_install();
 	backend->initialize(flags, capabilities);
 }
 

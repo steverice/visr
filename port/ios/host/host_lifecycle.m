@@ -1,0 +1,38 @@
+/* The app in the background: iOS ends an app that submits GPU work there, and
+on visionOS closing the window only backgrounds the app, with the game still
+playing. So while the scene is in the background the game's audio is paused
+and the game holds at its next Present (host_gpu_dispatch.c), pumping the run
+loop until the scene returns; the game resumes where it was. Not on a Mac. */
+#import <UIKit/UIKit.h>
+#include "ios_host.h"
+#include <stdatomic.h>
+
+static _Atomic int backgrounded;
+
+void host_lifecycle_install(void) {
+    /* an iPad app on a Mac (tools/mac_run.py) may draw in the background, and
+       a test run must not stop because its window went behind another */
+    if(NSProcessInfo.processInfo.isiOSAppOnMac)return;
+    [NSNotificationCenter.defaultCenter addObserverForName:UISceneDidEnterBackgroundNotification object:nil
+        queue:nil usingBlock:^(NSNotification *notification){
+            (void)notification;
+            atomic_store(&backgrounded,1);
+            host_sdl_audio_pause(1);
+            host_logf(HOST_LOG_INFO,"in the background: audio paused, the game holds at its next frame");
+        }];
+    [NSNotificationCenter.defaultCenter addObserverForName:UISceneWillEnterForegroundNotification object:nil
+        queue:nil usingBlock:^(NSNotification *notification){
+            (void)notification;
+            atomic_store(&backgrounded,0);
+            host_sdl_audio_pause(0);
+            host_logf(HOST_LOG_INFO,"in the foreground: the game resumes");
+        }];
+}
+
+void host_lifecycle_hold(void) {
+    while(atomic_load(&backgrounded)) {
+        @autoreleasepool {
+            CFRunLoopRunInMode(kCFRunLoopDefaultMode,0.1,true);
+        }
+    }
+}
