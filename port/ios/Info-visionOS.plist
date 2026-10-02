@@ -15,7 +15,7 @@
 	<key>CFBundleShortVersionString</key>
 	<string>0.1.2</string>
 	<key>CFBundleVersion</key>
-	<string>6</string>
+	<string>$(HALO_BUILD_NUMBER)</string>
 	<key>HaloRenderHeight</key>
 	<string>$(HALO_RENDER_HEIGHT)</string>
 	<key>GCSupportedGameControllers</key>

@@ -100,6 +100,10 @@ def main():
              f'-DHALO_BUNDLE_IDENTIFIER={args.bundle_id}', f'-DHALO_DEVELOPMENT_TEAM={args.team or ""}',
              f'-DHALO_RENDER_HEIGHT={args.render_height}',
              f'-DHALO_EXTENDED_VIRTUAL_ADDRESSING={"ON" if args.extended_virtual_addressing else "OFF"}']
+    if args.visionos:
+        # a new CFBundleVersion each build, so an install over the app replaces it
+        import time
+        command.append(f'-DHALO_BUILD_NUMBER={time.strftime("%Y%m%d.%H%M%S")}')
     run(*command)
     command=['cmake','--build',build,'--config','Release','--target','HaloCE','--','-quiet']
     if args.simulator or args.unsigned:command.append('CODE_SIGNING_ALLOWED=NO')
