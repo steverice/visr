@@ -131,6 +131,8 @@ static id<MTLCommandQueue> queue;
 static CAMetalLayer *layer;
 static MetalTable *textures, *buffers, *shaders;
 static int metal_debug;
+/* debug.fixed_timestep: visibility answers wait for the GPU (visibility_result) */
+static BOOL visibility_wait;
 
 /* the open command buffer and render pass */
 static id<MTLCommandBuffer> commands;
@@ -1596,10 +1598,14 @@ static void gpu_metal_visibility_end(uint32_t slot)
 	}
 }
 
-/* whether any sample passed (GPU_OCCLUSION_ANY_SAMPLE). A result the GPU
-hasn't written yet is waited for, committing the open command buffer if it
-writes it: the game asks again until it has an answer (lens flares), so an
-answer now keeps runs repeatable, as a wait under GL does */
+/* whether any sample passed (GPU_OCCLUSION_ANY_SAMPLE). With the fixed
+timestep, a result the GPU hasn't written yet is waited for, committing the
+open command buffer if it writes it: the game asks again until it has an
+answer (lens flares), so an answer now keeps runs repeatable, as a wait under
+GL does. In real time that wait makes the CPU and the GPU take turns every
+frame, so the answer is the latest the GPU has written for the slot: this
+test's, or while the GPU is behind, an earlier one's (a flare fades a frame
+late), as desktop GL's persistent results do (gpu_gl.c) */
 static uint32_t gpu_metal_visibility_result(uint32_t slot, uint32_t *samples)
 {
 	@autoreleasepool
@@ -1607,6 +1613,11 @@ static uint32_t gpu_metal_visibility_result(uint32_t slot, uint32_t *samples)
 		*samples = 0;
 		if (!visibility.slots[slot].count)
 			return 1;
+		if (!visibility_wait)
+		{
+			*samples = (uint32_t)(atomic_load(&visibility_answers[slot]) & 1);
+			return 1;
+		}
 		if (visibility.slots[slot].serial == current_serial)
 			commit(NO);
 		/* wait for the answer itself: waitUntilCompleted can return before
@@ -1933,6 +1944,7 @@ static void gpu_metal_initialize(uint32_t flags, struct gpu_capabilities *capabi
 
 		memset(capabilities, 0, sizeof(*capabilities));
 		metal_debug = (flags & GPU_INITIALIZE_DEBUG) != 0;
+		visibility_wait = (flags & GPU_INITIALIZE_FIXED_TIMESTEP) != 0;
 		pacing_start(flags);
 		layer = (__bridge CAMetalLayer *)host_sdl_metal_layer();
 		device = MTLCreateSystemDefaultDevice();
