@@ -11,6 +11,8 @@ struct SDL_Window;
 struct SDL_Gamepad;
 /* the guest's window (host_sdl.c), for the GPU backend's present (gpu_gl.c) */
 struct SDL_Window *host_sdl_window(void);
+/* the CAMetalLayer of a Metal window's view (host_sdl.c), or NULL */
+void *host_sdl_metal_layer(void);
 void host_ios_touch_initialize(void);
 void host_ios_prepare_assets(const char *documents);
 /* tvOS: receive the player's XISO over the local network into <documents>/maps. */

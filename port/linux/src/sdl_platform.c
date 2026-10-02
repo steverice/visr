@@ -110,6 +110,25 @@ BOOL platform_screen_mode(long *width, long *height)
 }
 
 #endif
+BOOL platform_renderer_metal(void)
+{
+#ifdef HALO_IOS
+	static int metal = -1;
+
+	if (metal < 0)
+	{
+		const char *renderer = config_string("display.renderer");
+
+		metal = !strcmp(renderer, "metal");
+		if (!metal && strcmp(renderer, "gl"))
+			platform_log("display.renderer \"%s\" is neither \"gl\" nor \"metal\"; using \"gl\"", renderer);
+	}
+	return metal ? TRUE : FALSE;
+#else
+	return FALSE;
+#endif
+}
+
 BOOL platform_video_initialize(unsigned long width, unsigned long height)
 {
 	int scale = (int)config_integer("display.window_scale");
@@ -123,6 +142,21 @@ BOOL platform_video_initialize(unsigned long width, unsigned long height)
 		scale = 1;
 
 #ifdef HALO_ILP32
+	if (platform_renderer_metal())
+	{
+		/* the host makes the window's Metal view and attaches the touch
+		controls to it (port/ios/host/host_sdl.c); the Metal backend draws
+		into the view's layer, so there is no context and no swap here */
+		platform_window = SDL_CreateWindow("Halo", (int)(width * scale), (int)(height * scale),
+			SDL_WINDOW_METAL | SDL_WINDOW_FULLSCREEN | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+		if (!platform_window)
+		{
+			platform_log("SDL_CreateWindow failed: %s", SDL_GetError());
+			return FALSE;
+		}
+		platform_event_thread = SDL_GetCurrentThreadID();
+		return TRUE;
+	}
 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);

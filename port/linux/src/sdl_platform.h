@@ -33,7 +33,11 @@ struct platform_keystroke
 };
 
 BOOL platform_sdl_initialize(void);
-/* creates the window and makes its OpenGL context current on this thread */
+/* display.renderer is "metal" (iOS and tvOS; elsewhere always FALSE): the
+window is a Metal window, and gpu_initialize gets GPU_INITIALIZE_METAL */
+BOOL platform_renderer_metal(void);
+/* creates the window and, unless platform_renderer_metal, makes its OpenGL
+context current on this thread */
 BOOL platform_video_initialize(unsigned long width, unsigned long height);
 #ifndef HALO_ILP32
 BOOL platform_screen_mode(long *width, long *height);

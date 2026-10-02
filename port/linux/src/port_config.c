@@ -85,6 +85,9 @@ static const struct config_setting config_settings[] =
 		"Internal rendering height in physical pixels: 0 (default) uses native\n"
 		"display resolution. Try 1080, 720 or 480 for lower GPU/battery use.\n"
 		"The selected aspect ratio is preserved; changes apply on relaunch." },
+	{ "display.renderer", _config_string, "\"gl\"", "HALO_RENDERER", _environment_value, _platform_ios,
+		"What draws the game: \"gl\" (default) OpenGL ES, or \"metal\" Metal.\n"
+		"Changes apply on relaunch." },
 	{ "display.vsync", _config_boolean, "true", "HALO_NO_VSYNC", _environment_set_is_false, _platform_all,
 		"Wait for the display between frames; false draws as fast as possible." },
 	{ "display.interpolation", _config_boolean, "true", "HALO_INTERPOLATION", _environment_value, _platform_all,

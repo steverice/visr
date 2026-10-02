@@ -111,9 +111,31 @@ int64_t host_sdl_thread_id(void)
 
 /* ---------- video */
 
+/* the Metal window's view (display.renderer = "metal"), whose layer the Metal
+backend draws into (gpu_metal.m) */
+static SDL_MetalView metal_view;
+
 uint32_t host_sdl_create_window(const char *title, int width, int height, int64_t flags)
 {
-	return handle_new(_handle_window, SDL_CreateWindow(title, width, height, (SDL_WindowFlags)flags));
+	SDL_Window *window = SDL_CreateWindow(title, width, height, (SDL_WindowFlags)flags);
+
+	/* a GL window gets its view, and then its touch controls, from
+	host_sdl_gl_create_context. A Metal window has no context, so both
+	happen here, in the same order: SDL_Metal_CreateView replaces the
+	window's root view, which would drop controls attached before it */
+	if (window && (flags & SDL_WINDOW_METAL))
+	{
+		metal_view = SDL_Metal_CreateView(window);
+		if (!metal_view)
+			host_logf(HOST_LOG_ERROR, "SDL_Metal_CreateView failed: %s", SDL_GetError());
+		host_ios_touch_attach(window);
+	}
+	return handle_new(_handle_window, window);
+}
+
+void *host_sdl_metal_layer(void)
+{
+	return metal_view ? SDL_Metal_GetLayer(metal_view) : NULL;
 }
 
 void host_sdl_window_size_in_pixels(uint32_t window, int *width, int *height)

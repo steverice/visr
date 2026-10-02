@@ -35,7 +35,7 @@ endif()
 add_executable(HaloCE MACOSX_BUNDLE
     ${HALO_PLATFORM_SOURCES} "${ROOT}/port/runtime/xiso.c"
     host/host_main.m host/host_memory.c host/host_loader.c host/host_syscall.c host/guest_call.S
-    host/host_thread.c host/host_sdl.c host/host_gpu.c host/host_gpu_dispatch.c
+    host/host_thread.c host/host_sdl.c host/host_gpu.c host/host_gpu_dispatch.c host/gpu_metal.m
     "${ROOT}/port/linux/src/gpu_gl.c" "${ROOT}/port/linux/src/gl_functions.c"
     "${ROOT}/port/linux/src/posix_files.c" host/posix_net.c
     "${ROOT}/build/ios/host/bridges.c" "${ROOT}/build/ios/embedded/guest_image.S")
@@ -48,7 +48,8 @@ target_compile_options(HaloCE PRIVATE -Wno-deprecated-declarations)
 set_source_files_properties("${ROOT}/port/linux/src/gpu_gl.c" "${ROOT}/port/linux/src/gl_functions.c"
     PROPERTIES COMPILE_DEFINITIONS GPU_GL_HOST=1)
 target_compile_options(HaloCE PRIVATE "$<$<COMPILE_LANGUAGE:OBJC>:-fobjc-arc>")
-target_link_libraries(HaloCE PRIVATE SDL3::SDL3-static "-framework Foundation" "-framework UIKit" "-framework OpenGLES")
+target_link_libraries(HaloCE PRIVATE SDL3::SDL3-static "-framework Foundation" "-framework UIKit" "-framework OpenGLES"
+    "-framework Metal" "-framework QuartzCore")
 if(HALO_TVOS)
     target_link_libraries(HaloCE PRIVATE "-framework Network" "-framework CoreImage")
     set_source_files_properties(Assets-tvOS.xcassets PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
