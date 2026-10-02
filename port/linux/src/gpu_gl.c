@@ -20,7 +20,7 @@ void platform_log(const char *format, ...) __attribute__((format(printf, 1, 2)))
 void platform_video_drawable_size(int *width, int *height);
 void platform_video_swap(void);
 
-#ifdef HALO_ILP32
+#ifdef GPU_GL_ES
 /* OpenGL ES 3 (port/ios/README.md): the desktop format, enumerants and entry
 points used below that ES lacks */
 #define GL_BGRA GL_RGBA
@@ -65,7 +65,7 @@ void host_gl_wait_frame(unsigned int slot);
 
 /* ---------- streams */
 
-#ifdef HALO_ILP32
+#ifdef GPU_GL_ES
 /* Mobile drivers (Mali) keep every orphaned copy of a buffer until the GPU
 is done with it, so a large buffer orphaned each frame costs its size per
 frame in flight and more. Instead each frame streams into the next of a few
@@ -86,7 +86,7 @@ static struct
 {
 	GLuint vertex_array;
 	GLuint stream_buffer;
-#ifdef HALO_ILP32
+#ifdef GPU_GL_ES
 	GLuint stream_buffers[STREAM_BUFFER_RING];
 	GLuint index_buffers[STREAM_BUFFER_RING];
 	unsigned long buffer_ring;
@@ -550,7 +550,7 @@ static void apply_raster_state(const struct gpu_viewport *viewport, const struct
 			glCullFace(cull_mode);
 		}
 	}
-#ifndef HALO_ILP32
+#ifndef GPU_GL_ES
 	/* ES draws filled polygons only (wireframe is a debug mode) */
 	{
 		GLenum polygon_mode = raster->fill_mode == GPU_FILL_LINE ? GL_LINE :
@@ -565,7 +565,7 @@ static void apply_raster_state(const struct gpu_viewport *viewport, const struct
 #endif
 
 	state_enable(&gl_state.offset_fill, GL_POLYGON_OFFSET_FILL, raster->depth_bias_enable);
-#ifndef HALO_ILP32
+#ifndef GPU_GL_ES
 	state_enable(&gl_state.offset_line, GL_POLYGON_OFFSET_LINE, raster->depth_bias_enable);
 #endif
 	if (raster->depth_bias_enable)
@@ -645,7 +645,7 @@ static void apply_stage(int stage, const struct gpu_stage *packet_stage)
 	glSamplerParameteri(sampler, GL_TEXTURE_WRAP_S, (GLint)gl_address(state->address_u));
 	glSamplerParameteri(sampler, GL_TEXTURE_WRAP_T, (GLint)gl_address(state->address_v));
 	glSamplerParameteri(sampler, GL_TEXTURE_WRAP_R, (GLint)gl_address(state->address_w));
-#ifdef HALO_ILP32
+#ifdef GPU_GL_ES
 	/* ES has no sampler LOD bias; the pixel shader applies it
 	(texture_lod_bias) */
 	glSamplerParameterf(sampler, GL_TEXTURE_MIN_LOD, (float)state->max_mip_level);
@@ -676,7 +676,7 @@ buffer, so a result never waits. */
 
 /* created by gpu_initialize, read by gpu_draw and the functions after gpu_clear */
 
-#ifdef HALO_ILP32
+#ifdef GPU_GL_ES
 #define VISIBILITY_QUERY GL_ANY_SAMPLES_PASSED
 #else
 #define VISIBILITY_QUERY GL_SAMPLES_PASSED
@@ -686,7 +686,7 @@ static struct
 {
 	GLuint queries[GPU_VISIBILITY_SLOTS];
 	int active;
-#ifdef HALO_ILP32
+#ifdef GPU_GL_ES
 	int counters;                  /* GPU_OCCLUSION_SHADER_COUNTER */
 	GLuint counter_buffer;
 	unsigned long counter_next;
@@ -698,7 +698,7 @@ static struct
 #endif
 } visibility;
 
-#ifndef HALO_ILP32
+#ifndef GPU_GL_ES
 static void GLAPIENTRY gl_debug_callback(GLenum source, GLenum type, GLuint id, GLenum severity,
 	GLsizei length, const GLchar *message, const void *user)
 {
@@ -724,7 +724,7 @@ void gpu_initialize(uint32_t flags, struct gpu_capabilities *capabilities)
 	capabilities->max_texture_size = (uint32_t)maximum_texture_size;
 	capabilities->triangle_fans = 1;
 	capabilities->line_loops = 1;
-#ifdef HALO_ILP32
+#ifdef GPU_GL_ES
 	{
 		int es31 = major > 3 || (major == 3 && minor >= 1);
 		int es32 = major > 3 || (major == 3 && minor >= 2);
@@ -783,7 +783,7 @@ void gpu_initialize(uint32_t flags, struct gpu_capabilities *capabilities)
 #endif
 	glGenVertexArrays(1, &streams.vertex_array);
 	glBindVertexArray(streams.vertex_array);
-#ifdef HALO_ILP32
+#ifdef GPU_GL_ES
 	{
 		int ring;
 
@@ -800,7 +800,7 @@ void gpu_initialize(uint32_t flags, struct gpu_capabilities *capabilities)
 		streams.index_buffer = streams.index_buffers[0];
 	}
 #endif
-#ifndef HALO_ILP32
+#ifndef GPU_GL_ES
 	glGenBuffers(1, &streams.stream_buffer);
 	glBindBuffer(GL_ARRAY_BUFFER, streams.stream_buffer);
 	glBufferData(GL_ARRAY_BUFFER, STREAM_BUFFER_SIZE, NULL, GL_STREAM_DRAW);
@@ -812,7 +812,7 @@ void gpu_initialize(uint32_t flags, struct gpu_capabilities *capabilities)
 	base_vertex = capabilities->base_vertex ? 1 : 0;
 	glGenSamplers(GPU_STAGE_COUNT, samplers);
 	glGenQueries(GPU_VISIBILITY_SLOTS, visibility.queries);
-#ifndef HALO_ILP32
+#ifndef GPU_GL_ES
 	glGenBuffers(1, &visibility.results_buffer);
 	glBindBuffer(GL_QUERY_BUFFER, visibility.results_buffer);
 	glBufferStorage(GL_QUERY_BUFFER, GPU_VISIBILITY_SLOTS * sizeof(GLuint), NULL,
@@ -822,7 +822,7 @@ void gpu_initialize(uint32_t flags, struct gpu_capabilities *capabilities)
 	if (!visibility.results)
 		platform_log("cannot map the visibility test results; tests wait for the GPU");
 #endif
-#ifdef HALO_ILP32
+#ifdef GPU_GL_ES
 	visibility.counters = xgpu_capabilities.atomic_counters;
 	if (visibility.counters)
 	{
@@ -945,7 +945,7 @@ void gpu_texture_upload(gpu_texture texture, uint32_t face, uint32_t level, cons
 	{
 		glBindTexture(record->target, texture);
 		state_invalidate();
-#ifdef HALO_ILP32
+#ifdef GPU_GL_ES
 		/* BGRA8 texels are 32-bit ARGB words in memory; ES takes RGBA */
 		glTexParameteri(record->target, GL_TEXTURE_SWIZZLE_R, compressed ? GL_RED : GL_BLUE);
 		glTexParameteri(record->target, GL_TEXTURE_SWIZZLE_B, compressed ? GL_BLUE : GL_RED);
@@ -1024,7 +1024,7 @@ static GLuint framebuffer_get(GLuint color, GLuint depth)
 	return entry->framebuffer;
 }
 
-#ifdef HALO_ILP32
+#ifdef GPU_GL_ES
 /* glCopyImageSubData for ES 3.0/3.1 contexts without the extension */
 static void copy_level_by_blit(GLuint source, GLuint destination, GLint level, GLsizei width, GLsizei height)
 {
@@ -1049,7 +1049,7 @@ void gpu_texture_copy_level(gpu_texture source, gpu_texture destination, uint32_
 	GLsizei width = texture_level_dimension(description->width, level);
 	GLsizei height = texture_level_dimension(description->height, level);
 
-#ifdef HALO_ILP32
+#ifdef GPU_GL_ES
 	if (!xgpu_capabilities.copy_image)
 	{
 		copy_level_by_blit(source, destination, (GLint)level, width, height);
@@ -1072,7 +1072,7 @@ uint32_t gpu_texture_read(gpu_texture texture, void *pixels, uint32_t size)
 	}
 	if (description->usage != GPU_USAGE_RENDER_TARGET)
 	{
-#ifdef HALO_ILP32
+#ifdef GPU_GL_ES
 		static GLuint read_framebuffer;
 
 		/* ES cannot read a block-compressed texture back */
@@ -1104,7 +1104,7 @@ uint32_t gpu_texture_read(gpu_texture texture, void *pixels, uint32_t size)
 	}
 	glBindFramebuffer(GL_READ_FRAMEBUFFER, framebuffer_get(texture, 0));
 	glReadPixels(0, 0, (GLsizei)width, (GLsizei)height, GL_BGRA, GL_UNSIGNED_BYTE, pixels);
-#ifdef HALO_ILP32
+#ifdef GPU_GL_ES
 	{
 		/* a render target is RGBA8, and ES reads it as RGBA (GL_BGRA is an
 		alias here) */
@@ -1149,7 +1149,7 @@ gpu_buffer gpu_buffer_create(uint32_t size)
 void gpu_buffer_write(gpu_buffer buffer, uint32_t offset, uint32_t size, const void *data, uint32_t flags)
 {
 	glBindBuffer(GL_COPY_WRITE_BUFFER, buffer);
-#ifdef HALO_ILP32
+#ifdef GPU_GL_ES
 	/* Mali copies the whole buffer for a glBufferSubData that queued draws
 	might read (see STREAM_BUFFER_RING); unused ranges can be written without
 	waiting for them */
@@ -1200,7 +1200,7 @@ uint32_t gpu_stream(uint32_t kind, const void *data, uint32_t size, gpu_buffer *
 			streams.index_offset = 0;
 		}
 		offset = streams.index_offset;
-#ifdef HALO_ILP32
+#ifdef GPU_GL_ES
 		host_gl_buffer_write(GL_ELEMENT_ARRAY_BUFFER, (unsigned int)offset, (unsigned int)size, data);
 #else
 		glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, (GLintptr)offset, (GLsizeiptr)size, data);
@@ -1212,7 +1212,7 @@ uint32_t gpu_stream(uint32_t kind, const void *data, uint32_t size, gpu_buffer *
 	gpu_stream_reserve(size, 0);
 	offset = streams.stream_offset;
 	state_array_buffer(streams.stream_buffer);
-#ifdef HALO_ILP32
+#ifdef GPU_GL_ES
 	host_gl_buffer_write(GL_ARRAY_BUFFER, (unsigned int)offset, (unsigned int)size, data);
 #else
 	glBufferSubData(GL_ARRAY_BUFFER, (GLintptr)offset, (GLsizeiptr)size, data);
@@ -1226,7 +1226,7 @@ uint32_t gpu_stream(uint32_t kind, const void *data, uint32_t size, gpu_buffer *
 one's frame to finish; on desktop GL, orphan both buffers at the next use */
 static void stream_frame(void)
 {
-#ifdef HALO_ILP32
+#ifdef GPU_GL_ES
 	host_gl_fence_frame((unsigned int)streams.buffer_ring);
 	streams.buffer_ring = (streams.buffer_ring + 1) % STREAM_BUFFER_RING;
 	host_gl_wait_frame((unsigned int)streams.buffer_ring);
@@ -1474,7 +1474,7 @@ static void program_uniforms(struct gpu_gl_program *entry, const struct gpu_unif
 /* presents so far (gpu_present), for check_errors' log line */
 static unsigned long frames;
 
-#ifdef HALO_ILP32
+#ifdef GPU_GL_ES
 /* ES has no debug callback in 3.0; debug.gl_debug polls glGetError around
 each draw instead, reporting each distinct error a few times */
 static void check_errors(const char *where)
@@ -1516,7 +1516,7 @@ uint32_t gpu_draw(const struct gpu_draw *draw, const struct gpu_constant_store *
 	uint32_t index;
 	int stage;
 
-#ifdef HALO_ILP32
+#ifdef GPU_GL_ES
 	/* the counter the active visibility test adds to, bound before
 	program_get, which may link a program */
 	if (visibility.active && visibility.counters)
@@ -1604,7 +1604,7 @@ void gpu_clear(const struct gpu_clear *clear, const struct gpu_rect *rectangles,
 void gpu_visibility_begin(void)
 {
 	visibility.active = 1;
-#ifdef HALO_ILP32
+#ifdef GPU_GL_ES
 	if (visibility.counters)
 	{
 		const GLuint zero = 0;
@@ -1626,7 +1626,7 @@ void gpu_visibility_end(uint32_t slot)
 	GLuint scratch;
 
 	visibility.active = 0;
-#ifdef HALO_ILP32
+#ifdef GPU_GL_ES
 	if (visibility.counters)
 	{
 		visibility.counter_of_slot[slot] = visibility.counter_active;
@@ -1637,7 +1637,7 @@ void gpu_visibility_end(uint32_t slot)
 	scratch = visibility.queries[0];
 	visibility.queries[0] = visibility.queries[slot];
 	visibility.queries[slot] = scratch;
-#ifndef HALO_ILP32
+#ifndef GPU_GL_ES
 	if (visibility.results)
 	{
 		/* the GPU writes the count into the slot once it is known */
@@ -1652,7 +1652,7 @@ uint32_t gpu_visibility_result(uint32_t slot, uint32_t *samples)
 {
 	GLuint available = 0, count = 0;
 
-#ifdef HALO_ILP32
+#ifdef GPU_GL_ES
 	if (visibility.counters)
 	{
 		/* reading the buffer waits for the draws that counted */

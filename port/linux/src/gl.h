@@ -8,6 +8,12 @@ SDL_GL_GetProcAddress once the context exists (gl_functions_load).
 #ifndef __HALO_LINUX_GL_H
 #define __HALO_LINUX_GL_H
 
+/* OpenGL ES: the iOS guest (HALO_ILP32) until step 4, then the iOS and tvOS
+host (GPU_GL_HOST, port/ios/CMakeLists.txt); desktop OpenGL otherwise */
+#if defined(HALO_ILP32) || defined(GPU_GL_HOST)
+#define GPU_GL_ES 1
+#endif
+
 /* prototypes are declared only to give each pointer its exact type */
 #define GL_GLEXT_PROTOTYPES 1
 /* the XDK defines APIENTRY as __stdcall; OpenGL on Linux uses cdecl (on
@@ -16,7 +22,7 @@ Windows it is __stdcall too, and SDL would include windows.h without it) */
 #ifndef _WIN32
 #undef APIENTRY
 #endif
-#ifdef HALO_ILP32
+#ifdef GPU_GL_ES
 #include <GLES3/gl32.h>
 #include <GLES2/gl2ext.h>
 #define GLAPIENTRY GL_APIENTRY
@@ -25,7 +31,7 @@ Windows it is __stdcall too, and SDL would include windows.h without it) */
 #endif
 #pragma pop_macro("APIENTRY")
 
-#ifdef HALO_ILP32
+#ifdef GPU_GL_ES
 /* OpenGL ES 3.2 (port/ios/README.md); tools/guest_gl_stubs.py reads
 this list to generate the guest's entry points */
 /* GLES_FUNCTIONS_BEGIN */
@@ -252,7 +258,7 @@ void halo_gl_count_call(void);
 /* call sites use the ordinary names; gl_functions.c, which defines the
 pointers, sees the declarations without these aliases */
 #ifndef GL_FUNCTIONS_DEFINE
-#ifdef HALO_ILP32
+#ifdef GPU_GL_ES
 #define glGetString HALO_GL_COUNTED(halo_glGetString)
 #define glGetIntegerv HALO_GL_COUNTED(halo_glGetIntegerv)
 #define glCopyImageSubData HALO_GL_COUNTED(halo_glCopyImageSubData)
