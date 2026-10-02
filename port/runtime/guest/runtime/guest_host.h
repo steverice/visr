@@ -106,7 +106,7 @@ void host_gpu_visibility_begin(void);
 void host_gpu_visibility_end(uint32_t slot);
 uint32_t host_gpu_visibility_result(uint32_t slot, uint32_t *samples);
 void host_gpu_flush(void);
-void host_gpu_present(gpu_texture back_buffer);
+uint32_t host_gpu_present(gpu_texture back_buffer);
 uint32_t host_gpu_call_count_take(void);
 void host_gpu_initialize(uint32_t flags, struct gpu_capabilities *capabilities);
 

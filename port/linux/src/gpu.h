@@ -395,8 +395,11 @@ uint32_t gpu_visibility_result(uint32_t slot, uint32_t *samples);
 /* submits the work queued so far */
 void gpu_flush(void);
 /* letterboxes the back buffer into the drawable, swaps, and starts the next
-frame's transient buffers */
-void gpu_present(gpu_texture back_buffer);
+frame's transient buffers. Returns how long from now, in microseconds, until
+the next frame is due on the display, when the backend schedules its frames
+(Metal), else 0: render_interpolation.c blends that frame for the moment it
+is shown. */
+uint32_t gpu_present(gpu_texture back_buffer);
 /* the GL calls (a backend's commands) issued since the last call, for
 debug.gpu_stats */
 uint32_t gpu_call_count_take(void);
@@ -411,6 +414,12 @@ enum
 	GPU_INITIALIZE_FRAME_COUNTER = 4,
 	/* debug.fixed_timestep: a frame is 1/30 s of game time (halo_virtual_clock.h) */
 	GPU_INITIALIZE_FIXED_TIMESTEP = 8,
+	/* display.frame_pacing = "refresh": any whole number of refreshes a
+	frame, not only rates that are multiples of 30 frames a second (Metal) */
+	GPU_INITIALIZE_PACING_ANY_RATE = 16,
+	/* display.frame_pacing = "off": present each frame as soon as it's
+	drawn (Metal) */
+	GPU_INITIALIZE_PACING_OFF = 32,
 };
 /* probe the context, which must be current, and set it up */
 void gpu_initialize(uint32_t flags, struct gpu_capabilities *capabilities);
@@ -458,7 +467,7 @@ its own functions. */
 	P(visibility_end, (uint32_t slot), (slot)) \
 	F(uint32_t, visibility_result, (uint32_t slot, uint32_t *samples), (slot, samples)) \
 	P(flush, (void), ()) \
-	P(present, (gpu_texture back_buffer), (back_buffer)) \
+	F(uint32_t, present, (gpu_texture back_buffer), (back_buffer)) \
 	F(uint32_t, call_count_take, (void), ())
 
 #define GPU_FUNCTIONS(F, P) \

@@ -25,6 +25,9 @@ but never returns to its run loop, which would otherwise drain them.
 
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
+#import <QuartzCore/QuartzCore.h>
+#include <math.h>
+#include <os/lock.h>
 #include <stdatomic.h>
 #include <stddef.h>
 #include <string.h>
@@ -147,6 +150,11 @@ static unsigned long frame_slot;
 static unsigned long frames;
 static unsigned long renames;
 
+/* frame pacing (pacing_schedule): GPU time of completed command buffers, and
+the time this frame's CPU spent waiting rather than working */
+static _Atomic uint64_t pacing_gpu_nanoseconds;
+static CFTimeInterval pacing_waited;
+
 /* ---------- visibility tests: state (the functions are after the draws)
 
 A test counts into entries of a ring in a shared buffer, in Metal's boolean
@@ -268,9 +276,13 @@ static BOOL busy(uint64_t used)
 anything writes into its transient memory */
 static void frame_begin(void)
 {
+	CFTimeInterval waited;
+
 	if (frame_started)
 		return;
+	waited = CACurrentMediaTime();
 	dispatch_semaphore_wait(frame_slots, DISPATCH_TIME_FOREVER);
+	pacing_waited += CACurrentMediaTime() - waited;
 	transient_reset(&streams[frame_slot]);
 	transient_reset(&snapshots[frame_slot]);
 	frame_started = 1;
@@ -322,6 +334,8 @@ static void commit(BOOL frame_end)
 		if (completed.status == MTLCommandBufferStatusError)
 			platform_log("Metal: command buffer %llu failed: %s", (unsigned long long)serial,
 				completed.error.description.UTF8String);
+		if (completed.GPUEndTime > completed.GPUStartTime)
+			atomic_fetch_add(&pacing_gpu_nanoseconds, (uint64_t)((completed.GPUEndTime - completed.GPUStartTime) * 1e9));
 		for (test = 0; test < pending.length / sizeof(*tests); test++)
 		{
 			uint8_t answer = 0;
@@ -1605,6 +1619,229 @@ static uint32_t gpu_metal_visibility_result(uint32_t slot, uint32_t *samples)
 	}
 }
 
+/* ---------- frame pacing
+
+The game draws a frame whenever it can, and the interpolation blends the
+world for the moment each frame is shown (render_interpolation.c). For the
+motion to look even, every frame must also stay on screen equally long: a
+frame shown for one refresh followed by one shown for two judders, though
+both are drawn right. So each frame is presented to stay up at least a whole
+number of refreshes after the one before (presentDrawable:afterMinimumDuration:;
+a schedule of absolute times would have to know the compositor's latency), and
+Present returns when the next frame should show, for the blend. The number of
+refreshes rises at once when frames stay up longer than asked, and falls after
+PACING_SETTLE frames that would fit in fewer with room to spare. With
+display.frame_pacing = "tick" only numbers that give a multiple of 30 frames a
+second are used (1 or 3 at 90 Hz, 1 or 2 at 60 Hz), so every game tick spans
+the same number of frames; "refresh" allows any (2 at 90 Hz: 45 a second).
+
+The refresh period comes from a display link on a thread of its own, since
+the game's thread doesn't return to its run loop. Every 600 frames the log
+says how many refreshes frames stayed on screen, in every mode. */
+
+/* frames that must fit in fewer refreshes (all but PACING_OVER) before the
+rate rises, and the misses (frames up longer than asked) among the last
+PACING_WINDOW that lower it */
+#define PACING_SETTLE 180
+#define PACING_OVER 2
+#define PACING_WINDOW 30
+#define PACING_MISSES 3
+/* a frame "fits" in n refreshes when its CPU and GPU time each take at most
+this much of them */
+#define PACING_HEADROOM 0.8
+
+@interface PacingClock : NSObject
+- (void)refresh:(CADisplayLink *)link;
+@end
+
+static os_unfair_lock pacing_lock = OS_UNFAIR_LOCK_INIT;
+static CFTimeInterval refresh_period; /* CACurrentMediaTime's clock */
+/* the latest frame shown: its number (frames) and when; and how long frames
+stayed on screen, in refreshes (the last bucket: 5 or more) */
+static unsigned long shown_frame;
+static CFTimeInterval shown_time;
+static unsigned long shown_refreshes[6];
+
+@implementation PacingClock
+- (void)refresh:(CADisplayLink *)link
+{
+	os_unfair_lock_lock(&pacing_lock);
+	refresh_period = link.targetTimestamp - link.timestamp;
+	os_unfair_lock_unlock(&pacing_lock);
+}
+@end
+
+static struct
+{
+	BOOL off, any_rate;
+	long refreshes;                  /* a frame's refreshes */
+	CFTimeInterval work_started;     /* when the frame being drawn began (the last Present returned) */
+	uint64_t gpu_counted;            /* pacing_gpu_nanoseconds at the last Present */
+	double cost;                     /* the slowest frame (CPU or GPU) since the rate last changed, in seconds */
+	unsigned long over;              /* frames since then too slow for one refresh fewer */
+	unsigned long since_change;
+	_Atomic unsigned long misses;    /* frames up longer than asked, since the window began */
+	unsigned long window;
+	unsigned long reported;
+} pacing;
+
+static void pacing_start(uint32_t flags)
+{
+	pacing.off = (flags & (GPU_INITIALIZE_PACING_OFF | GPU_INITIALIZE_FIXED_TIMESTEP)) != 0;
+	pacing.any_rate = (flags & GPU_INITIALIZE_PACING_ANY_RATE) != 0;
+	pacing.refreshes = 1;
+	if (flags & GPU_INITIALIZE_FIXED_TIMESTEP)
+		return;
+	NSThread *thread = [[NSThread alloc] initWithBlock:^{
+		CADisplayLink *link = [CADisplayLink displayLinkWithTarget:[PacingClock new] selector:@selector(refresh:)];
+
+		[link addToRunLoop:NSRunLoop.currentRunLoop forMode:NSDefaultRunLoopMode];
+		for (;;)
+			[NSRunLoop.currentRunLoop run];
+	}];
+	thread.name = @"Metal frame pacing";
+	thread.qualityOfService = NSQualityOfServiceUserInteractive;
+	[thread start];
+}
+
+/* whether n refreshes a frame is allowed at this refresh rate: with "tick",
+a multiple of 30 frames a second when the display runs at one */
+static BOOL pacing_allowed(long n, CFTimeInterval period)
+{
+	double rate = 1.0 / period;
+	long ticks = lround(rate / 30.0);
+
+	if (pacing.any_rate || ticks < 1 || fabs(rate - 30.0 * (double)ticks) > 2.0)
+		return n <= 4;
+	return ticks % n == 0;
+}
+
+static long pacing_step(long n, int direction, CFTimeInterval period)
+{
+	long step;
+
+	for (step = n + direction; step >= 1 && step <= 4; step += direction)
+		if (pacing_allowed(step, period))
+			return step;
+	return n;
+}
+
+static void pacing_set(long refreshes, CFTimeInterval period, const char *why)
+{
+	platform_log("Metal: pacing %ld refresh%s a frame (%.0f frames a second): %s, slowest frame %.1f ms",
+		refreshes, refreshes == 1 ? "" : "es", 1.0 / (period * (double)refreshes), why, pacing.cost * 1000.0);
+	pacing.refreshes = refreshes;
+	pacing.cost = 0.0;
+	pacing.over = 0;
+	pacing.since_change = 0;
+	pacing.window = 0;
+	atomic_store(&pacing.misses, 0);
+}
+
+/* how long drawable must stay up after the frame before it (0: no minimum),
+and how long from now until the next frame should show, in microseconds
+(0: unknown); picks the rate for the frames after this one */
+static CFTimeInterval pacing_schedule(id<CAMetalDrawable> drawable, uint32_t *next_frame_due)
+{
+	CFTimeInterval now = CACurrentMediaTime(), period, last_time, hold, due;
+	unsigned long last_frame, this_frame = frames;
+	uint64_t gpu_total = atomic_load(&pacing_gpu_nanoseconds);
+	double cpu, gpu;
+	long lower;
+
+	*next_frame_due = 0;
+	cpu = pacing.work_started > 0.0 ? now - pacing.work_started - pacing_waited : 0.0;
+	gpu = (double)(gpu_total - pacing.gpu_counted) / 1e9;
+	pacing.gpu_counted = gpu_total;
+	pacing_waited = 0.0;
+	os_unfair_lock_lock(&pacing_lock);
+	period = refresh_period;
+	last_frame = shown_frame;
+	last_time = shown_time;
+	os_unfair_lock_unlock(&pacing_lock);
+	if (!drawable || period < 1.0 / 240.0 || period > 1.0 / 20.0)
+		return 0.0;
+	if (!pacing_allowed(pacing.refreshes, period))
+		pacing.refreshes = 1;
+	hold = pacing.off ? 0.0 : period * (double)pacing.refreshes;
+	{
+		long asked = pacing.off ? 0 : pacing.refreshes;
+
+		[drawable addPresentedHandler:^(id<MTLDrawable> shown)
+		{
+			CFTimeInterval when = shown.presentedTime;
+
+			if (when <= 0.0)
+				return;
+			os_unfair_lock_lock(&pacing_lock);
+			/* the frame right after the last one shown */
+			if (shown_frame + 1 == this_frame && shown_time > 0.0)
+			{
+				long up = lround((when - shown_time) / period);
+
+				shown_refreshes[up < 1 ? 1 : up > 5 ? 5 : up]++;
+				if (asked && up > asked)
+					atomic_fetch_add(&pacing.misses, 1);
+			}
+			shown_frame = this_frame;
+			shown_time = when;
+			os_unfair_lock_unlock(&pacing_lock);
+		}];
+	}
+	if (frames >= pacing.reported + 600)
+	{
+		unsigned long counts[6];
+
+		pacing.reported = frames;
+		os_unfair_lock_lock(&pacing_lock);
+		memcpy(counts, shown_refreshes, sizeof(counts));
+		memset(shown_refreshes, 0, sizeof(shown_refreshes));
+		os_unfair_lock_unlock(&pacing_lock);
+		platform_log("Metal: frames shown for 1/2/3/4/5+ refreshes at %.1f Hz: %lu/%lu/%lu/%lu/%lu (pacing %s); "
+			"frame CPU %.1f ms, GPU %.1f ms", 1.0 / period, counts[1], counts[2], counts[3], counts[4], counts[5],
+			pacing.off ? "off" : pacing.refreshes == 1 ? "1 refresh" : pacing.refreshes == 2 ? "2 refreshes" :
+			pacing.refreshes == 3 ? "3 refreshes" : "4 refreshes", cpu * 1000.0, gpu * 1000.0);
+	}
+	if (pacing.off)
+		return 0.0;
+	lower = pacing_step(pacing.refreshes, -1, period);
+	/* a frame over a quarter second (a load, the background) says nothing
+	about the rate */
+	if (cpu < 0.25 && gpu < 0.25)
+	{
+		pacing.cost = fmax(pacing.cost, fmax(cpu, gpu));
+		if (fmax(cpu, gpu) > PACING_HEADROOM * period * (double)lower)
+			pacing.over++;
+	}
+	pacing.since_change++;
+	if (++pacing.window >= PACING_WINDOW)
+	{
+		unsigned long misses = atomic_exchange(&pacing.misses, 0);
+
+		pacing.window = 0;
+		if (misses >= PACING_MISSES && pacing_step(pacing.refreshes, 1, period) != pacing.refreshes)
+			pacing_set(pacing_step(pacing.refreshes, 1, period), period, "frames stayed up longer than asked");
+	}
+	if (lower != pacing.refreshes && pacing.since_change >= PACING_SETTLE && pacing.over <= PACING_OVER)
+		pacing_set(lower, period, "frames fit in fewer refreshes");
+	else if (pacing.since_change >= PACING_SETTLE)
+	{
+		/* start a new measure, so the slowest frame is a recent one */
+		pacing.cost = 0.0;
+		pacing.over = 0;
+		pacing.since_change = 0;
+	}
+	/* the next frame shows a frame's refreshes after this one, which shows
+	that long after the frame before, back to the latest one shown */
+	if (last_time > 0.0 && this_frame > last_frame && this_frame - last_frame <= FRAMES + 1)
+	{
+		due = last_time + (double)(this_frame + 1 - last_frame) * hold;
+		if (due > now)
+			*next_frame_due = (uint32_t)fmax(1.0, (due - now) * 1e6);
+	}
+	return hold;
+}
+
 /* ---------- frames */
 
 /* the game's KickPushBuffer: committing here would split render passes */
@@ -1615,16 +1852,20 @@ static void gpu_metal_flush(void)
 /* the back buffer letterboxed into the drawable, as gpu_gl.c's gpu_present,
 without its vertical flip: GL's window shows row 0 at the bottom, Metal's
 drawable at the top */
-static void gpu_metal_present(gpu_texture back_buffer)
+static uint32_t gpu_metal_present(gpu_texture back_buffer)
 {
 	@autoreleasepool
 	{
 		MetalTexture *record = texture_record(back_buffer);
 		id<CAMetalDrawable> drawable;
+		CFTimeInterval waited;
+		uint32_t next_frame_due = 0;
 
 		command_buffer();
 		pass_end();
+		waited = CACurrentMediaTime();
 		drawable = [layer nextDrawable];
+		pacing_waited += CACurrentMediaTime() - waited;
 		/* nil in the background: the frame still commits, so its slot is
 		freed */
 		if (drawable && record && record->texture)
@@ -1652,7 +1893,14 @@ static void gpu_metal_present(gpu_texture back_buffer)
 			[present drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
 			[present endEncoding];
 			use_texture(record);
-			[commands presentDrawable:drawable];
+			{
+				CFTimeInterval hold = pacing_schedule(drawable, &next_frame_due);
+
+				if (hold > 0.0)
+					[commands presentDrawable:drawable afterMinimumDuration:hold];
+				else
+					[commands presentDrawable:drawable];
+			}
 		}
 		drawable = nil;
 		commit(YES);
@@ -1662,6 +1910,8 @@ static void gpu_metal_present(gpu_texture back_buffer)
 			platform_log("Metal: %lu renames in the last 600 frames", renames);
 			renames = 0;
 		}
+		pacing.work_started = CACurrentMediaTime();
+		return next_frame_due;
 	}
 }
 
@@ -1683,6 +1933,7 @@ static void gpu_metal_initialize(uint32_t flags, struct gpu_capabilities *capabi
 
 		memset(capabilities, 0, sizeof(*capabilities));
 		metal_debug = (flags & GPU_INITIALIZE_DEBUG) != 0;
+		pacing_start(flags);
 		layer = (__bridge CAMetalLayer *)host_sdl_metal_layer();
 		device = MTLCreateSystemDefaultDevice();
 		if (!layer || !device)

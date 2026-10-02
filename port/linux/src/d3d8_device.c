@@ -39,8 +39,24 @@ Conventions carried over from the Xbox:
 
 void d3d8_surface_initialize(D3DSurface *surface, D3DFORMAT format, unsigned long width, unsigned long height);
 void d3d8_surface_resize(D3DSurface *surface, D3DFORMAT format, unsigned long width, unsigned long height);
+/* port/linux/game/render_interpolation.c */
+void render_interpolation_next_frame_due(unsigned long microseconds);
 
 struct gpu_capabilities device_capabilities;
+
+/* display.frame_pacing as gpu_initialize flags */
+static uint32_t frame_pacing_flags(void)
+{
+	const char *pacing = config_string("display.frame_pacing");
+
+	if (!strcmp(pacing, "refresh"))
+		return GPU_INITIALIZE_PACING_ANY_RATE;
+	if (!strcmp(pacing, "off"))
+		return GPU_INITIALIZE_PACING_OFF;
+	if (strcmp(pacing, "tick"))
+		platform_log("display.frame_pacing: unknown value \"%s\"; using \"tick\"", pacing);
+	return 0;
+}
 
 /* ---------- the screen's width
 
@@ -704,7 +720,7 @@ static void gl_initialize(void)
 	gpu_initialize((config_boolean("debug.gl_debug") ? GPU_INITIALIZE_DEBUG : 0) |
 		(platform_renderer_metal() ? GPU_INITIALIZE_METAL : 0) |
 		(config_boolean("debug.frame_counter") ? GPU_INITIALIZE_FRAME_COUNTER : 0) |
-		(platform_fixed_timestep() ? GPU_INITIALIZE_FIXED_TIMESTEP : 0), &device_capabilities);
+		(platform_fixed_timestep() ? GPU_INITIALIZE_FIXED_TIMESTEP : 0) | frame_pacing_flags(), &device_capabilities);
 	screen_maximum_texture_size = (int32_t)device_capabilities.max_texture_size;
 #ifdef HALO_ILP32
 	/* Select the real Retina drawable before allocating any screen targets. */
@@ -2974,7 +2990,7 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 				back_buffer->target.texture);
 		if (screenshot_every > 0 && device.frame % (unsigned long)screenshot_every == 0)
 			write_screenshot(back_buffer);
-		gpu_present(back_buffer->target.texture);
+		render_interpolation_next_frame_due(gpu_present(back_buffer->target.texture));
 		xgpu_texture_cache_begin_frame();
 	}
 	device.frame++;

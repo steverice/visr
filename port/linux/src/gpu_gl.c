@@ -1774,7 +1774,7 @@ static void gpu_gl_flush(void)
 	glFlush();
 }
 
-static void gpu_gl_present(gpu_texture back_buffer)
+static uint32_t gpu_gl_present(gpu_texture back_buffer)
 {
 	const struct gpu_texture_description *description = &texture_record(back_buffer)->description;
 	int window_width, window_height, width, height, x, y;
@@ -1804,6 +1804,8 @@ static void gpu_gl_present(gpu_texture back_buffer)
 	state_invalidate();
 	stream_frame();
 	frames++;
+	/* vsync paces GL, and when a frame shows isn't known */
+	return 0;
 }
 
 static uint32_t gpu_gl_call_count_take(void)

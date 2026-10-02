@@ -26,6 +26,7 @@ Particles, contrails and other effects already move every frame
 #include "math/real_math.h"
 #include "objects/objects.h"
 #include "camera/observer.h"
+#include "game/game.h"
 #include "game/players.h"
 #include "render/render_cameras.h"
 
@@ -36,6 +37,7 @@ Particles, contrails and other effects already move every frame
 /* the platform layer's (sdl_platform.c, xbox_kernel.c) */
 int halo_frame_trace_enabled(void);
 double halo_frame_trace_milliseconds(void);
+int platform_fixed_timestep(void);
 void platform_log(const char *format, ...);
 
 /* ---------- constants */
@@ -340,11 +342,57 @@ void render_interpolation_tick(void)
 
 /* ---------- frames */
 
+/* ---------- the display's schedule
+
+A backend that schedules its frames on the display's refreshes (Metal,
+port/ios/host/gpu_metal.m) says at each present when the next frame is due on
+screen. The game clock was read when the frame began, but the frame is seen
+some time later, and that time varies from frame to frame (how far ahead the
+CPU ran, how long the frame took). So the blend is advanced by how far this
+frame's lead time is from its average: the world then moves by the same
+amount between any two refreshes, a constant latency later. Without a
+schedule (GL, the fixed timestep) the fraction is the clock's. */
+
+static double next_frame_due_milliseconds; /* when the next frame shows, on halo_frame_trace_milliseconds' clock */
+static double average_lead_milliseconds = -1.0;
+static double frame_lead_milliseconds;
+
+void render_interpolation_next_frame_due(unsigned long microseconds)
+{
+	if (microseconds == 0 || platform_fixed_timestep())
+	{
+		next_frame_due_milliseconds = 0.0;
+		average_lead_milliseconds = -1.0;
+		return;
+	}
+	next_frame_due_milliseconds = halo_frame_trace_milliseconds() + (double)microseconds / 1000.0;
+}
+
+static real fraction_for_display(real fraction)
+{
+	double lead;
+
+	frame_lead_milliseconds = 0.0;
+	/* 1 while the game is paused */
+	if (next_frame_due_milliseconds == 0.0 || fraction >= 1.0f)
+		return fraction;
+	lead = next_frame_due_milliseconds - halo_frame_trace_milliseconds();
+	/* a frame that began after its slot (a load, a hitch) */
+	if (lead < 0.0)
+		lead = 0.0;
+	if (average_lead_milliseconds < 0.0)
+		average_lead_milliseconds = lead;
+	average_lead_milliseconds += (lead - average_lead_milliseconds) * 0.05;
+	frame_lead_milliseconds = lead;
+	fraction += (real)((lead - average_lead_milliseconds) / 1000.0 * TICKS_PER_SECOND * game_time_get_speed());
+	return PIN(fraction, 0.0f, 1.0f);
+}
+
 void render_interpolation_frame_begin(void)
 {
 	interpolation_rendering = halo_interpolation_enabled();
 	interpolation_frame++;
-	interpolation_fraction = game_time_get_tick_fraction();
+	interpolation_fraction = fraction_for_display(game_time_get_tick_fraction());
 }
 
 void render_interpolation_frame_end(void)
@@ -405,8 +453,9 @@ it blends between */
 static void trace_camera(struct interpolated_camera const *camera, struct observer_result const *drawn,
 	char const *how)
 {
-	platform_log("frame trace: %.3f ms tick %ld t %.3f yaw %.2f (previous %.2f latest %.2f) %s",
+	platform_log("frame trace: %.3f ms tick %ld t %.3f lead %.2f (average %.2f) ms yaw %.2f (previous %.2f latest %.2f) %s",
 		halo_frame_trace_milliseconds(), interpolation_tick, interpolation_fraction,
+		frame_lead_milliseconds, average_lead_milliseconds,
 		trace_yaw(&drawn->forward), trace_yaw(&camera->previous.forward), trace_yaw(&camera->latest.forward), how);
 }
 

@@ -97,6 +97,13 @@ static const struct config_setting config_settings[] =
 	{ "display.renderer", _config_string, "\"gl\"", "HALO_RENDERER", _environment_value, _platform_ios,
 		"What draws the game: \"gl\" (default) OpenGL ES, or \"metal\" Metal.\n"
 		"Changes apply on relaunch." },
+	{ "display.frame_pacing", _config_string, "\"tick\"", "HALO_FRAME_PACING", _environment_value, _platform_ios,
+		"How the Metal renderer times frames: \"tick\" (default) shows every frame\n"
+		"for the same whole number of display refreshes, at a rate that is a\n"
+		"multiple of the game's 30 ticks a second (90 or 30 at 90 Hz, 60 or 30 at\n"
+		"60 Hz), dropping to the next rate when frames take too long; \"refresh\"\n"
+		"allows any whole number of refreshes (45 at 90 Hz); \"off\" shows each\n"
+		"frame as soon as it's drawn." },
 	{ "display.vsync", _config_boolean, "true", "HALO_NO_VSYNC", _environment_set_is_false, _platform_all,
 		"Wait for the display between frames; false draws as fast as possible." },
 	{ "display.interpolation", _config_boolean, "true", "HALO_INTERPOLATION", _environment_value, _platform_all,

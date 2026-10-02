@@ -31,12 +31,15 @@ static const struct gpu_backend *wrapped_backend;
 static int frame_counter;
 static unsigned long presented;
 
-static void present_wrapped(gpu_texture back_buffer)
+static uint32_t present_wrapped(gpu_texture back_buffer)
 {
+	uint32_t next_frame_due;
+
 	host_lifecycle_hold();
-	wrapped_backend->present(back_buffer);
+	next_frame_due = wrapped_backend->present(back_buffer);
 	if (frame_counter)
 		host_frame_counter_show(presented++);
+	return next_frame_due;
 }
 
 void gpu_initialize(uint32_t flags, struct gpu_capabilities *capabilities)

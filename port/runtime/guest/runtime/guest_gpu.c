@@ -95,9 +95,9 @@ void gpu_flush(void)
 	host_gpu_flush();
 }
 
-void gpu_present(gpu_texture back_buffer)
+uint32_t gpu_present(gpu_texture back_buffer)
 {
-	host_gpu_present(back_buffer);
+	return host_gpu_present(back_buffer);
 }
 
 uint32_t gpu_call_count_take(void)
