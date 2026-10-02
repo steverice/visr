@@ -18,9 +18,6 @@ type that carries no pointer, which covers all the platform layer reads.
 
 #include "guest_host.h"
 
-/* guest/runtime/guest_gl.c (generated) */
-SDL_FunctionPointer guest_gl_get_proc_address(const char *name);
-
 bool SDL_Init(SDL_InitFlags flags)
 {
 	return host_sdl_init(flags) != 0;
@@ -125,11 +122,6 @@ bool SDL_GL_SetSwapInterval(int interval)
 bool SDL_GL_SwapWindow(SDL_Window *window)
 {
 	return host_sdl_gl_swap_window((unsigned int)window) != 0;
-}
-
-SDL_FunctionPointer SDL_GL_GetProcAddress(const char *name)
-{
-	return guest_gl_get_proc_address(name);
 }
 
 /* ---------- events */

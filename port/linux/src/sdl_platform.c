@@ -11,7 +11,10 @@ and the debug keyboard that the game's console reads.
 
 #include "platform.h"
 #include "sdl_platform.h"
+#ifndef HALO_IOS
+/* on iOS the GL backend, and GL, run in the host (gpu_gl.c, step 4) */
 #include "gl.h"
+#endif
 #include "port_config.h"
 #include "halo_virtual_clock.h"
 #include "p2p.h"
@@ -175,12 +178,17 @@ BOOL platform_video_initialize(unsigned long width, unsigned long height)
 		return FALSE;
 	}
 	SDL_GL_MakeCurrent(platform_window, platform_gl_context);
+#ifndef HALO_IOS
 	if (!gl_functions_load())
 		return FALSE;
+#endif
 	version = SDL_GL_SetSwapInterval(config_boolean("display.vsync") ? 1 : 0);
 	(void)version;
 	platform_event_thread = SDL_GetCurrentThreadID();
+#ifndef HALO_IOS
+	/* (the host's gpu_initialize logs this on iOS) */
 	platform_log("OpenGL %s on %s", (const char *)glGetString(GL_VERSION), (const char *)glGetString(GL_RENDERER));
+#endif
 #ifndef HALO_ILP32
 	platform_mouse_capture(TRUE);
 #endif

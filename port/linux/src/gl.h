@@ -32,9 +32,9 @@ Windows it is __stdcall too, and SDL would include windows.h without it) */
 #pragma pop_macro("APIENTRY")
 
 #ifdef GPU_GL_ES
-/* OpenGL ES 3.2 (port/ios/README.md); tools/guest_gl_stubs.py reads
-this list to generate the guest's entry points */
-/* GLES_FUNCTIONS_BEGIN */
+/* OpenGL ES 3.2 (port/ios/README.md): the iOS host resolves these by name
+(gl_functions_load) and goes on without the ES 3.1 and 3.2 ones Apple's ES
+3.0 lacks, which the capability probe (gpu_initialize) keeps unused */
 #define GL_FUNCTIONS(X) \
 	X(glGetString) \
 	X(glGetIntegerv) \
@@ -134,8 +134,12 @@ this list to generate the guest's entry points */
 	X(glGenQueries) \
 	X(glBeginQuery) \
 	X(glEndQuery) \
-	X(glGetQueryObjectuiv)
-/* GLES_FUNCTIONS_END */
+	X(glGetQueryObjectuiv) \
+	X(glMapBufferRange) \
+	X(glUnmapBuffer) \
+	X(glFenceSync) \
+	X(glClientWaitSync) \
+	X(glDeleteSync)
 #else
 #define GL_FUNCTIONS(X) \
 	X(glGetString) \
@@ -358,6 +362,11 @@ pointers, sees the declarations without these aliases */
 #define glBeginQuery HALO_GL_COUNTED(halo_glBeginQuery)
 #define glEndQuery HALO_GL_COUNTED(halo_glEndQuery)
 #define glGetQueryObjectuiv HALO_GL_COUNTED(halo_glGetQueryObjectuiv)
+#define glMapBufferRange HALO_GL_COUNTED(halo_glMapBufferRange)
+#define glUnmapBuffer HALO_GL_COUNTED(halo_glUnmapBuffer)
+#define glFenceSync HALO_GL_COUNTED(halo_glFenceSync)
+#define glClientWaitSync HALO_GL_COUNTED(halo_glClientWaitSync)
+#define glDeleteSync HALO_GL_COUNTED(halo_glDeleteSync)
 #else
 #define glGetString HALO_GL_COUNTED(halo_glGetString)
 #define glGetIntegerv HALO_GL_COUNTED(halo_glGetIntegerv)

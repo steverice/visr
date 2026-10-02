@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate typed guest-to-Darwin bridges; translate pointers, never GL offsets."""
+"""Generate the host side of the guest's imports (build/ios/host/bridges.c): typed bridges that translate pointers."""
 import re
 from pathlib import Path
 
@@ -60,12 +60,9 @@ def bridge(ret,name,params):
     return imported,source
 
 def main():
-    # the GL half's helpers, imported here so that importing this module (tools/test_ios_bridges.py)
-    # neither needs them nor runs the generator
-    from guest_gl_stubs import gles_functions, prototypes, FLOAT_TYPES, WIDE_TYPES
     OUT.mkdir(parents=True,exist_ok=True)
     lines=['/* Generated typed bridges. */','#include "ios_host.h"','#include "guest_host.h"','#include "posix.h"',
-           '#include <SDL3/SDL.h>','#include <GLES3/gl32.h>','#include <GLES2/gl2ext.h>','#include <string.h>']
+           '#include <SDL3/SDL.h>','#include <string.h>']
     table=[]
     for header,pattern in [(ROOT/'port/runtime/guest/runtime/guest_host.h',r'host_\w+'),(ROOT/'port/linux/src/posix.h',r'posix_\w+')]:
         for ret,name,params in declarations(header,pattern):
@@ -73,42 +70,6 @@ def main():
             lines.append(source)
             table.append((imported,'ios_bridge_'+name))
 
-    gl=ROOT/'build/ios/gl_include'
-    protos=prototypes(str(gl/'GLES3/gl32.h'),str(gl/'GLES2/gl2ext.h'))
-    for name in gles_functions(str(ROOT/'port/linux/src/gl.h')):
-        if name=='glGetString':continue
-        ret,params=protos[name]
-        plist=[] if params=='void' else [split_parameter(p) for p in params.split(',')]
-        decl=[];args=[];integer_index=0
-        for index,(kind,_) in enumerate(plist):
-            arg=f'a{index}';pointer='*' in kind;base=kind.replace('const','').strip()
-            if base in FLOAT_TYPES and not pointer:
-                decl.append(f'{kind} {arg}');args.append(arg);continue
-            on_stack=integer_index>=8;integer_index+=1
-            if pointer:
-                decl.append(f'uint64_t {arg}')
-                offset=name in ('glVertexAttribPointer','glVertexAttribIPointer','glDrawElements','glDrawElementsBaseVertex') and index==len(plist)-1
-                # BaseVertex's final parameter is an integer; its indices are #3.
-                offset=offset or (name=='glDrawElementsBaseVertex' and index==3)
-                args.append(f'({kind})'+(f'(uintptr_t){arg}' if offset else f'host_pointer({arg})'))
-            elif base in WIDE_TYPES or on_stack:
-                decl.append(f'long long {arg}');args.append(f'({kind}){arg}')
-            else:decl.append(f'{kind} {arg}');args.append(arg)
-        bridge_name='ios_bridge_'+name
-        lines.append(f'static {ret} {bridge_name}({", ".join(decl) or "void"}) {{')
-        signature=', '.join(t for t,_ in plist) or 'void'
-        lines.append(f'    typedef {ret} (GL_APIENTRY *Function)({signature});')
-        lines.append(f'    static Function function; if(!function) function=(Function)SDL_GL_GetProcAddress("{name}");')
-        lines.append(f'    if(!function) host_fatal("OpenGL ES entry point unavailable: {name}");')
-        if name=='glBindFramebuffer':
-            lines.append('    if(!a1) a1=host_ios_default_framebuffer();')
-        if name=='glShaderSource':
-            lines.extend(['    const uint64_t *raw=host_pointer(a2); const GLchar *strings[16];',
-                          '    if(a1<0 || a1>16) host_fatal("invalid shader string count");',
-                          '    for(int i=0;i<a1;i++) strings[i]=host_pointer(raw[i]);'])
-            args[2]='strings'
-        lines.append(('    ' if ret=='void' else '    return ')+f'function({", ".join(args)});\n'+'}')
-        table.append(('hostgl_'+name,bridge_name))
     lines.extend(['void *host_resolve_import(const char *name) {',
                   '    static const struct {const char *name; void *function;} table[]={'])
     lines.extend(f'        {{"{name}",(void *){fn}}},' for name,fn in table)

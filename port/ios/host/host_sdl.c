@@ -389,12 +389,23 @@ void host_sdl_get_clipboard_text(char *buffer, uint32_t size)
 	SDL_free(text);
 }
 
+/* the guest's window (host_sdl_create_window makes one), for the GPU backend's
+present in the host (gpu_gl.c, host_gpu.c) */
+SDL_Window *host_sdl_window(void)
+{
+	unsigned index;
+
+	for (index = 1; index < HANDLE_COUNT; index++)
+		if (handles[index].type == _handle_window)
+			return handles[index].object;
+	return NULL;
+}
+
 /* UIKit renders to a view framebuffer, rather than framebuffer zero. */
 uint32_t host_ios_default_framebuffer(void)
 {
-    for (unsigned i = 1; i < HANDLE_COUNT; i++)
-        if (handles[i].type == _handle_window)
-            return (uint32_t)SDL_GetNumberProperty(SDL_GetWindowProperties(handles[i].object),
-                SDL_PROP_WINDOW_UIKIT_OPENGL_FRAMEBUFFER_NUMBER, 0);
-    return 0;
+	SDL_Window *window = host_sdl_window();
+
+	return window ? (uint32_t)SDL_GetNumberProperty(SDL_GetWindowProperties(window),
+		SDL_PROP_WINDOW_UIKIT_OPENGL_FRAMEBUFFER_NUMBER, 0) : 0;
 }

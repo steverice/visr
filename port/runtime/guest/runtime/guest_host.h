@@ -7,11 +7,15 @@ port/ios/host_imports.list, which generates the import stubs.
 
 Parameter types follow the rules in halo_guest_abi.h: 32-bit values are
 int or unsigned int, 64-bit values long long, and pointers are passed as
-they are.
+they are. The GPU backend's (host_gpu_*) are gpu.h's own: fixed-width
+types, and structs both sides lay out alike (tools/ios_test.py pins the
+layouts).
 */
 
 #ifndef __GUEST_HOST_H
 #define __GUEST_HOST_H
+
+#include "gpu.h"
 
 /* ---------- process */
 
@@ -81,19 +85,29 @@ unsigned int host_sdl_open_audio_stream(unsigned int device, const void *spec, u
 int host_sdl_put_audio_stream_data(unsigned int stream, const void *data, int length);
 int host_sdl_resume_audio_stream_device(unsigned int stream);
 
-/* ---------- OpenGL ES */
+/* ---------- the GPU backend (gpu.h), which runs in the host from step 4: each
+gpu_* function is the host_gpu_* import of the same signature (guest_gpu.c;
+tools/ios_bridges.py maps the import back to gpu_*) */
 
-/* copies glGetString(name) (or glGetStringi when index >= 0) */
-void host_gl_get_string(unsigned int name, int index, char *buffer, unsigned int size);
-/* nonzero if the context supports the named extension */
-int host_gl_has_extension(const char *name);
-/* a 32-bit word of a GL buffer object, waiting for the GPU */
-unsigned int host_gl_read_buffer_word(unsigned int buffer, unsigned int offset);
-/* unsynchronized write into the buffer bound to target */
-void host_gl_buffer_write(unsigned int target, unsigned int offset, unsigned int size, const void *data);
-/* fences the GPU work queued so far as that of ring slot `slot`; waits for
-the GPU to finish the work last fenced for a slot */
-void host_gl_fence_frame(unsigned int slot);
-void host_gl_wait_frame(unsigned int slot);
+gpu_texture host_gpu_texture_create(const struct gpu_texture_description *description);
+void host_gpu_texture_upload(gpu_texture texture, uint32_t face, uint32_t level, const void *data, uint32_t size);
+void host_gpu_texture_copy_level(gpu_texture source, gpu_texture destination, uint32_t level);
+void host_gpu_texture_generate_mipmaps(gpu_texture texture, uint32_t base_level);
+void host_gpu_texture_destroy(gpu_texture texture);
+uint32_t host_gpu_texture_read(gpu_texture texture, void *pixels, uint32_t size);
+gpu_buffer host_gpu_buffer_create(uint32_t size);
+void host_gpu_buffer_write(gpu_buffer buffer, uint32_t offset, uint32_t size, const void *data, uint32_t flags);
+void host_gpu_stream_reserve(uint32_t vertex_bytes, uint32_t index_bytes);
+uint32_t host_gpu_stream(uint32_t kind, const void *data, uint32_t size, gpu_buffer *buffer);
+gpu_shader host_gpu_shader_create(uint32_t stage, const char *source);
+void host_gpu_clear(const struct gpu_clear *clear, const struct gpu_rect *rectangles, uint32_t count);
+uint32_t host_gpu_draw(const struct gpu_draw *draw, const struct gpu_constant_store *constants, const struct gpu_uniforms *uniforms);
+void host_gpu_visibility_begin(void);
+void host_gpu_visibility_end(uint32_t slot);
+uint32_t host_gpu_visibility_result(uint32_t slot, uint32_t *samples);
+void host_gpu_flush(void);
+void host_gpu_present(gpu_texture back_buffer);
+uint32_t host_gpu_call_count_take(void);
+void host_gpu_initialize(uint32_t flags, struct gpu_capabilities *capabilities);
 
 #endif

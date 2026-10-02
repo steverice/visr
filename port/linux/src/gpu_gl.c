@@ -48,19 +48,17 @@ struct xgpu_capabilities
 	int base_vertex;
 	/* ES 3.1 with fragment atomic counters: exact visibility test counts */
 	int atomic_counters;
-	/* "300 es" or "310 es" */
-	const char *shading_language;
 };
 
 /* what the context supports (gpu_initialize) */
 static struct xgpu_capabilities xgpu_capabilities;
 
-/* port/runtime/guest/runtime/guest_host.h */
-int host_gl_has_extension(const char *name);
-unsigned int host_gl_read_buffer_word(unsigned int buffer, unsigned int offset);
-void host_gl_buffer_write(unsigned int target, unsigned int offset, unsigned int size, const void *data);
-void host_gl_fence_frame(unsigned int slot);
-void host_gl_wait_frame(unsigned int slot);
+#ifdef GPU_GL_HOST
+/* the iOS host (port/ios/host): SDL for the extension probe, and UIKit's
+drawable framebuffer, which stands in for framebuffer 0 (ios_host.h) */
+#include <SDL3/SDL.h>
+uint32_t host_ios_default_framebuffer(void);
+#endif
 #endif
 
 /* ---------- streams */
@@ -70,7 +68,7 @@ void host_gl_wait_frame(unsigned int slot);
 is done with it, so a large buffer orphaned each frame costs its size per
 frame in flight and more. Instead each frame streams into the next of a few
 smaller buffers, reusing one only once the GPU has finished the frame that
-last used it (host_gl_wait_frame). A busy frame streams about 5 MB of
+last used it (gl_wait_frame). A busy frame streams about 5 MB of
 vertices. */
 #define STREAM_BUFFER_SIZE (16 * 1024 * 1024)
 #define INDEX_BUFFER_SIZE (2 * 1024 * 1024)
@@ -95,6 +93,72 @@ static struct
 	GLuint index_buffer;
 	unsigned long index_offset;
 } streams;
+
+#ifdef GPU_GL_ES
+/* ---------- the GL that ran in the host before step 4 (host_gl.c)
+
+These call the raw halo_gl* pointers, not the counted aliases: as the
+host's services (host_gl.c) they ran outside the guest's GL call count, and
+debug.gpu_stats' totals (gpu_call_count_take) stay comparable with the
+records from before the backend moved into the host. */
+
+/* writes a range no queued draw reads, without waiting for the GPU */
+static void gl_buffer_write(GLenum target, GLintptr offset, GLsizeiptr size, const void *data)
+{
+	void *mapped = halo_glMapBufferRange(target, offset, size,
+		GL_MAP_WRITE_BIT | GL_MAP_UNSYNCHRONIZED_BIT | GL_MAP_INVALIDATE_RANGE_BIT);
+
+	if (mapped)
+	{
+		memcpy(mapped, data, (size_t)size);
+		halo_glUnmapBuffer(target);
+	}
+	else
+	{
+		halo_glBufferSubData(target, offset, size, data);
+	}
+}
+
+/* the fence of each ring slot's last frame */
+static GLsync fences[STREAM_BUFFER_RING];
+
+/* fences the GPU work queued so far as ring slot slot's */
+static void gl_fence_frame(unsigned long slot)
+{
+	if (fences[slot])
+		halo_glDeleteSync(fences[slot]);
+	fences[slot] = halo_glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+}
+
+/* waits for the GPU to finish the work last fenced for slot */
+static void gl_wait_frame(unsigned long slot)
+{
+	if (!fences[slot])
+		return;
+	halo_glClientWaitSync(fences[slot], GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000ull);
+	halo_glDeleteSync(fences[slot]);
+	fences[slot] = NULL;
+}
+
+/* a 32-bit word of a buffer object, waiting for the GPU */
+static GLuint gl_read_buffer_word(GLuint buffer, GLintptr offset)
+{
+	GLint previous = 0;
+	GLuint value = 0;
+	void *mapped;
+
+	halo_glGetIntegerv(GL_COPY_READ_BUFFER_BINDING, &previous);
+	halo_glBindBuffer(GL_COPY_READ_BUFFER, buffer);
+	mapped = halo_glMapBufferRange(GL_COPY_READ_BUFFER, offset, sizeof(value), GL_MAP_READ_BIT);
+	if (mapped)
+	{
+		memcpy(&value, mapped, sizeof(value));
+		halo_glUnmapBuffer(GL_COPY_READ_BUFFER);
+	}
+	halo_glBindBuffer(GL_COPY_READ_BUFFER, (GLuint)previous);
+	return value;
+}
+#endif
 
 /* ---------- GL state cache
 
@@ -718,6 +782,15 @@ void gpu_initialize(uint32_t flags, struct gpu_capabilities *capabilities)
 
 	gl_debug = (flags & GPU_INITIALIZE_DEBUG) != 0;
 	memset(capabilities, 0, sizeof(*capabilities));
+#ifdef GPU_GL_HOST
+	/* the host resolves the entry points here (the guest did in
+	platform_video_initialize, sdl_platform.c); Apple's ES 3.0 lacks the 3.1
+	and 3.2 ones, whose callers the probes below never reach */
+	if (!gl_functions_load())
+		platform_log("OpenGL ES: some entry points are unavailable; the capability probe keeps them unused");
+	/* counted, as the guest's two calls were */
+	platform_log("OpenGL %s on %s", (const char *)glGetString(GL_VERSION), (const char *)glGetString(GL_RENDERER));
+#endif
 	glGetIntegerv(GL_MAJOR_VERSION, &major);
 	glGetIntegerv(GL_MINOR_VERSION, &minor);
 	glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maximum_texture_size);
@@ -730,13 +803,12 @@ void gpu_initialize(uint32_t flags, struct gpu_capabilities *capabilities)
 		int es32 = major > 3 || (major == 3 && minor >= 2);
 
 		/* clip control is emulated in the vertex shader (nv2a_vsh.c) */
-		xgpu_capabilities.copy_image = es32 || host_gl_has_extension("GL_EXT_copy_image") ||
-			host_gl_has_extension("GL_OES_copy_image");
-		xgpu_capabilities.border_clamp = es32 || host_gl_has_extension("GL_EXT_texture_border_clamp") ||
-			host_gl_has_extension("GL_OES_texture_border_clamp");
-		xgpu_capabilities.anisotropy = host_gl_has_extension("GL_EXT_texture_filter_anisotropic");
+		xgpu_capabilities.copy_image = es32 || SDL_GL_ExtensionSupported("GL_EXT_copy_image") ||
+			SDL_GL_ExtensionSupported("GL_OES_copy_image");
+		xgpu_capabilities.border_clamp = es32 || SDL_GL_ExtensionSupported("GL_EXT_texture_border_clamp") ||
+			SDL_GL_ExtensionSupported("GL_OES_texture_border_clamp");
+		xgpu_capabilities.anisotropy = SDL_GL_ExtensionSupported("GL_EXT_texture_filter_anisotropic");
 		xgpu_capabilities.base_vertex = es32;
-		xgpu_capabilities.shading_language = es31 ? "310 es" : "300 es";
 		if (es31)
 		{
 			GLint counters = 0;
@@ -744,10 +816,10 @@ void gpu_initialize(uint32_t flags, struct gpu_capabilities *capabilities)
 			glGetIntegerv(GL_MAX_FRAGMENT_ATOMIC_COUNTERS, &counters);
 			xgpu_capabilities.atomic_counters = counters > 0;
 		}
-		xgpu_capabilities.s3tc = host_gl_has_extension("GL_EXT_texture_compression_s3tc") ||
-			(host_gl_has_extension("GL_EXT_texture_compression_dxt1") &&
-			host_gl_has_extension("GL_ANGLE_texture_compression_dxt3") &&
-			host_gl_has_extension("GL_ANGLE_texture_compression_dxt5"));
+		xgpu_capabilities.s3tc = SDL_GL_ExtensionSupported("GL_EXT_texture_compression_s3tc") ||
+			(SDL_GL_ExtensionSupported("GL_EXT_texture_compression_dxt1") &&
+			SDL_GL_ExtensionSupported("GL_ANGLE_texture_compression_dxt3") &&
+			SDL_GL_ExtensionSupported("GL_ANGLE_texture_compression_dxt5"));
 		platform_log("OpenGL ES %d.%d: copy image %d, border clamp %d, anisotropy %d, S3TC %d, sample counting %d",
 			(int)major, (int)minor, xgpu_capabilities.copy_image, xgpu_capabilities.border_clamp,
 			xgpu_capabilities.anisotropy, xgpu_capabilities.s3tc, xgpu_capabilities.atomic_counters);
@@ -984,6 +1056,17 @@ void gpu_texture_destroy(gpu_texture texture)
 	memset(texture_record(texture), 0, sizeof(struct texture_record));
 }
 
+/* the window's framebuffer: 0, or in the iOS host UIKit's drawable
+framebuffer (which the GL bridge substituted for 0 before step 4) */
+static GLuint default_framebuffer(void)
+{
+#ifdef GPU_GL_HOST
+	return host_ios_default_framebuffer();
+#else
+	return 0;
+#endif
+}
+
 /* ---------- framebuffers, cached by attachment */
 
 struct framebuffer_entry
@@ -1037,7 +1120,7 @@ static void copy_level_by_blit(GLuint source, GLuint destination, GLint level, G
 	glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, destination, level);
 	glDisable(GL_SCISSOR_TEST);
 	glBlitFramebuffer(0, 0, width, height, 0, 0, width, height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
-	glBindFramebuffer(GL_FRAMEBUFFER, 0);
+	glBindFramebuffer(GL_FRAMEBUFFER, default_framebuffer());
 	/* the blit bypasses the cached state, so the next draw must re-apply it */
 	state_invalidate();
 }
@@ -1155,7 +1238,7 @@ void gpu_buffer_write(gpu_buffer buffer, uint32_t offset, uint32_t size, const v
 	waiting for them */
 	if (flags & GPU_WRITE_UNUSED)
 	{
-		host_gl_buffer_write(GL_COPY_WRITE_BUFFER, offset, size, data);
+		gl_buffer_write(GL_COPY_WRITE_BUFFER, (GLintptr)offset, (GLsizeiptr)size, data);
 		return;
 	}
 #else
@@ -1201,7 +1284,7 @@ uint32_t gpu_stream(uint32_t kind, const void *data, uint32_t size, gpu_buffer *
 		}
 		offset = streams.index_offset;
 #ifdef GPU_GL_ES
-		host_gl_buffer_write(GL_ELEMENT_ARRAY_BUFFER, (unsigned int)offset, (unsigned int)size, data);
+		gl_buffer_write(GL_ELEMENT_ARRAY_BUFFER, (GLintptr)offset, (GLsizeiptr)size, data);
 #else
 		glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, (GLintptr)offset, (GLsizeiptr)size, data);
 #endif
@@ -1213,7 +1296,7 @@ uint32_t gpu_stream(uint32_t kind, const void *data, uint32_t size, gpu_buffer *
 	offset = streams.stream_offset;
 	state_array_buffer(streams.stream_buffer);
 #ifdef GPU_GL_ES
-	host_gl_buffer_write(GL_ARRAY_BUFFER, (unsigned int)offset, (unsigned int)size, data);
+	gl_buffer_write(GL_ARRAY_BUFFER, (GLintptr)offset, (GLsizeiptr)size, data);
 #else
 	glBufferSubData(GL_ARRAY_BUFFER, (GLintptr)offset, (GLsizeiptr)size, data);
 #endif
@@ -1227,9 +1310,9 @@ one's frame to finish; on desktop GL, orphan both buffers at the next use */
 static void stream_frame(void)
 {
 #ifdef GPU_GL_ES
-	host_gl_fence_frame((unsigned int)streams.buffer_ring);
+	gl_fence_frame(streams.buffer_ring);
 	streams.buffer_ring = (streams.buffer_ring + 1) % STREAM_BUFFER_RING;
-	host_gl_wait_frame((unsigned int)streams.buffer_ring);
+	gl_wait_frame(streams.buffer_ring);
 	streams.stream_buffer = streams.stream_buffers[streams.buffer_ring];
 	streams.index_buffer = streams.index_buffers[streams.buffer_ring];
 	streams.stream_offset = 0;
@@ -1612,7 +1695,7 @@ void gpu_visibility_begin(void)
 		visibility.counter_next = (visibility.counter_next + 1) % GPU_VISIBILITY_SLOTS;
 		visibility.counter_active = visibility.counter_next;
 		glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, visibility.counter_buffer);
-		host_gl_buffer_write(GL_ATOMIC_COUNTER_BUFFER, (unsigned int)(visibility.counter_active * sizeof(GLuint)),
+		gl_buffer_write(GL_ATOMIC_COUNTER_BUFFER, (GLintptr)(visibility.counter_active * sizeof(GLuint)),
 			sizeof(zero), &zero);
 		glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, 0);
 		return;
@@ -1656,8 +1739,8 @@ uint32_t gpu_visibility_result(uint32_t slot, uint32_t *samples)
 	if (visibility.counters)
 	{
 		/* reading the buffer waits for the draws that counted */
-		*samples = host_gl_read_buffer_word(visibility.counter_buffer,
-			(unsigned int)(visibility.counter_of_slot[slot] * sizeof(GLuint)));
+		*samples = gl_read_buffer_word(visibility.counter_buffer,
+			(GLintptr)(visibility.counter_of_slot[slot] * sizeof(GLuint)));
 		return 1;
 	}
 #else
@@ -1706,7 +1789,7 @@ void gpu_present(gpu_texture back_buffer)
 	}
 	x = (window_width - width) / 2;
 	y = (window_height - height) / 2;
-	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, default_framebuffer());
 	glDisable(GL_SCISSOR_TEST);
 	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 	glClearColor(0.0f, 0.0f, 0.0f, 1.0f);

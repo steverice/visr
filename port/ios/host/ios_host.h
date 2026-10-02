@@ -9,6 +9,8 @@ static inline uint32_t guest_pointer(const void *p) { return (uint32_t)(uintptr_
 uint32_t host_ios_default_framebuffer(void);
 struct SDL_Window;
 struct SDL_Gamepad;
+/* the guest's window (host_sdl.c), for the GPU backend's present (gpu_gl.c) */
+struct SDL_Window *host_sdl_window(void);
 void host_ios_touch_initialize(void);
 void host_ios_prepare_assets(const char *documents);
 /* tvOS: receive the player's XISO over the local network into <documents>/maps. */

@@ -30,7 +30,8 @@ with open(BUILD / 'gpu_layout_check.h', 'w') as layout_check:
     subprocess.run([str(BUILD / 'gpu-layout-probe')], cwd=ROOT, check=True, stdout=layout_check)
 run(clang, '--target=arm64_32-apple-watchos', '-mcpu=cortex-a53', '-ffixed-x15', '-ffixed-x27',
     '-fno-stack-protector', '-ffreestanding', '-Iport/linux/src', '-fsyntax-only', '-x', 'c', BUILD / 'gpu_layout_check.h')
-run('xcrun','clang','-O2','-Iport/ios/host','-Iport/ios/host','-Iport/runtime/include',
+# memory_probe.c includes guest_host.h, which includes gpu.h (port/linux/src)
+run('xcrun','clang','-O2','-Iport/ios/host','-Iport/runtime/include','-Iport/linux/src',
     '-Iport/runtime/guest/runtime','port/ios/tests/memory_probe.c','port/ios/host/host_memory.c','-o',BUILD/'memory-probe')
 run(BUILD/'memory-probe')
 sdl_flags = shlex.split(subprocess.check_output(['pkg-config', '--cflags', '--libs', 'sdl3'], text=True))

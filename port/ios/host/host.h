@@ -88,8 +88,4 @@ void host_debug_start_sampler(const char *setting);
 /* the host function for an import name, or NULL */
 void *host_resolve_import(const char *name);
 
-/* ---------- SDL / GL (host_sdl.c, host_gl.c) */
-
-void *host_gl_resolve(const char *name);
-
 #endif

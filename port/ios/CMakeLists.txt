@@ -34,8 +34,9 @@ else()
 endif()
 add_executable(HaloCE MACOSX_BUNDLE
     ${HALO_PLATFORM_SOURCES} "${ROOT}/port/runtime/xiso.c"
-    host/host_main.m host/host_memory.c host/host_loader.c host/host_syscall.c host/host_gl.c host/guest_call.S
-    host/host_thread.c host/host_sdl.c
+    host/host_main.m host/host_memory.c host/host_loader.c host/host_syscall.c host/guest_call.S
+    host/host_thread.c host/host_sdl.c host/host_gpu.c
+    "${ROOT}/port/linux/src/gpu_gl.c" "${ROOT}/port/linux/src/gl_functions.c"
     "${ROOT}/port/linux/src/posix_files.c" host/posix_net.c
     "${ROOT}/build/ios/host/bridges.c" "${ROOT}/build/ios/embedded/guest_image.S")
 target_include_directories(HaloCE PRIVATE host "${ROOT}/port/runtime" "${ROOT}/port/runtime/include"
@@ -43,6 +44,9 @@ target_include_directories(HaloCE PRIVATE host "${ROOT}/port/runtime" "${ROOT}/p
     "${ROOT}/build/ios/gl_include" "${ROOT}/build/ios/embedded")
 target_compile_definitions(HaloCE PRIVATE HALO_IOS=1 st_mtim=st_mtimespec st_atim=st_atimespec st_ctim=st_ctimespec)
 target_compile_options(HaloCE PRIVATE -Wno-deprecated-declarations)
+# the GPU backend (step 4): OpenGL ES through gl.h's pointer table, resolved by name
+set_source_files_properties("${ROOT}/port/linux/src/gpu_gl.c" "${ROOT}/port/linux/src/gl_functions.c"
+    PROPERTIES COMPILE_DEFINITIONS GPU_GL_HOST=1)
 target_compile_options(HaloCE PRIVATE "$<$<COMPILE_LANGUAGE:OBJC>:-fobjc-arc>")
 target_link_libraries(HaloCE PRIVATE SDL3::SDL3-static "-framework Foundation" "-framework UIKit" "-framework OpenGLES")
 if(HALO_TVOS)

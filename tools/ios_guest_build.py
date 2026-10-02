@@ -169,7 +169,6 @@ def generate_ios_guest_build(n: Writer, sln: Any) -> None:
     config: Dict[str, Any] = json.loads(config_path.read_text(encoding="utf-8"))
 
     toolchain = Path(sln.ios_llvm)
-    sysroot_include = Path("build/ios/gl_include").resolve()
     guest_cc = str(toolchain / "bin/clang")
     converter = "tools/ios_asm_convert.py"
 
@@ -178,7 +177,6 @@ def generate_ios_guest_build(n: Writer, sln: Any) -> None:
     gen_dir = guest_dir / "gen"
     libc_include = guest_dir / "libc_include"
     libc_internal = guest_dir / "libc_internal"
-    gl_include = guest_dir / "gl_include"
     arch = PORT_DIR / "guest" / "libc" / "arch" / "arm64_32"
     semantics_header = Path("build/linux/halo_msvc_semantics.h")
     platform_semantics_header = Path("build/linux/platform_msvc_semantics.h")
@@ -216,28 +214,6 @@ def generate_ios_guest_build(n: Writer, sln: Any) -> None:
     )
     n.build(outputs=version_h, rule="guest_version_h")
 
-    # Khronos OpenGL ES declarations for the guest
-    gl_stamp = gl_include / "stamp"
-    n.rule(
-        name="guest_gl_include",
-        command=(f"mkdir -p {gl_include} && ln -sfn {sysroot_include}/GLES2 {gl_include}/GLES2 && "
-                 f"ln -sfn {sysroot_include}/GLES3 {gl_include}/GLES3 && "
-                 f"ln -sfn {sysroot_include}/KHR {gl_include}/KHR && touch $out"),
-        description="IOS GL HEADERS",
-    )
-    n.build(outputs=gl_stamp, rule="guest_gl_include")
-
-    guest_gl_c = gen_dir / "guest_gl.c"
-    gl_imports = gen_dir / "gl_imports.list"
-    n.rule(
-        name="guest_gl_stubs",
-        command=(f"{python} tools/guest_gl_stubs.py {LINUX_DIR}/src/gl.h {sysroot_include}/GLES3/gl32.h "
-                 f"{sysroot_include}/GLES2/gl2ext.h {guest_gl_c} {gl_imports}"),
-        description="IOS GL STUBS",
-    )
-    n.build(outputs=[guest_gl_c, gl_imports], rule="guest_gl_stubs",
-            implicit=[Path("tools/guest_gl_stubs.py"), LINUX_DIR / "src" / "gl.h"])
-
     guest_posix_c = gen_dir / "guest_posix.c"
     posix_imports = gen_dir / "posix_imports.list"
     n.rule(
@@ -257,10 +233,10 @@ def generate_ios_guest_build(n: Writer, sln: Any) -> None:
         description="IOS IMPORTS",
     )
     n.build(outputs=[imports_s, host_table_c], rule="guest_imports",
-            inputs=[host_imports_list, posix_imports, gl_imports],
+            inputs=[host_imports_list, posix_imports],
             implicit=[Path("tools/guest_imports.py")])
 
-    generated_headers = [*xdk_headers(), alltypes, syscall_h, version_h, gl_stamp,
+    generated_headers = [*xdk_headers(), alltypes, syscall_h, version_h,
                          semantics_header, platform_semantics_header]
 
     # ---------- guest compilation: C -> Darwin assembly -> ELF assembly -> object
@@ -363,9 +339,10 @@ def generate_ios_guest_build(n: Writer, sln: Any) -> None:
         f"-include {prefix_header}", f"-include {platform_semantics_header}",
         f"-I{LINUX_DIR}/src", f"-I{LINUX_DIR}/include", f"-I{PORT_DIR}/guest/runtime",
         f"-I{PORT_DIR}/include", f"-I{TOML_DIR}", f"-I{KCP_DIR}", "-Isource -Isource/cseries",
-        f"-I{SDL_DIR}/include", f"-I{gl_include}", *libc_includes, f"-idirafter {XDK_INCLUDE}",
+        f"-I{SDL_DIR}/include", *libc_includes, f"-idirafter {XDK_INCLUDE}",
     ])
-    guest_host_only = {"memory_watch.c"}  # replaced by guest_memory_watch.c
+    # memory_watch.c is replaced by guest_memory_watch.c; the GPU backend runs in the host (step 4)
+    guest_host_only = {"memory_watch.c", "gpu_gl.c", "gl_functions.c"}
     for source in sorted((LINUX_DIR / "src").glob("*.c")):
         if source.name.startswith("posix_") or source.name in guest_host_only:
             continue
@@ -376,7 +353,8 @@ def generate_ios_guest_build(n: Writer, sln: Any) -> None:
     objects.append(guest_object(KCP_DIR / "ikcp.c", platform_cflags))
     runtime_internal_cflags = " ".join([
         guest_abi, "-std=c99", "-ffreestanding", "-fno-common", "-D_XOPEN_SOURCE=700", "-D_GNU_SOURCE",
-        f"-I{PORT_DIR}/guest/runtime", f"-I{PORT_DIR}/include",
+        # guest_host.h includes gpu.h (port/linux/src)
+        f"-I{PORT_DIR}/guest/runtime", f"-I{PORT_DIR}/include", f"-I{LINUX_DIR}/src",
         f"-I{arch}", f"-I{MUSL_DIR}/arch/generic", f"-I{libc_internal}",
         f"-I{PORT_DIR}/guest/libc/src_include", f"-I{MUSL_DIR}/src/include",
         f"-I{MUSL_DIR}/src/internal", f"-I{libc_include}", f"-I{MUSL_DIR}/include",
@@ -384,7 +362,7 @@ def generate_ios_guest_build(n: Writer, sln: Any) -> None:
     runtime_cflags = " ".join([
         guest_abi, guest_code, "-std=gnu11", "-D_GNU_SOURCE",
         f"-I{PORT_DIR}/guest/runtime", f"-I{PORT_DIR}/include", f"-I{LINUX_DIR}/src",
-        f"-I{SDL_DIR}/include", f"-I{gl_include}", *libc_includes,
+        f"-I{SDL_DIR}/include", *libc_includes,
     ])
     runtime_dir = PORT_DIR / "guest" / "runtime"
     for source in sorted(runtime_dir.glob("*.c")):
@@ -394,7 +372,6 @@ def generate_ios_guest_build(n: Writer, sln: Any) -> None:
             objects.append(guest_object(source, platform_cflags))
         else:
             objects.append(guest_object(source, runtime_cflags))
-    objects.append(guest_object(guest_gl_c, runtime_cflags))
     objects.append(guest_object(guest_posix_c, runtime_cflags))
     imports_o = obj_dir / "gen" / "imports.o"
     n.build(outputs=imports_o, rule="guest_as", inputs=imports_s)

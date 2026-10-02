@@ -39,11 +39,26 @@ host_sdl_rumble_gamepad
 host_sdl_open_audio_stream
 host_sdl_put_audio_stream_data
 host_sdl_resume_audio_stream_device
-host_gl_get_string
-host_gl_has_extension
-host_gl_read_buffer_word
-host_gl_buffer_write
-host_gl_fence_frame
-host_gl_wait_frame
+# GPU backend (gpu.h)
+host_gpu_texture_create
+host_gpu_texture_upload
+host_gpu_texture_copy_level
+host_gpu_texture_generate_mipmaps
+host_gpu_texture_destroy
+host_gpu_texture_read
+host_gpu_buffer_create
+host_gpu_buffer_write
+host_gpu_stream_reserve
+host_gpu_stream
+host_gpu_shader_create
+host_gpu_clear
+host_gpu_draw
+host_gpu_visibility_begin
+host_gpu_visibility_end
+host_gpu_visibility_result
+host_gpu_flush
+host_gpu_present
+host_gpu_call_count_take
+host_gpu_initialize
 
 host_errno
