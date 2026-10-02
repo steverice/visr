@@ -56,18 +56,20 @@ int main(int argc,char **argv) {
            and debug.gpu_stats among it, which otherwise only a debugger's console shows. */
         if(access("stderr.log",F_OK)==0){int fd=open("stderr.log",O_WRONLY|O_APPEND);if(fd>=0){dup2(fd,2);close(fd);}}
         host_logf(HOST_LOG_INFO,"Halo iOS native guest starting");
+#if TARGET_OS_VISION
+        /* Closing the window is how a visionOS app is left, and an app reopened
+           into a new scene would have no game window: quit (the game saves at
+           checkpoints). Registered before the import setup screen, whose wait
+           loop is when a player is most likely to close the window; delivered
+           while that loop or the guest pumps the run loop. */
+        [NSNotificationCenter.defaultCenter addObserverForName:UISceneDidDisconnectNotification object:nil queue:nil
+            usingBlock:^(NSNotification *notification){(void)notification;host_exit(0);}];
+#endif
         UIApplication.sharedApplication.idleTimerDisabled=YES;
         host_ios_prepare_assets(data_root);
         /* the arena is the step a device can refuse (visionOS: see port/ios/README.md) */
         if(host_load_image(NULL,0))host_fatal(host_arena?"Could not map the signed game image. See ios-runtime.log in Files.":
             "Could not reserve the game's 4 GB memory arena. See ios-runtime.log in Files.");
-#if TARGET_OS_VISION
-        /* Closing the window is how a visionOS app is left, and an app reopened
-           into a new scene would have no game window: quit (the game saves at
-           checkpoints). Delivered while the guest pumps SDL's events. */
-        [NSNotificationCenter.defaultCenter addObserverForName:UISceneDidDisconnectNotification object:nil queue:nil
-            usingBlock:^(NSNotification *notification){(void)notification;host_exit(0);}];
-#endif
         host_install_signal_handlers();
         SDL_SetHint(SDL_HINT_ORIENTATIONS,"LandscapeLeft LandscapeRight");
         SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS,"0");
