@@ -1,4 +1,4 @@
-# Build and install Halo: CE on iPhone and iPad
+# Build and install Halo: CE on iPhone, iPad, Apple TV and Apple Vision Pro
 
 This directory builds a native ARM64 iOS app around the existing game's ILP32
 runtime. It uses SDL3, OpenGL ES 3 or Metal, UIKit touch controls, and the user's original
@@ -288,7 +288,9 @@ letterboxed at 16:9 in the window.
   none is connected. A keyboard's arrows, Return and Escape work the menus.
 - **Game data.** As on iPhone: the setup screen offers the Files picker, and
   an XISO placed in the app's Documents folder is imported.
-- **Closing the window quits the game.** It saves at checkpoints.
+- **Closing the window pauses the game**, sound included, and reopening Halo
+  resumes it. If visionOS later reclaims the closed window, the game quits; it
+  saves at checkpoints.
 - **Memory.** The game reserves a 4 GB address range for its 32-bit memory at
   launch. If a Vision Pro refuses it, launching shows "Could not reserve the
   game's 4 GB memory arena"; rebuild with `--extended-virtual-addressing`
