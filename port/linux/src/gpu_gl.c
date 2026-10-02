@@ -776,7 +776,7 @@ static void GLAPIENTRY gl_debug_callback(GLenum source, GLenum type, GLuint id, 
 check_errors on ES) */
 static int gl_debug;
 
-void gpu_initialize(uint32_t flags, struct gpu_capabilities *capabilities)
+static void gpu_gl_initialize(uint32_t flags, struct gpu_capabilities *capabilities)
 {
 	GLint major = 0, minor = 0, maximum_texture_size = 0;
 
@@ -914,6 +914,7 @@ void gpu_initialize(uint32_t flags, struct gpu_capabilities *capabilities)
 			glVertexAttrib4fv(index, initial);
 	}
 	state_invalidate();
+	GPU_CAPABILITIES_LOG(platform_log, capabilities);
 }
 
 /* ---------- textures
@@ -952,7 +953,7 @@ static GLsizei texture_level_dimension(uint32_t size, uint32_t level)
 	return (GLsizei)(size >> level ? size >> level : 1);
 }
 
-gpu_texture gpu_texture_create(const struct gpu_texture_description *description)
+static gpu_texture gpu_gl_texture_create(const struct gpu_texture_description *description)
 {
 	struct texture_record *record;
 	GLuint name = 0;
@@ -1002,7 +1003,7 @@ static GLenum compressed_format(uint32_t format)
 	}
 }
 
-void gpu_texture_upload(gpu_texture texture, uint32_t face, uint32_t level, const void *data, uint32_t size)
+static void gpu_gl_texture_upload(gpu_texture texture, uint32_t face, uint32_t level, const void *data, uint32_t size)
 {
 	struct texture_record *record = texture_record(texture);
 	const struct gpu_texture_description *description = &record->description;
@@ -1045,7 +1046,7 @@ void gpu_texture_upload(gpu_texture texture, uint32_t face, uint32_t level, cons
 	}
 }
 
-void gpu_texture_destroy(gpu_texture texture)
+static void gpu_gl_texture_destroy(gpu_texture texture)
 {
 	GLuint name = texture;
 
@@ -1126,7 +1127,7 @@ static void copy_level_by_blit(GLuint source, GLuint destination, GLint level, G
 }
 #endif
 
-void gpu_texture_copy_level(gpu_texture source, gpu_texture destination, uint32_t level)
+static void gpu_gl_texture_copy_level(gpu_texture source, gpu_texture destination, uint32_t level)
 {
 	const struct gpu_texture_description *description = &texture_record(destination)->description;
 	GLsizei width = texture_level_dimension(description->width, level);
@@ -1143,7 +1144,7 @@ void gpu_texture_copy_level(gpu_texture source, gpu_texture destination, uint32_
 		destination, GL_TEXTURE_2D, (GLint)level, 0, 0, 0, width, height, 1);
 }
 
-uint32_t gpu_texture_read(gpu_texture texture, void *pixels, uint32_t size)
+static uint32_t gpu_gl_texture_read(gpu_texture texture, void *pixels, uint32_t size)
 {
 	const struct gpu_texture_description *description = &texture_record(texture)->description;
 	uint32_t width = description->width, height = description->height;
@@ -1206,7 +1207,7 @@ uint32_t gpu_texture_read(gpu_texture texture, void *pixels, uint32_t size)
 	return 1;
 }
 
-void gpu_texture_generate_mipmaps(gpu_texture texture, uint32_t base_level)
+static void gpu_gl_texture_generate_mipmaps(gpu_texture texture, uint32_t base_level)
 {
 	glBindTexture(GL_TEXTURE_2D, texture);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, (GLint)base_level);
@@ -1219,7 +1220,7 @@ void gpu_texture_generate_mipmaps(gpu_texture texture, uint32_t base_level)
 
 A gpu_buffer is the GL buffer name. */
 
-gpu_buffer gpu_buffer_create(uint32_t size)
+static gpu_buffer gpu_gl_buffer_create(uint32_t size)
 {
 	GLuint name = 0;
 
@@ -1229,7 +1230,7 @@ gpu_buffer gpu_buffer_create(uint32_t size)
 	return name;
 }
 
-void gpu_buffer_write(gpu_buffer buffer, uint32_t offset, uint32_t size, const void *data, uint32_t flags)
+static void gpu_gl_buffer_write(gpu_buffer buffer, uint32_t offset, uint32_t size, const void *data, uint32_t flags)
 {
 	glBindBuffer(GL_COPY_WRITE_BUFFER, buffer);
 #ifdef GPU_GL_ES
@@ -1247,7 +1248,7 @@ void gpu_buffer_write(gpu_buffer buffer, uint32_t offset, uint32_t size, const v
 	glBufferSubData(GL_COPY_WRITE_BUFFER, (GLintptr)offset, (GLsizeiptr)size, data);
 }
 
-void gpu_stream_reserve(uint32_t vertex_bytes, uint32_t index_bytes)
+static void gpu_gl_stream_reserve(uint32_t vertex_bytes, uint32_t index_bytes)
 {
 	if (streams.stream_offset + vertex_bytes > STREAM_BUFFER_SIZE)
 	{
@@ -1268,7 +1269,7 @@ void gpu_stream_reserve(uint32_t vertex_bytes, uint32_t index_bytes)
 	}
 }
 
-uint32_t gpu_stream(uint32_t kind, const void *data, uint32_t size, gpu_buffer *buffer)
+static uint32_t gpu_gl_stream(uint32_t kind, const void *data, uint32_t size, gpu_buffer *buffer)
 {
 	unsigned long offset;
 
@@ -1292,7 +1293,7 @@ uint32_t gpu_stream(uint32_t kind, const void *data, uint32_t size, gpu_buffer *
 		*buffer = streams.index_buffer;
 		return (uint32_t)offset;
 	}
-	gpu_stream_reserve(size, 0);
+	gpu_gl_stream_reserve(size, 0);
 	offset = streams.stream_offset;
 	state_array_buffer(streams.stream_buffer);
 #ifdef GPU_GL_ES
@@ -1345,7 +1346,7 @@ static GLuint compile_shader(GLenum type, const char *source, const char *what)
 	return shader;
 }
 
-gpu_shader gpu_shader_create(uint32_t stage, const char *source)
+static gpu_shader gpu_gl_shader_create(uint32_t stage, const char *source)
 {
 	return stage == GPU_SHADER_VERTEX ? compile_shader(GL_VERTEX_SHADER, source, "vertex") :
 		compile_shader(GL_FRAGMENT_SHADER, source, "pixel");
@@ -1591,7 +1592,7 @@ static GLenum gl_primitive(uint32_t primitive)
 	}
 }
 
-uint32_t gpu_draw(const struct gpu_draw *draw, const struct gpu_constant_store *constants,
+static uint32_t gpu_gl_draw(const struct gpu_draw *draw, const struct gpu_constant_store *constants,
 	const struct gpu_uniforms *uniforms)
 {
 	struct gpu_gl_program *program;
@@ -1642,7 +1643,7 @@ uint32_t gpu_draw(const struct gpu_draw *draw, const struct gpu_constant_store *
 	return 1;
 }
 
-void gpu_clear(const struct gpu_clear *clear, const struct gpu_rect *rectangles, uint32_t count)
+static void gpu_gl_clear(const struct gpu_clear *clear, const struct gpu_rect *rectangles, uint32_t count)
 {
 	float rgba[4];
 	GLbitfield mask = 0;
@@ -1684,7 +1685,7 @@ void gpu_clear(const struct gpu_clear *clear, const struct gpu_rect *rectangles,
 
 /* ---------- visibility tests (the state is declared before gpu_initialize) */
 
-void gpu_visibility_begin(void)
+static void gpu_gl_visibility_begin(void)
 {
 	visibility.active = 1;
 #ifdef GPU_GL_ES
@@ -1704,7 +1705,7 @@ void gpu_visibility_begin(void)
 	glBeginQuery(VISIBILITY_QUERY, visibility.queries[0]);
 }
 
-void gpu_visibility_end(uint32_t slot)
+static void gpu_gl_visibility_end(uint32_t slot)
 {
 	GLuint scratch;
 
@@ -1731,7 +1732,7 @@ void gpu_visibility_end(uint32_t slot)
 #endif
 }
 
-uint32_t gpu_visibility_result(uint32_t slot, uint32_t *samples)
+static uint32_t gpu_gl_visibility_result(uint32_t slot, uint32_t *samples)
 {
 	GLuint available = 0, count = 0;
 
@@ -1768,12 +1769,12 @@ uint32_t gpu_visibility_result(uint32_t slot, uint32_t *samples)
 
 /* ---------- frames */
 
-void gpu_flush(void)
+static void gpu_gl_flush(void)
 {
 	glFlush();
 }
 
-void gpu_present(gpu_texture back_buffer)
+static void gpu_gl_present(gpu_texture back_buffer)
 {
 	const struct gpu_texture_description *description = &texture_record(back_buffer)->description;
 	int window_width, window_height, width, height, x, y;
@@ -1805,10 +1806,28 @@ void gpu_present(gpu_texture back_buffer)
 	frames++;
 }
 
-uint32_t gpu_call_count_take(void)
+static uint32_t gpu_gl_call_count_take(void)
 {
 	uint32_t count = (uint32_t)halo_gl_call_count;
 
 	halo_gl_call_count = 0;
 	return count;
 }
+
+/* ---------- the backend */
+
+#define GPU_GL_FUNCTION(type, name, parameters, arguments) .name = gpu_gl_##name,
+#define GPU_GL_PROCEDURE(name, parameters, arguments) .name = gpu_gl_##name,
+const struct gpu_backend gpu_backend_gl = { GPU_FUNCTIONS(GPU_GL_FUNCTION, GPU_GL_PROCEDURE) };
+#undef GPU_GL_FUNCTION
+#undef GPU_GL_PROCEDURE
+
+#ifndef GPU_GL_HOST
+/* gpu.h's entry points, where GL is the only backend (the iOS host
+dispatches between backends: port/ios/host/host_gpu_dispatch.c) */
+#define GPU_GL_FUNCTION(type, name, parameters, arguments) type gpu_##name parameters { return gpu_gl_##name arguments; }
+#define GPU_GL_PROCEDURE(name, parameters, arguments) void gpu_##name parameters { gpu_gl_##name arguments; }
+GPU_FUNCTIONS(GPU_GL_FUNCTION, GPU_GL_PROCEDURE)
+#undef GPU_GL_FUNCTION
+#undef GPU_GL_PROCEDURE
+#endif

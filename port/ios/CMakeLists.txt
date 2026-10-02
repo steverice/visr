@@ -35,7 +35,7 @@ endif()
 add_executable(HaloCE MACOSX_BUNDLE
     ${HALO_PLATFORM_SOURCES} "${ROOT}/port/runtime/xiso.c"
     host/host_main.m host/host_memory.c host/host_loader.c host/host_syscall.c host/guest_call.S
-    host/host_thread.c host/host_sdl.c host/host_gpu.c
+    host/host_thread.c host/host_sdl.c host/host_gpu.c host/host_gpu_dispatch.c
     "${ROOT}/port/linux/src/gpu_gl.c" "${ROOT}/port/linux/src/gl_functions.c"
     "${ROOT}/port/linux/src/posix_files.c" host/posix_net.c
     "${ROOT}/build/ios/host/bridges.c" "${ROOT}/build/ios/embedded/guest_image.S")

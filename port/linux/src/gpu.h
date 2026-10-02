@@ -30,6 +30,10 @@ enum
 	GPU_OCCLUSION_SHADER_COUNTER,
 };
 
+/* gpu_capabilities.shader_language: Metal Shading Language (the Metal
+backend), which no GLSL version number can be */
+enum { GPU_SHADER_LANGUAGE_MSL = 1 };
+
 struct gpu_capabilities
 {
 	/* D3DCOLOR vertex attributes can be read as BGRA; otherwise the front
@@ -47,7 +51,8 @@ struct gpu_capabilities
 	uint8_t s3tc;
 	/* BORDER addressing; otherwise it becomes CLAMP_TO_EDGE */
 	uint8_t border_clamp;
-	/* the shading language version: 450, 300 or 310 */
+	/* the shading language version: 450, 300 or 310; or
+	GPU_SHADER_LANGUAGE_MSL */
 	uint16_t shader_language;
 	/* OpenGL ES shading language */
 	uint8_t shader_es;
@@ -397,8 +402,74 @@ debug.gpu_stats */
 uint32_t gpu_call_count_take(void);
 
 /* gpu_initialize flags */
-enum { GPU_INITIALIZE_DEBUG = 1 };   /* debug.gl_debug: report GPU errors */
+enum
+{
+	GPU_INITIALIZE_DEBUG = 1,        /* debug.gl_debug: report GPU errors */
+	/* display.renderer = "metal": the Metal backend (iOS and tvOS hosts) */
+	GPU_INITIALIZE_METAL = 2,
+};
 /* probe the context, which must be current, and set it up */
 void gpu_initialize(uint32_t flags, struct gpu_capabilities *capabilities);
+
+/* the line every backend logs at the end of gpu_initialize: the capabilities
+that change what the front end does, which a GL run and a Metal run of the
+same build must agree on (tools/mac_run.py compare --across-backends) */
+#define GPU_CAPABILITIES_LOG(log, capabilities) \
+	log("GPU capabilities: vertex BGRA %u, base vertex %u, triangle fans %u, line loops %u, sampler LOD bias %u, " \
+		"occlusion %u, S3TC %u, border clamp %u, max texture size %u", (unsigned)(capabilities)->vertex_bgra, \
+		(unsigned)(capabilities)->base_vertex, (unsigned)(capabilities)->triangle_fans, \
+		(unsigned)(capabilities)->line_loops, (unsigned)(capabilities)->sampler_lod_bias, \
+		(unsigned)(capabilities)->occlusion_mode, (unsigned)(capabilities)->s3tc, \
+		(unsigned)(capabilities)->border_clamp, (unsigned)(capabilities)->max_texture_size)
+
+/* ---------- backends
+
+Every function above, for building a table of one backend's functions
+(struct gpu_backend) and the entry points that call through it: F(return
+type, name without gpu_, parameters, arguments) for a function with a
+result, P(name, parameters, arguments) for one without. GPU_OPERATIONS is
+every one but gpu_initialize, which picks the backend in the iOS host
+(port/ios/host/host_gpu_dispatch.c); elsewhere gpu_gl.c's entry points call
+its own functions. */
+
+#define GPU_OPERATIONS(F, P) \
+	F(gpu_texture, texture_create, (const struct gpu_texture_description *description), (description)) \
+	P(texture_upload, (gpu_texture texture, uint32_t face, uint32_t level, const void *data, uint32_t size), \
+		(texture, face, level, data, size)) \
+	P(texture_copy_level, (gpu_texture source, gpu_texture destination, uint32_t level), (source, destination, level)) \
+	P(texture_generate_mipmaps, (gpu_texture texture, uint32_t base_level), (texture, base_level)) \
+	P(texture_destroy, (gpu_texture texture), (texture)) \
+	F(uint32_t, texture_read, (gpu_texture texture, void *pixels, uint32_t size), (texture, pixels, size)) \
+	F(gpu_buffer, buffer_create, (uint32_t size), (size)) \
+	P(buffer_write, (gpu_buffer buffer, uint32_t offset, uint32_t size, const void *data, uint32_t flags), \
+		(buffer, offset, size, data, flags)) \
+	P(stream_reserve, (uint32_t vertex_bytes, uint32_t index_bytes), (vertex_bytes, index_bytes)) \
+	F(uint32_t, stream, (uint32_t kind, const void *data, uint32_t size, gpu_buffer *buffer), (kind, data, size, buffer)) \
+	F(gpu_shader, shader_create, (uint32_t stage, const char *source), (stage, source)) \
+	P(clear, (const struct gpu_clear *clear, const struct gpu_rect *rectangles, uint32_t count), \
+		(clear, rectangles, count)) \
+	F(uint32_t, draw, (const struct gpu_draw *draw, const struct gpu_constant_store *constants, \
+		const struct gpu_uniforms *uniforms), (draw, constants, uniforms)) \
+	P(visibility_begin, (void), ()) \
+	P(visibility_end, (uint32_t slot), (slot)) \
+	F(uint32_t, visibility_result, (uint32_t slot, uint32_t *samples), (slot, samples)) \
+	P(flush, (void), ()) \
+	P(present, (gpu_texture back_buffer), (back_buffer)) \
+	F(uint32_t, call_count_take, (void), ())
+
+#define GPU_FUNCTIONS(F, P) \
+	GPU_OPERATIONS(F, P) \
+	P(initialize, (uint32_t flags, struct gpu_capabilities *capabilities), (flags, capabilities))
+
+#define GPU_BACKEND_FUNCTION(type, name, parameters, arguments) type (*name) parameters;
+#define GPU_BACKEND_PROCEDURE(name, parameters, arguments) void (*name) parameters;
+/* one backend's functions; it holds host pointers, so it never crosses to
+the guest */
+struct gpu_backend
+{
+	GPU_FUNCTIONS(GPU_BACKEND_FUNCTION, GPU_BACKEND_PROCEDURE)
+};
+#undef GPU_BACKEND_FUNCTION
+#undef GPU_BACKEND_PROCEDURE
 
 #endif
