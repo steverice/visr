@@ -3715,9 +3715,11 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 			passed only if that was this frame */
 			if (hud)
 				present.hud = hud->target.texture;
-			/* placeholders: the camera's planes don't reach the device yet */
-			present.near_meters = 0.1f;
-			present.far_meters = 1000.0f;
+			/* the eyes' planes (the eye loop's, halo_stereo_set_depth_range), in
+			meters: one world unit is 3.048 m */
+			halo_stereo_depth_range(&present.near_meters, &present.far_meters);
+			present.near_meters *= 3.048f;
+			present.far_meters *= 3.048f;
 			present.mode = stereo->mode;
 			render_interpolation_next_frame_due(gpu_present_stereo(&present));
 		}

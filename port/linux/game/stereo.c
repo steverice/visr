@@ -29,6 +29,8 @@ static int stereo_mode = -1; /* read once, on the first frame */
 
 static const char *const mode_names[] = {"off", "head", "screen", "side_by_side"};
 
+static float z_near_world, z_far_world;
+
 /* the mode a display.stereo string names; sets *recognized to 0 for an unknown string */
 static int mode_from_name(const char *name, int *recognized)
 {
@@ -95,4 +97,16 @@ void halo_stereo_layer(int layer)
 int halo_stereo_current_layer(void)
 {
 	return stereo_layer;
+}
+
+void halo_stereo_set_depth_range(float z_near, float z_far)
+{
+	z_near_world = z_near;
+	z_far_world = z_far;
+}
+
+void halo_stereo_depth_range(float *z_near, float *z_far)
+{
+	*z_near = z_near_world;
+	*z_far = z_far_world;
 }

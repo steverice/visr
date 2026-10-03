@@ -45,5 +45,9 @@ void halo_stereo_frame_begin(void);                    /* latches this frame's s
 const struct halo_stereo_frame *halo_stereo_frame(void);
 void halo_stereo_layer(int layer);                     /* -1 mono, 0/1 an eye, 2 the HUD */
 int halo_stereo_current_layer(void);
+/* the eye cameras' near and far planes in world units, for the presenter's
+depth (d3d8_device.c), set by the eye loop each stereo frame */
+void halo_stereo_set_depth_range(float z_near, float z_far);
+void halo_stereo_depth_range(float *z_near, float *z_far);
 
 #endif

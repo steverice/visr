@@ -469,6 +469,8 @@ static void render_player_frame_stereo(
 	real time_delta_since_tick_sec;
 
 	stereo = halo_stereo_frame();
+	/* the presenter's depth range (d3d8_device.c): the eyes' planes */
+	halo_stereo_set_depth_range(window->rasterizer_camera.z_near, window->rasterizer_camera.z_far);
 	aspect = (real)(window->rasterizer_camera.viewport_bounds.x1 - window->rasterizer_camera.viewport_bounds.x0) /
 		(real)(window->rasterizer_camera.viewport_bounds.y1 - window->rasterizer_camera.viewport_bounds.y0);
 	field_of_view_tangent = tangent(window->rasterizer_camera.vertical_field_of_view * 0.5f);
