@@ -24,6 +24,21 @@ per change: game time in ticks, the digital buttons (hex), the 8 analog
 buttons and the 4 stick axes. A name without a slash is a file in the
 current directory (the app's Documents on iOS), with ".input" added.
 
+The controller alone doesn't replay a route exactly: the game turns the look
+stick into facing frame by frame, and frames fall differently on every run.
+So each tick's action for player 1 (what the simulation itself takes: facing,
+movement, buttons, trigger, weapon, grenade and zoom) is recorded too, bit
+for bit, to NAME.actions, and a replay hands the recorded action to each
+tick in place of the one built from the controller (update_client_dequeue,
+source/game/player_queues_new.c). The controller replay still drives what
+reads the controller directly, such as skipping a cinematic. Actions are
+keyed by segment and game tick: a segment ends whenever the game time goes
+back (a checkpoint revert, the next level), so a replay whose revert comes a
+frame later than the recording's still lines up. Its header is "halo action
+recording 1", then one line per tick: segment, tick and the action's eight
+32-bit words in hex. A replay should run with display.direct_camera off:
+the live camera follows the real stick, not the recorded facing.
+
 With debug.benchmark, a replay's frames are timed from the first recorded
 state to the last; then the report goes to benchmark-<name>-<time>.txt next
 to the recording, a summary to the log, and the game quits.
@@ -51,6 +66,16 @@ double halo_frame_trace_milliseconds(void);
 /* how long after the last recorded state a replay ends, in ticks */
 #define REPLAY_TAIL_TICKS 30.0
 
+#define ACTION_HEADER "halo action recording 1"
+/* struct player_action (source/game/players.h) is 0x20 bytes */
+#define ACTION_WORDS 8
+
+struct recorded_action
+{
+	long segment, tick;
+	unsigned int words[ACTION_WORDS];
+};
+
 struct recorded_state
 {
 	double ticks;
@@ -76,7 +101,60 @@ static struct
 	long frame_count, frame_capacity;
 	double previous_frame;
 	double started;
+	/* each tick's action: the file being written, or the recording being
+	replayed; the segment and the game tick of the last action seen */
+	char record_actions_path[512], replay_actions_path[512];
+	FILE *actions_file;
+	struct recorded_action *actions;
+	long action_count, next_action;
+	long segment, last_action_tick;
 } replay;
+
+/* NAME.input's actions file, NAME.actions */
+static void actions_path(const char *input_path, char *path, size_t size)
+{
+	size_t length = strlen(input_path);
+
+	if (length > 6 && !strcmp(input_path + length - 6, ".input"))
+		length -= 6;
+	snprintf(path, size, "%.*s.actions", (int)length, input_path);
+}
+
+static void actions_load(void)
+{
+	FILE *file = fopen(replay.replay_actions_path, "r");
+	char line[256];
+	long capacity = 0;
+
+	if (!file)
+	{
+		platform_log("debug.input_replay: no %s; the controller alone drives the replay", replay.replay_actions_path);
+		return;
+	}
+	if (!fgets(line, sizeof(line), file) || strncmp(line, ACTION_HEADER, strlen(ACTION_HEADER)))
+	{
+		platform_log("debug.input_replay: %s isn't an action recording", replay.replay_actions_path);
+		fclose(file);
+		return;
+	}
+	while (fgets(line, sizeof(line), file))
+	{
+		struct recorded_action action;
+		unsigned int *w = action.words;
+
+		if (sscanf(line, "%ld %ld %x %x %x %x %x %x %x %x", &action.segment, &action.tick,
+			&w[0], &w[1], &w[2], &w[3], &w[4], &w[5], &w[6], &w[7]) != 2 + ACTION_WORDS)
+			continue;
+		if (replay.action_count == capacity)
+		{
+			capacity = capacity ? capacity * 2 : 4096;
+			replay.actions = realloc(replay.actions, (size_t)capacity * sizeof(*replay.actions));
+		}
+		replay.actions[replay.action_count++] = action;
+	}
+	fclose(file);
+	platform_log("debug.input_replay: %ld tick actions from %s", replay.action_count, replay.replay_actions_path);
+}
 
 static void recording_path(const char *name, char *path, size_t size)
 {
@@ -147,7 +225,9 @@ static void configure(void)
 	if (*record)
 	{
 		recording_path(record, replay.record_path, sizeof(replay.record_path));
-		platform_log("debug.input_record: recording controller 1 to %s", replay.record_path);
+		actions_path(replay.record_path, replay.record_actions_path, sizeof(replay.record_actions_path));
+		platform_log("debug.input_record: recording controller 1 to %s and its tick actions to %s", replay.record_path,
+			replay.record_actions_path);
 	}
 	if (*replay_name)
 	{
@@ -155,8 +235,10 @@ static void configure(void)
 
 		snprintf(replay.replay_name, sizeof(replay.replay_name), "%s", base ? base + 1 : replay_name);
 		recording_path(replay_name, replay.replay_path, sizeof(replay.replay_path));
+		actions_path(replay.replay_path, replay.replay_actions_path, sizeof(replay.replay_actions_path));
 		replay.benchmark = config_boolean("debug.benchmark");
 		replay_load();
+		actions_load();
 	}
 }
 
@@ -239,6 +321,66 @@ void input_replay_filter(XINPUT_GAMEPAD *pad)
 		record(pad, ticks);
 	if (*replay.replay_path && !replay.replay_finished)
 		play(pad, ticks);
+}
+
+/* ---------- each tick's action */
+
+static int compare_action_keys(const struct recorded_action *action, long segment, long tick)
+{
+	if (action->segment != segment)
+		return action->segment < segment ? -1 : 1;
+	return action->tick < tick ? -1 : action->tick > tick;
+}
+
+/* player 1's action as a tick takes it (update_client_dequeue, single
+player): recorded, or replaced by the recording's for this segment and tick */
+void input_replay_tick_action(void *action)
+{
+	unsigned int words[ACTION_WORDS];
+	long tick;
+
+	if (!replay.configured)
+		configure();
+	if (!*replay.record_actions_path && !*replay.replay_actions_path)
+		return;
+	if (!game_time_initialized() || input_replay_main_menu_loaded())
+		return;
+	tick = game_time_get();
+	if (replay.last_action_tick > 0 && tick < replay.last_action_tick)
+		replay.segment++;
+	replay.last_action_tick = tick;
+
+	if (*replay.record_actions_path)
+	{
+		int index;
+
+		if (!replay.actions_file)
+		{
+			replay.actions_file = fopen(replay.record_actions_path, "w");
+			if (!replay.actions_file)
+			{
+				platform_log("debug.input_record: cannot write %s", replay.record_actions_path);
+				replay.record_actions_path[0] = 0;
+				return;
+			}
+			fprintf(replay.actions_file, "%s\n", ACTION_HEADER);
+		}
+		memcpy(words, action, sizeof(words));
+		fprintf(replay.actions_file, "%ld %ld", replay.segment, tick);
+		for (index = 0; index < ACTION_WORDS; index++)
+			fprintf(replay.actions_file, " %08x", words[index]);
+		fputc('\n', replay.actions_file);
+		fflush(replay.actions_file);
+	}
+	if (replay.action_count)
+	{
+		while (replay.next_action < replay.action_count &&
+			compare_action_keys(&replay.actions[replay.next_action], replay.segment, tick) < 0)
+			replay.next_action++;
+		if (replay.next_action < replay.action_count &&
+			!compare_action_keys(&replay.actions[replay.next_action], replay.segment, tick))
+			memcpy(action, replay.actions[replay.next_action].words, sizeof(words));
+	}
 }
 
 /* ---------- the benchmark */

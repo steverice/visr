@@ -780,6 +780,15 @@ boolean update_client_dequeue(
 			0x1E8,
 			(NONE == actions[queue_index].desired_zoom_level) || (actions[queue_index].desired_zoom_level>=0));
 	}
+	/* port: debug.input_record records the first player's action as each
+	tick takes it, and debug.input_replay hands the recorded one back
+	(port/linux/src/input_replay.c) */
+	if (game_connection() == _game_connection_local && update_client_globals.queues->count > 0)
+	{
+		extern void input_replay_tick_action(void *action);
+
+		input_replay_tick_action(&actions[0]);
+	}
 	update_client_globals.next_update_number_to_dequeue += 1;
 
 	return TRUE;
