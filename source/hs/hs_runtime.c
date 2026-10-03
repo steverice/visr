@@ -478,7 +478,7 @@ static long hs_real_to_long(
 static long hs_long_to_short(
 	union hs_conversion_result value);
 static long hs_object_name_to_object_list(
-	short object_name_index);
+	long object_name_index);
 static long hs_object_to_object_list(
 	long object_index);
 static boolean hs_object_type_can_cast(
@@ -1619,12 +1619,12 @@ static long hs_long_to_short(
 }
 
 static long hs_object_name_to_object_list(
-	short object_name_index)
+	long object_name_index)
 {
 	long object_index;
 	long object_list_index = NONE;
 
-	object_index = object_index_from_name_index(object_name_index);
+	object_index = object_index_from_name_index((short)object_name_index);
 	if (object_index != NONE)
 	{
 		object_list_index = object_list_new();
