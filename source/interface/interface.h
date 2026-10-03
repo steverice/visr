@@ -64,6 +64,11 @@ void interface_set_bitmap_text_draw_mode(
 	short color_index);
 void interface_draw_screen(
 	void);
+/* port: the two halves of interface_draw_screen (stereo draws them apart) */
+void interface_draw_screen_effects(
+	void);
+void interface_draw_hud(
+	void);
 void interface_draw_fullscreen_overlays(
 	void);
 void interface_draw_bitmap(

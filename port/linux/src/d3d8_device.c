@@ -3645,6 +3645,21 @@ static void write_screenshot(struct render_target_entry *target)
 	free(pixels);
 }
 
+/* the back buffer's texture for a stereo layer if something drew it this
+frame, else NULL (without creating it) */
+static struct render_target_entry *back_buffer_drawn_this_frame(int layer)
+{
+	struct render_target_entry *entry;
+
+	for (entry = *render_target_bucket(device.back_buffer.Data); entry; entry = entry->next_in_bucket)
+	{
+		if (entry->target.data == device.back_buffer.Data && entry->layer == layer &&
+			entry->last_rendered == device.frame + 1)
+			return entry;
+	}
+	return NULL;
+}
+
 void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destination_rectangle,
 	void *unused, void *unused2)
 {
@@ -3660,19 +3675,24 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 	if (device.gl_ready)
 	{
 		const struct halo_stereo_frame *stereo = halo_stereo_frame();
+		/* a frame presents in stereo only if its eyes were drawn: the menus,
+		loading screens and any frame without an eye pass
+		(render_player_frame_stereo) draw everything in the mono layer, which
+		gpu_present_stereo never reads, so they present mono as before */
+		int stereo_frame = stereo->eye_count == 2 && back_buffer_drawn_this_frame(0);
 		/* a stereo frame's screenshot and trace are of eye 0 */
 		struct render_target_entry *back_buffer = render_target_get_layer(&device.back_buffer,
-			stereo->eye_count == 2 ? 0 : HALO_STEREO_LAYER_MONO);
+			stereo_frame ? 0 : HALO_STEREO_LAYER_MONO);
+		struct render_target_entry *hud = stereo_frame ? back_buffer_drawn_this_frame(HALO_STEREO_LAYER_HUD) : NULL;
 
 		if (trace_frame())
 			platform_log("present back buffer %08lx texture %u", (unsigned long)device.back_buffer.Data,
 				back_buffer->target.texture);
 		if (screenshot_every > 0 && device.frame % (unsigned long)screenshot_every == 0)
 			write_screenshot(back_buffer);
-		if (stereo->eye_count == 2)
+		if (stereo_frame)
 		{
 			struct gpu_stereo_present present = { 0 };
-			struct render_target_entry *hud;
 			int eye;
 
 			for (eye = 0; eye < 2; eye++)
@@ -3682,15 +3702,8 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 			}
 			/* the HUD's texture exists only once something drew it, and is
 			passed only if that was this frame */
-			for (hud = *render_target_bucket(device.back_buffer.Data); hud; hud = hud->next_in_bucket)
-			{
-				if (hud->target.data == device.back_buffer.Data && hud->layer == HALO_STEREO_LAYER_HUD &&
-					hud->last_rendered == device.frame + 1)
-				{
-					present.hud = hud->target.texture;
-					break;
-				}
-			}
+			if (hud)
+				present.hud = hud->target.texture;
 			/* placeholders: the camera's planes don't reach the device yet */
 			present.near_meters = 0.1f;
 			present.far_meters = 1000.0f;

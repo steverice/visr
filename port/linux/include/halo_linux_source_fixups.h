@@ -55,6 +55,9 @@ and pipelines its list names are compiled now, under the loading screen
 void halo_shader_list_warm(char const *map_name);
 /* the mouse in the menus (source/interface/ui_widget.c) */
 #include "halo_ui_pointer.h"
+/* the frame's stereo state: source/render/render.c renders each eye and the
+HUD into their own layers (port/linux/game/stereo.c) */
+#include "../src/halo_stereo.h"
 
 /* game code's time() reads debug.fixed_timestep's virtual clock when that is
 on (port/linux/src/xbox_kernel.c); the platform layer keeps the C library's */

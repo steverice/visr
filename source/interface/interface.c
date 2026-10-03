@@ -582,7 +582,19 @@ void interface_draw_bitmap_modulated(
 	return;
 }
 
+/* port: interface_draw_screen is split in two so that stereo
+(source/render/render.c) can run the screen effects per eye and draw the HUD
+once; mono calls both, in the original order */
 void interface_draw_screen(
+	void)
+{
+	interface_draw_screen_effects();
+	interface_draw_hud();
+
+	return;
+}
+
+void interface_draw_screen_effects(
 	void)
 {
 	real flashlight_power;
@@ -734,6 +746,15 @@ void interface_draw_screen(
 	{
 		rasterizer_screen_effect(NULL);
 	}
+
+	return;
+}
+
+void interface_draw_hud(
+	void)
+{
+	if (render.local_player_index == NONE)
+		return;
 
 	hud_draw_screen();
 	game_engine_post_rasterize();

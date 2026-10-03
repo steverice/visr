@@ -133,6 +133,9 @@ static void render_window(
 static void render_player_frame(
 	struct render_window *window,
 	const point2d *screenshot_combined_index);
+static void render_player_frame_stereo(
+	struct render_window *window,
+	struct render_camera *camera);
 
 void render_sky(
 	void);
@@ -142,6 +145,9 @@ void render_sky(
 struct render_globals render;
 
 static boolean render_invalid_fog_warning_displayed;
+
+/* port: TRUE once render_player_frame_stereo drew the eyes this frame */
+static boolean render_stereo_eyes_drawn;
 
 extern short global_screenshot_count;
 
@@ -409,11 +415,18 @@ static void render_window(
 		structure_render_fog_screen();
 		rasterizer_lens_flares_draw();
 		halo_render_before_hud(local_player_index, rasterizer_target, &rasterizer_camera->viewport_bounds);
-		interface_draw_screen();
-		rasterizer_screen_flash();
-		halo_screen_ui_offset(TRUE);
-		render_ui_widgets(local_player_index, &rasterizer_camera->viewport_bounds);
-		halo_screen_ui_offset(FALSE);
+		/* port: in stereo the screen effects run per eye; the HUD, the flash and
+		the widgets draw once, in the HUD pass (render_player_frame_stereo) */
+		if (halo_stereo_current_layer() == HALO_STEREO_LAYER_MONO)
+		{
+			interface_draw_screen();
+			rasterizer_screen_flash();
+			halo_screen_ui_offset(TRUE);
+			render_ui_widgets(local_player_index, &rasterizer_camera->viewport_bounds);
+			halo_screen_ui_offset(FALSE);
+		}
+		else
+			interface_draw_screen_effects();
 	}
 
 	bink_playback_render();
@@ -423,6 +436,134 @@ static void render_window(
 	rasterizer_debug_draw();
 	rasterizer_window_end();
 	profile_render_window_end();
+
+	return;
+}
+
+/* port: one window of a stereo frame (render_player_frame). Frustum bounds
+are tangents divided by the center camera's: x by the aspect times the
+vertical field of view's half tangent, y by that tangent alone. */
+static void render_player_frame_stereo(
+	struct render_window *window,
+	struct render_camera *camera)
+{
+	const struct halo_stereo_frame *stereo;
+	real aspect;
+	real field_of_view_tangent;
+	real_rectangle2d cull_bounds;
+	struct render_frustum cull_frustum;
+	real_vector3d right;
+	real_vector3d up;
+	short eye;
+	struct rasterizer_window_begin_parameters parameters;
+
+	stereo = halo_stereo_frame();
+	aspect = (real)(window->rasterizer_camera.viewport_bounds.x1 - window->rasterizer_camera.viewport_bounds.x0) /
+		(real)(window->rasterizer_camera.viewport_bounds.y1 - window->rasterizer_camera.viewport_bounds.y0);
+	field_of_view_tangent = tangent(window->rasterizer_camera.vertical_field_of_view * 0.5f);
+
+	/* culling: the center camera, wide enough for both eyes, plus 2% for the
+	eyes' apexes sitting beside the center's */
+	cull_bounds.x0 = -MAX(stereo->eyes[0].left, stereo->eyes[1].left) / (aspect * field_of_view_tangent) * 1.02f;
+	cull_bounds.x1 = MAX(stereo->eyes[0].right, stereo->eyes[1].right) / (aspect * field_of_view_tangent) * 1.02f;
+	cull_bounds.y0 = -MAX(stereo->eyes[0].down, stereo->eyes[1].down) / field_of_view_tangent * 1.02f;
+	cull_bounds.y1 = MAX(stereo->eyes[0].up, stereo->eyes[1].up) / field_of_view_tangent * 1.02f;
+	render_camera_build_frustum(camera, &cull_bounds, &cull_frustum, TRUE);
+
+	cross_product3d(&window->rasterizer_camera.forward, &window->rasterizer_camera.up, &right);
+	normalize3d(&right);
+	cross_product3d(&right, &window->rasterizer_camera.forward, &up);
+	normalize3d(&up);
+
+	for (eye = 0; eye < 2; eye++)
+	{
+		const struct halo_stereo_eye *stereo_eye = &stereo->eyes[eye];
+		struct render_camera eye_camera;
+		real_rectangle2d eye_bounds;
+		struct render_frustum eye_frustum;
+		struct render_mirror mirror;
+		boolean has_mirror = FALSE;
+
+		eye_camera = window->rasterizer_camera;
+		/* the offset is right, up and back in the camera's frame */
+		eye_camera.position.x += right.i * stereo_eye->offset[0] + up.i * stereo_eye->offset[1] -
+			eye_camera.forward.i * stereo_eye->offset[2];
+		eye_camera.position.y += right.j * stereo_eye->offset[0] + up.j * stereo_eye->offset[1] -
+			eye_camera.forward.j * stereo_eye->offset[2];
+		eye_camera.position.z += right.k * stereo_eye->offset[0] + up.k * stereo_eye->offset[1] -
+			eye_camera.forward.k * stereo_eye->offset[2];
+		eye_bounds.x0 = -stereo_eye->left / (aspect * field_of_view_tangent);
+		eye_bounds.x1 = stereo_eye->right / (aspect * field_of_view_tangent);
+		eye_bounds.y0 = -stereo_eye->down / field_of_view_tangent;
+		eye_bounds.y1 = stereo_eye->up / field_of_view_tangent;
+		render_camera_build_frustum(&eye_camera, &eye_bounds, &eye_frustum, TRUE);
+
+		/* the layer is set before the mirror, so a screen-sized target the
+		mirror pass touches is this eye's */
+		halo_stereo_layer(eye);
+		if (structure_visibility_find_mirror(&eye_camera, &eye_frustum, &mirror))
+		{
+			short saved_cluster_index;
+			struct render_camera mirror_camera;
+			struct render_frustum mirror_frustum;
+
+			saved_cluster_index = (short)render.cluster_index;
+			render_camera_mirror(&eye_camera, &mirror, &mirror_camera);
+			render_camera_build_frustum(
+				&mirror_camera,
+				&eye_bounds,
+				&mirror_frustum,
+				TRUE);
+
+			rasterizer_profile_enable(FALSE);
+			render.cluster_index = mirror.cluster_index;
+			render_window(
+				NONE,
+				&mirror_camera,
+				&mirror_frustum,
+				&mirror_camera,
+				&mirror_frustum,
+				_render_target_secondary,
+				FALSE);
+			render.cluster_index = saved_cluster_index;
+			rasterizer_profile_enable(TRUE);
+			has_mirror = TRUE;
+		}
+
+		render_window(
+			window->local_player_index,
+			camera,
+			&cull_frustum,
+			&eye_camera,
+			&eye_frustum,
+			_render_target_primary,
+			has_mirror);
+	}
+
+	/* the HUD pass: its layer clears to 0,0,0,0 (fog color black, alpha 0),
+	and the presenter blends it over each eye by its alpha */
+	halo_stereo_layer(HALO_STEREO_LAYER_HUD);
+	memset(&parameters, 0, sizeof(parameters));
+	render.local_player_index = window->local_player_index;
+	render.camera = *camera;
+	render.frustum = cull_frustum;
+	parameters.camera = window->rasterizer_camera;
+	render_camera_build_frustum(&parameters.camera, NULL, &parameters.frustum, TRUE);
+	parameters.rasterizer_target = _render_target_primary;
+	parameters.window_index = render.window_index;
+	player_effect_get_screen_flash(window->local_player_index, &parameters.screen_flash);
+	rasterizer_window_begin(&parameters);
+	if (!bink_playback_in_progress())
+	{
+		interface_draw_hud();
+		rasterizer_screen_flash();
+		halo_screen_ui_offset(TRUE);
+		render_ui_widgets(window->local_player_index, &window->rasterizer_camera.viewport_bounds);
+		halo_screen_ui_offset(FALSE);
+	}
+	rasterizer_window_end();
+	halo_stereo_layer(HALO_STEREO_LAYER_MONO);
+	render_stereo_eyes_drawn = TRUE;
 
 	return;
 }
@@ -529,6 +670,15 @@ static void render_player_frame(
 		&rasterizer_frustum,
 		TRUE);
 
+	/* port: stereo (port/linux/game/stereo.c): each eye renders from its own
+	camera, culled with the center camera and the union of both eyes' bounds;
+	the HUD renders once into its own layer */
+	if (halo_stereo_frame()->eye_count == 2 && main_get_window_count() == 1 && !screenshot_combined_index)
+	{
+		render_player_frame_stereo(window, camera);
+		return;
+	}
+
 	if (main_get_window_count() == 1)
 	{
 		if (structure_visibility_find_mirror(camera, &frustum, &mirror))
@@ -593,6 +743,7 @@ void render_frame(
 
 	render.frame_index++;
 	render.time_delta_since_tick_sec = time_delta_since_tick_sec;
+	render_stereo_eyes_drawn = FALSE;
 	memset(&parameters, 0, sizeof(parameters));
 	/* continuous between ticks (render_interpolation.c) */
 	parameters.game_time_sec = render_interpolation_game_time_sec(game_time_get());
@@ -629,12 +780,21 @@ void render_frame(
 			window_type = 1;
 		}
 
+		/* port: in a stereo frame the console (and the letterbox it draws)
+		goes into the HUD layer, over the HUD pass */
+		if (window_type == 0 && render_stereo_eyes_drawn)
+			halo_stereo_layer(HALO_STEREO_LAYER_HUD);
 		render_nonplayer_frame(window, window_type);
+		halo_stereo_layer(HALO_STEREO_LAYER_MONO);
 	}
 
+	/* port: the progress bar too */
+	if (render_stereo_eyes_drawn)
+		halo_stereo_layer(HALO_STEREO_LAYER_HUD);
 	halo_screen_ui_offset(TRUE);
 	progress_bar_eachframe();
 	halo_screen_ui_offset(FALSE);
+	halo_stereo_layer(HALO_STEREO_LAYER_MONO);
 	rasterizer_windows_end();
 	rasterizer_frame_end();
 
