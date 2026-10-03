@@ -279,10 +279,11 @@ static void stereo_frame(struct halo_stereo_frame *frame) API_AVAILABLE(visionos
 		MTLViewport viewport = cp_view_texture_map_get_viewport(
 			cp_view_get_view_texture_map(cp_drawable_get_view(drawable, 0)));
 
-		frame->eye_width = (int32_t)viewport.width;
-		frame->eye_height = (int32_t)viewport.height;
-		picture_width = frame->eye_width & ~1;
-		picture_height = frame->eye_height & ~1;
+		/* even, as the picture size the game renders at (host_stereo_picture_size) */
+		frame->eye_width = (int32_t)viewport.width & ~1;
+		frame->eye_height = (int32_t)viewport.height & ~1;
+		picture_width = frame->eye_width;
+		picture_height = frame->eye_height;
 	}
 	/* without ARKit's pose (the simulator, or a lost anchor) the head holds
 	its last pose: no turn */
@@ -300,7 +301,15 @@ static void stereo_frame(struct halo_stereo_frame *frame) API_AVAILABLE(visionos
 
 void host_stereo_frame(struct halo_stereo_frame *frame)
 {
+	/* no eyes and no turn unless this frame supplies them, whatever the guest
+	left in the struct: a turn replayed from an earlier frame would spin the
+	view while ARKit has lost the head */
 	frame->eye_count = 0;
+	frame->head_yaw = 0.0f;
+	frame->head_pitch = 0.0f;
+	frame->head_roll = 0.0f;
+	frame->eye_width = 0;
+	frame->eye_height = 0;
 #if TARGET_OS_VISION
 	if (@available(visionOS 26.0, *))
 		stereo_frame(frame);
