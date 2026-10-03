@@ -109,6 +109,8 @@ static struct
 	struct recorded_action *actions;
 	long action_count, next_action;
 	long segment, last_action_tick;
+	/* when the game tick last changed in the recording's last segment */
+	double last_tick_change;
 } replay;
 
 /* NAME.input's actions file, NAME.actions */
@@ -366,6 +368,8 @@ void input_replay_tick_action(void *action)
 	tick = game_time_get();
 	if (replay.last_action_tick > 0 && tick < replay.last_action_tick)
 		replay.segment++;
+	if (tick != replay.last_action_tick)
+		replay.last_tick_change = halo_frame_trace_milliseconds();
 	replay.last_action_tick = tick;
 
 	if (*replay.record_actions_path)
@@ -405,10 +409,9 @@ void input_replay_tick_action(void *action)
 		else if (replay.next_action < replay.action_count &&
 			replay.actions[replay.next_action].segment > replay.segment)
 			input_replay_skip_cinematic();
-		/* the replay ends a little after the last recorded action, in the
-		action's own segment, whenever the controller's timeline puts it */
-		if (compare_action_keys(&replay.actions[replay.action_count - 1], replay.segment,
-			tick - (long)REPLAY_TAIL_TICKS) < 0)
+		/* the replay ends with the last recorded action, in the action's own
+		segment, whenever the controller's timeline puts it */
+		if (compare_action_keys(&replay.actions[replay.action_count - 1], replay.segment, tick) <= 0)
 			replay.replay_finished = TRUE;
 	}
 }
@@ -494,6 +497,16 @@ void input_replay_frame(long width, long height)
 		benchmark_report(width, height);
 		platform_log("debug.benchmark: the replay ended; quitting");
 		exit(EXIT_SUCCESS);
+	}
+	/* the game time can stop for good near the end (a10's second cinematic
+	fades to white and holds it): in the recording's last segment, a replay
+	whose ticks haven't moved for three seconds is over */
+	if (replay.action_count && replay.segment >= replay.actions[replay.action_count - 1].segment &&
+		replay.last_tick_change > 0.0 && now - replay.last_tick_change > 3000.0)
+	{
+		platform_log("debug.benchmark: the game time stopped in the recording's last segment");
+		replay.replay_finished = TRUE;
+		return;
 	}
 	if (replay.next_state == 0)
 		return;
