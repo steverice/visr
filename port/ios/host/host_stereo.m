@@ -30,9 +30,6 @@ Elsewhere host_stereo_frame leaves the frame mono. */
 /* the HUD's quad, head-locked: how far ahead and how wide, in meters */
 #define HUD_DISTANCE 2.0f
 #define HUD_WIDTH 1.6f
-/* the Compositor's nearest near plane (the Phase 3 prototype's simulator
-reading; cp_drawable_set_depth_range aborts on a nearer one) */
-#define MINIMUM_NEAR_METERS 0.1f
 
 /* the eyes' picture size, while the head drives the view */
 static int picture_width, picture_height;
@@ -170,14 +167,15 @@ static BOOL prepare(id<MTLDevice> device, MTLPixelFormat color, MTLPixelFormat d
 
 /* The drawable's depth range for the game's planes, and the factor its depth
 takes. Reverse-Z depth with a far plane f is n (f - z) / (z (f - n)): for a
-near plane the Compositor allows, n' (no nearer than MINIMUM_NEAR_METERS),
+near plane the Compositor allows, n' (no nearer than the layer's minimum,
+host_theater_minimum_near; cp_drawable_set_depth_range aborts on a nearer one),
 it's the game's times n' (f - n) / (n (f - n')), and what's nearer than n'
 pins to 1. Without usable planes (none, or the far not beyond the near) the
 Compositor keeps its default range and the depth is written as far: the
 picture is reprojected as if distant. */
 static simd_float2 stereo_depth_range(float near_meters, float far_meters, float *scale)
 {
-	float near = fmaxf(near_meters, MINIMUM_NEAR_METERS);
+	float near = fmaxf(near_meters, host_theater_minimum_near());
 	static int reported;
 
 	if (!(near_meters > 0.0f) || !(far_meters > near * 1.001f) || !isfinite(far_meters))

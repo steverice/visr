@@ -14,6 +14,8 @@ struct TheaterLayerConfiguration: CompositorLayerConfiguration {
                            configuration: inout LayerRenderer.Configuration) {
         // the picture is flat, so foveation would only blur its edges
         configuration.isFoveationEnabled = false
+        // head-tracked stereo's depth range can't start nearer than this (host_stereo.m)
+        host_theater_set_minimum_near(capabilities.supportedMinimumNearPlaneDistance)
     }
 }
 

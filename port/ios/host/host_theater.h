@@ -41,6 +41,10 @@ void host_theater_open(void);
 int host_theater_active(void);
 /* for Theater.swift: the space's layer renderer, unretained */
 void host_theater_attach(void *renderer);
+/* for Theater.swift: the layer's nearest allowed near plane, in meters */
+void host_theater_set_minimum_near(float meters);
+/* that, or 0.1 m (the simulator's reading) before the layer reports one */
+float host_theater_minimum_near(void);
 void host_theater_log_c(const char *message);
 /* for Theater.swift: host_join_link_open, for a join link the space was opened with */
 #include "host_join_link.h"

@@ -62,6 +62,20 @@ static void frame_drop(void)
 	open_count = 0;
 }
 
+/* the layer's nearest allowed near plane (Theater.swift), 0 until it says */
+static float minimum_near;
+
+void host_theater_set_minimum_near(float meters)
+{
+	minimum_near = meters;
+	host_logf(HOST_LOG_INFO, "theater: the nearest near plane the layer allows is %.3f m", meters);
+}
+
+float host_theater_minimum_near(void)
+{
+	return minimum_near > 0.0f ? minimum_near : 0.1f;
+}
+
 void host_theater_log_c(const char *message)
 {
 	host_logf(HOST_LOG_INFO, "%s", message);
