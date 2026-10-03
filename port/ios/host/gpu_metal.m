@@ -35,6 +35,7 @@ but never returns to its run loop, which would otherwise drain them.
 #include <os/lock.h>
 #include <stdatomic.h>
 #include <stddef.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* the platform layer's (host_gpu.c) */
@@ -184,6 +185,28 @@ static unsigned long renames;
 /* frame pacing (pacing_schedule): GPU time of completed command buffers, and
 the time this frame's CPU spent waiting rather than working */
 static _Atomic uint64_t pacing_gpu_nanoseconds;
+/* The GPU runs consecutive frames' command buffers overlapped (the next one
+starts while the last finishes), so their start-to-end spans overlap: adding
+them up counted the shared time twice. pacing_gpu_nanoseconds counts only the
+time some command buffer was running, from the spans' union. Completion
+handlers can run on several threads, hence the lock. */
+static os_unfair_lock gpu_busy_lock = OS_UNFAIR_LOCK_INIT;
+static CFTimeInterval gpu_busy_until;
+
+static void gpu_busy_add(CFTimeInterval start, CFTimeInterval end)
+{
+	CFTimeInterval counted = 0.0;
+
+	os_unfair_lock_lock(&gpu_busy_lock);
+	if (end > gpu_busy_until)
+	{
+		counted = end - (start > gpu_busy_until ? start : gpu_busy_until);
+		gpu_busy_until = end;
+	}
+	os_unfair_lock_unlock(&gpu_busy_lock);
+	if (counted > 0.0)
+		atomic_fetch_add(&pacing_gpu_nanoseconds, (uint64_t)(counted * 1e9));
+}
 static CFTimeInterval pacing_waited;
 
 /* ---------- visibility tests: state (the functions are after the draws)
@@ -389,7 +412,7 @@ static void commit(BOOL frame_end)
 			platform_log("Metal: command buffer %llu failed: %s", (unsigned long long)serial,
 				completed.error.description.UTF8String);
 		if (completed.GPUEndTime > completed.GPUStartTime)
-			atomic_fetch_add(&pacing_gpu_nanoseconds, (uint64_t)((completed.GPUEndTime - completed.GPUStartTime) * 1e9));
+			gpu_busy_add(completed.GPUStartTime, completed.GPUEndTime);
 		for (test = 0; test < pending.length / sizeof(*tests); test++)
 		{
 			uint8_t answer = 0;
@@ -1863,6 +1886,8 @@ this much of them */
 @end
 
 static os_unfair_lock pacing_lock = OS_UNFAIR_LOCK_INIT;
+/* the frames a report's percentiles can cover (reports come every 600) */
+#define PACING_TIMED_FRAMES 1024
 static CFTimeInterval refresh_period; /* CACurrentMediaTime's clock */
 @implementation PacingClock
 - (void)refresh:(CADisplayLink *)link
@@ -1888,10 +1913,29 @@ static struct
 	CFTimeInterval due;              /* when the next frame shows, as the schedule reckons it */
 	unsigned long window;
 	unsigned long reported;
-	/* CPU and GPU time and frames since the last report, for its averages */
-	double cpu_total, gpu_total;
+	/* each frame's CPU and GPU time since the last report, for its medians
+	and 95th percentiles (a loading stall would swamp an average) */
+	double cpu_times[PACING_TIMED_FRAMES], gpu_times[PACING_TIMED_FRAMES];
 	unsigned long timed;
 } pacing;
+
+static int compare_times(const void *a, const void *b)
+{
+	double x = *(const double *)a, y = *(const double *)b;
+
+	return x < y ? -1 : x > y;
+}
+
+/* the median and 95th percentile of count times, in milliseconds (sorts them) */
+static void pacing_percentiles(double *times, unsigned long count, double *median, double *high)
+{
+	*median = *high = 0.0;
+	if (!count)
+		return;
+	qsort(times, count, sizeof(*times), compare_times);
+	*median = times[count / 2] * 1000.0;
+	*high = times[count * 95 / 100] * 1000.0;
+}
 
 static void pacing_start(uint32_t flags)
 {
@@ -1995,24 +2039,26 @@ static CFTimeInterval pacing_schedule(id<CAMetalDrawable> drawable, uint32_t *ne
 		if (!pacing.off && up > pacing.refreshes)
 			pacing.misses++;
 	}
-	if (cpu > 0.0)
+	if (cpu > 0.0 && pacing.timed < PACING_TIMED_FRAMES)
 	{
-		pacing.cpu_total += cpu;
-		pacing.gpu_total += gpu;
+		pacing.cpu_times[pacing.timed] = cpu;
+		pacing.gpu_times[pacing.timed] = gpu;
 		pacing.timed++;
 	}
 	if (frames >= pacing.reported + 600)
 	{
+		double cpu_median, cpu_high, gpu_median, gpu_high;
+
+		pacing_percentiles(pacing.cpu_times, pacing.timed, &cpu_median, &cpu_high);
+		pacing_percentiles(pacing.gpu_times, pacing.timed, &gpu_median, &gpu_high);
 		pacing.reported = frames;
 		platform_log("Metal: frames shown for 1/2/3/4/5+ refreshes at %.1f Hz: %lu/%lu/%lu/%lu/%lu (pacing %s); "
-			"frame CPU %.1f ms, GPU %.1f ms (averages)", 1.0 / period, pacing.shown[1], pacing.shown[2], pacing.shown[3],
+			"frame CPU %.1f ms, GPU %.1f ms (medians; 95th %.1f, %.1f)", 1.0 / period, pacing.shown[1], pacing.shown[2], pacing.shown[3],
 			pacing.shown[4], pacing.shown[5],
 			pacing.off ? "off" : pacing.refreshes == 1 ? "1 refresh" : pacing.refreshes == 2 ? "2 refreshes" :
 			pacing.refreshes == 3 ? "3 refreshes" : "4 refreshes",
-			pacing.timed ? pacing.cpu_total * 1000.0 / (double)pacing.timed : 0.0,
-			pacing.timed ? pacing.gpu_total * 1000.0 / (double)pacing.timed : 0.0);
+			cpu_median, gpu_median, cpu_high, gpu_high);
 		memset(pacing.shown, 0, sizeof(pacing.shown));
-		pacing.cpu_total = pacing.gpu_total = 0.0;
 		pacing.timed = 0;
 	}
 	if (pacing.off)
