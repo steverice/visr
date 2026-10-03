@@ -419,6 +419,23 @@ the next frame is due on the display, when the backend schedules its frames
 (Metal), else 0: render_interpolation.c blends that frame for the moment it
 is shown. */
 uint32_t gpu_present(gpu_texture back_buffer);
+
+/* a stereo frame's pictures (halo_stereo.h): each eye's color and depth, and
+the HUD drawn once for both. Fixed-width fields only: it crosses the guest/host
+boundary */
+struct gpu_stereo_present
+{
+	gpu_texture eye_color[2], eye_depth[2], hud;   /* hud: 0 if nothing drew it this frame */
+	float near_meters, far_meters;     /* the frame's depth range, for the Compositor */
+	int32_t mode;                      /* enum halo_stereo_mode */
+	int32_t cinematic;                 /* 1 while the cutscene screen is up */
+	float fade[4];                     /* RGB and intensity of the script fade */
+};
+
+/* presents a stereo frame as gpu_present does a mono one (and returns the
+same). The GL backend's debug view puts eye 0 in the left half of the window,
+eye 1 in the right, and the HUD over each half. */
+uint32_t gpu_present_stereo(const struct gpu_stereo_present *present);
 /* the GL calls (a backend's commands) issued since the last call, for
 debug.gpu_stats */
 uint32_t gpu_call_count_take(void);
@@ -528,6 +545,7 @@ its own functions. */
 	F(uint32_t, visibility_result, (uint32_t slot, uint32_t *samples), (slot, samples)) \
 	P(flush, (void), ()) \
 	F(uint32_t, present, (gpu_texture back_buffer), (back_buffer)) \
+	F(uint32_t, present_stereo, (const struct gpu_stereo_present *present), (present)) \
 	F(uint32_t, call_count_take, (void), ()) \
 	/* compiling at map load (shader_list.c): the map's list as the app \
 	carries it (its length; the text is copied while it fits size), and \

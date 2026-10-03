@@ -29,6 +29,7 @@ Conventions carried over from the Xbox:
 #include "halo_ui_pointer.h"
 #include "port_config.h"
 #include "halo_display.h"
+#include "halo_stereo.h"
 #include "posix.h"
 
 #include <math.h>
@@ -315,6 +316,9 @@ struct render_target_entry
 	struct render_target_entry *next_in_bucket;
 	struct xgpu_render_target target;
 	unsigned long last_rendered;
+	/* the stereo layer a screen-sized target is for (halo_stereo.h), else
+	HALO_STEREO_LAYER_MONO */
+	int layer;
 };
 
 /* every draw looks up its targets and whether its textures are render
@@ -571,12 +575,21 @@ static void offscreen_target_scale(unsigned long width, unsigned long height, DW
 	}
 }
 
-static struct render_target_entry *render_target_get(const D3DSurface *surface)
+/* the layer a screen-sized target is drawn for now: in a stereo frame each
+eye and the HUD have their own textures (the one layer key, so a fourth layer
+is a change to halo_stereo.h), else the one the game always had */
+static int render_target_layer(void)
+{
+	return halo_stereo_frame()->eye_count == 2 ? halo_stereo_current_layer() : HALO_STEREO_LAYER_MONO;
+}
+
+static struct render_target_entry *render_target_get_layer(const D3DSurface *surface, int stereo_layer)
 {
 	struct render_target_entry *entry;
 	unsigned long width, height;
 	BOOL depth;
 	DWORD format;
+	int layer = HALO_STEREO_LAYER_MONO;
 
 	if (!surface || !surface->Data)
 		return NULL;
@@ -588,19 +601,21 @@ static struct render_target_entry *render_target_get(const D3DSurface *surface)
 	{
 		scale[0] = screen_scale[0];
 		scale[1] = screen_scale[1];
+		layer = stereo_layer;
 	}
 	else
 		offscreen_target_scale(width, height, format, scale);
 	for (entry = *render_target_bucket(surface->Data); entry; entry = entry->next_in_bucket)
 	{
 		if (entry->target.data == surface->Data && entry->target.width == width &&
-			entry->target.height == height && entry->target.depth == depth &&
+			entry->target.height == height && entry->target.depth == depth && entry->layer == layer &&
 			entry->target.scale[0] == scale[0] && entry->target.scale[1] == scale[1])
 		{
 			return entry;
 		}
 	}
 	entry = calloc(1, sizeof(*entry));
+	entry->layer = layer;
 	entry->target.data = surface->Data;
 	entry->target.width = width;
 	entry->target.height = height;
@@ -628,12 +643,21 @@ static struct render_target_entry *render_target_get(const D3DSurface *surface)
 	return entry;
 }
 
+static struct render_target_entry *render_target_get(const D3DSurface *surface)
+{
+	return render_target_get_layer(surface, render_target_layer());
+}
+
 struct xgpu_render_target *xgpu_render_target_find(unsigned long data)
 {
 	struct render_target_entry *entry, *best = NULL;
+	int layer = render_target_layer();
 
 	for (entry = *render_target_bucket(data); entry; entry = entry->next_in_bucket)
 	{
+		/* a sampled screen-sized target is the current layer's */
+		if (entry->layer != HALO_STEREO_LAYER_MONO && entry->layer != layer)
+			continue;
 		if (entry->target.data == data && !entry->target.depth && (!best || entry->last_rendered > best->last_rendered))
 			best = entry;
 	}
@@ -3635,14 +3659,46 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 
 	if (device.gl_ready)
 	{
-		struct render_target_entry *back_buffer = render_target_get(&device.back_buffer);
+		const struct halo_stereo_frame *stereo = halo_stereo_frame();
+		/* a stereo frame's screenshot and trace are of eye 0 */
+		struct render_target_entry *back_buffer = render_target_get_layer(&device.back_buffer,
+			stereo->eye_count == 2 ? 0 : HALO_STEREO_LAYER_MONO);
 
 		if (trace_frame())
 			platform_log("present back buffer %08lx texture %u", (unsigned long)device.back_buffer.Data,
 				back_buffer->target.texture);
 		if (screenshot_every > 0 && device.frame % (unsigned long)screenshot_every == 0)
 			write_screenshot(back_buffer);
-		render_interpolation_next_frame_due(gpu_present(back_buffer->target.texture));
+		if (stereo->eye_count == 2)
+		{
+			struct gpu_stereo_present present = { 0 };
+			struct render_target_entry *hud;
+			int eye;
+
+			for (eye = 0; eye < 2; eye++)
+			{
+				present.eye_color[eye] = render_target_get_layer(&device.back_buffer, eye)->target.texture;
+				present.eye_depth[eye] = render_target_get_layer(&device.depth_buffer, eye)->target.texture;
+			}
+			/* the HUD's texture exists only once something drew it, and is
+			passed only if that was this frame */
+			for (hud = *render_target_bucket(device.back_buffer.Data); hud; hud = hud->next_in_bucket)
+			{
+				if (hud->target.data == device.back_buffer.Data && hud->layer == HALO_STEREO_LAYER_HUD &&
+					hud->last_rendered == device.frame + 1)
+				{
+					present.hud = hud->target.texture;
+					break;
+				}
+			}
+			/* placeholders: the camera's planes don't reach the device yet */
+			present.near_meters = 0.1f;
+			present.far_meters = 1000.0f;
+			present.mode = stereo->mode;
+			render_interpolation_next_frame_due(gpu_present_stereo(&present));
+		}
+		else
+			render_interpolation_next_frame_due(gpu_present(back_buffer->target.texture));
 		xgpu_texture_cache_begin_frame();
 		shader_list_take_pipelines();
 	}

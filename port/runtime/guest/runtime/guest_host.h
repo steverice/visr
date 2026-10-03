@@ -112,6 +112,7 @@ void host_gpu_visibility_end(uint32_t slot);
 uint32_t host_gpu_visibility_result(uint32_t slot, uint32_t *samples);
 void host_gpu_flush(void);
 uint32_t host_gpu_present(gpu_texture back_buffer);
+uint32_t host_gpu_present_stereo(const struct gpu_stereo_present *present);
 uint32_t host_gpu_call_count_take(void);
 uint32_t host_gpu_warm_list_read(const char *name, char *text, uint32_t size);
 void host_gpu_warm_begin(void);

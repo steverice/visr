@@ -53,5 +53,13 @@ int main(void)
 	SIZE(gpu_clear);
 	FIELD(gpu_clear, depth);
 	FIELD(gpu_clear, stencil);
+	SIZE(gpu_stereo_present);
+	FIELD(gpu_stereo_present, eye_depth);
+	FIELD(gpu_stereo_present, hud);
+	FIELD(gpu_stereo_present, near_meters);
+	FIELD(gpu_stereo_present, far_meters);
+	FIELD(gpu_stereo_present, mode);
+	FIELD(gpu_stereo_present, cinematic);
+	FIELD(gpu_stereo_present, fade);
 	return 0;
 }

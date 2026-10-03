@@ -3259,6 +3259,13 @@ static uint32_t gpu_metal_present(gpu_texture back_buffer)
 	}
 }
 
+/* a stereo frame goes to Compositor Services once that is connected; until
+then eye 0 goes through the mono path */
+static uint32_t gpu_metal_present_stereo(const struct gpu_stereo_present *present)
+{
+	return gpu_metal_present(present->eye_color[0]);
+}
+
 static uint32_t gpu_metal_call_count_take(void)
 {
 	return 0;

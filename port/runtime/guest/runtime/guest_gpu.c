@@ -100,6 +100,11 @@ uint32_t gpu_present(gpu_texture back_buffer)
 	return host_gpu_present(back_buffer);
 }
 
+uint32_t gpu_present_stereo(const struct gpu_stereo_present *present)
+{
+	return host_gpu_present_stereo(present);
+}
+
 uint32_t gpu_call_count_take(void)
 {
 	return host_gpu_call_count_take();

@@ -1875,6 +1875,141 @@ static uint32_t gpu_gl_present(gpu_texture back_buffer)
 	return 0;
 }
 
+/* gpu_present_stereo's HUD: a render target's picture over the viewport,
+blended by its alpha (a blit can't blend). Row 0 of the texture is the top. */
+static struct
+{
+	GLuint program, sampler, vertex_array;
+} overlay;
+
+static int overlay_prepare(void)
+{
+	static const char *const vertex_source =
+#ifdef GPU_GL_ES
+		"#version 300 es\n"
+#else
+		"#version 450 core\n"
+#endif
+		"out vec2 uv;\n"
+		"void main()\n"
+		"{\n"
+		"	vec2 corner = vec2(float(gl_VertexID & 1), float(gl_VertexID >> 1));\n"
+		"	uv = vec2(corner.x, 1.0 - corner.y);\n"
+		"	gl_Position = vec4(corner * 2.0 - 1.0, 0.0, 1.0);\n"
+		"}\n";
+	static const char *const fragment_source =
+#ifdef GPU_GL_ES
+		"#version 300 es\nprecision highp float;\n"
+#else
+		"#version 450 core\n"
+#endif
+		"uniform sampler2D picture;\n"
+		"in vec2 uv;\n"
+		"out vec4 color;\n"
+		"void main()\n"
+		"{\n"
+		"	color = texture(picture, uv);\n"
+		"}\n";
+
+	if (!overlay.program)
+	{
+		GLuint vertex = compile_shader(GL_VERTEX_SHADER, vertex_source, "HUD overlay vertex");
+		GLuint fragment = compile_shader(GL_FRAGMENT_SHADER, fragment_source, "HUD overlay pixel");
+		GLint status = 0;
+
+		if (!vertex || !fragment)
+			return 0;
+		overlay.program = glCreateProgram();
+		glAttachShader(overlay.program, vertex);
+		glAttachShader(overlay.program, fragment);
+		glLinkProgram(overlay.program);
+		glGetProgramiv(overlay.program, GL_LINK_STATUS, &status);
+		glDeleteShader(vertex);
+		glDeleteShader(fragment);
+		if (!status)
+		{
+			platform_log("cannot link the HUD overlay program");
+			glDeleteProgram(overlay.program);
+			overlay.program = 0;
+			return 0;
+		}
+		glGenSamplers(1, &overlay.sampler);
+		glSamplerParameteri(overlay.sampler, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+		glSamplerParameteri(overlay.sampler, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		glSamplerParameteri(overlay.sampler, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+		glSamplerParameteri(overlay.sampler, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+		glGenVertexArrays(1, &overlay.vertex_array);
+	}
+	return 1;
+}
+
+/* one picture (a render target) letterboxed into the half of the window at
+half_x, as gpu_gl_present does the whole; returns its rectangle */
+static void present_half(gpu_texture picture, int half_x, int half_width, int window_height, int box[4])
+{
+	const struct gpu_texture_description *description = &texture_record(picture)->description;
+	int width = half_width, height = (int)((long)half_width * description->height / description->width);
+
+	if (height > window_height)
+	{
+		height = window_height;
+		width = (int)((long)window_height * description->width / description->height);
+	}
+	box[0] = half_x + (half_width - width) / 2;
+	box[1] = (window_height - height) / 2;
+	box[2] = width;
+	box[3] = height;
+	glBindFramebuffer(GL_READ_FRAMEBUFFER, framebuffer_get(picture, 0));
+	glBlitFramebuffer(0, 0, (GLint)description->width, (GLint)description->height,
+		box[0], box[1] + height, box[0] + width, box[1], GL_COLOR_BUFFER_BIT, GL_LINEAR);
+}
+
+/* the side-by-side debug view: eye 0 in the left half of the window, eye 1 in
+the right, the HUD over each */
+static uint32_t gpu_gl_present_stereo(const struct gpu_stereo_present *present)
+{
+	int window_width, window_height, half_width, eye, boxes[2][4];
+
+	platform_video_drawable_size(&window_width, &window_height);
+	half_width = window_width / 2;
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, default_framebuffer());
+	glDisable(GL_SCISSOR_TEST);
+	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+	glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+	glClear(GL_COLOR_BUFFER_BIT);
+	for (eye = 0; eye < 2; eye++)
+		present_half(present->eye_color[eye], eye * half_width, half_width, window_height, boxes[eye]);
+	/* nothing drew the HUD this frame: there is no picture to composite */
+	if (present->hud && overlay_prepare())
+	{
+		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, default_framebuffer());
+		glDisable(GL_DEPTH_TEST);
+		glDisable(GL_CULL_FACE);
+		glDisable(GL_STENCIL_TEST);
+		glEnable(GL_BLEND);
+		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+		glUseProgram(overlay.program);
+		glBindVertexArray(overlay.vertex_array);
+		glActiveTexture(GL_TEXTURE0);
+		glBindTexture(GL_TEXTURE_2D, present->hud);
+		glBindSampler(0, overlay.sampler);
+		for (eye = 0; eye < 2; eye++)
+		{
+			glViewport(boxes[eye][0], boxes[eye][1], boxes[eye][2], boxes[eye][3]);
+			glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+		}
+		glBindSampler(0, 0);
+		glBindVertexArray(streams.vertex_array);
+		glDisable(GL_BLEND);
+	}
+	platform_video_swap();
+	/* the blits and the overlay bypassed the cached state */
+	state_invalidate();
+	stream_frame();
+	frames++;
+	return 0;
+}
+
 static uint32_t gpu_gl_call_count_take(void)
 {
 	uint32_t count = (uint32_t)halo_gl_call_count;
