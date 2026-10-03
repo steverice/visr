@@ -165,6 +165,10 @@ static const struct config_setting config_settings[] =
 	{ "audio.volume", _config_real, "1.0", "HALO_VOLUME", _environment_value, _platform_all,
 		"The volume of everything, 0.0 to 1.0." },
 
+	{ "input.stick_dead_zone", _config_real, "0.27", "HALO_STICK_DEAD_ZONE", _environment_value, _platform_all,
+		"How far a controller stick moves before it counts, from 0 to 1. At 0.27\n"
+		"(the Xbox's) the game's own square dead zone applies; lower values make a\n"
+		"round one of that size (0.1 suits most modern controllers)." },
 	{ "input.mouse_sensitivity", _config_real, "1.0", "HALO_MOUSE_SENSITIVITY", _environment_value, _platform_desktop,
 		"How far the view turns for the mouse's movement." },
 	{ "input.invert_mouse", _config_boolean, "false", "HALO_MOUSE_INVERT", _environment_set_is_true, _platform_desktop,

@@ -419,6 +419,51 @@ static void merge_button(XINPUT_GAMEPAD *pad, int analog_index, BOOL down)
 		pad->bAnalogButtons[analog_index] = 0xff;
 }
 
+/* source/input/input_xbox.c's GAMEPAD_STICK_DEAD_RANGE: the game ignores
+each stick axis below this, of 32767, and rescales the rest */
+#define GAME_STICK_DEAD_RANGE 9000
+
+/* the value of one axis that the game's dead zone (fix_dead_zone) turns into
+wanted, from -1 to 1 */
+static SHORT through_game_dead_zone(double wanted)
+{
+	double dead = GAME_STICK_DEAD_RANGE / 32767.0, value;
+
+	if (wanted == 0.0)
+		return 0;
+	value = dead + (1.0 - dead) * fabs(wanted);
+	if (value > 1.0)
+		value = 1.0;
+	return (SHORT)lround((wanted < 0.0 ? -value : value) * 32767.0);
+}
+
+/* input.stick_dead_zone: below the Xbox's own 0.27, a round dead zone of that
+size replaces the game's square one, whose first 27% of travel on each axis
+does nothing and snaps small diagonals to an axis. The stick's direction is
+kept and its length rescaled from the dead zone's edge, then each axis is
+pushed out so that the game's dead zone, applied after, gives exactly that */
+static void stick_dead_zone(SHORT *x, SHORT *y)
+{
+	static double zone = -1.0;
+	double fx = *x / 32767.0, fy = *y / 32767.0, length, scale;
+
+	if (zone < 0.0)
+		zone = config_real("input.stick_dead_zone");
+	if (zone >= GAME_STICK_DEAD_RANGE / 32767.0 - 0.01)
+		return;
+	if (zone < 0.0)
+		zone = 0.0;
+	length = sqrt(fx * fx + fy * fy);
+	if (length <= zone)
+	{
+		*x = *y = 0;
+		return;
+	}
+	scale = ((length > 1.0 ? 1.0 : length) - zone) / (1.0 - zone) / length;
+	*x = through_game_dead_zone(fx * scale);
+	*y = through_game_dead_zone(fy * scale);
+}
+
 static void sdl_gamepad_state(SDL_Gamepad *gamepad, XINPUT_GAMEPAD *pad)
 {
 	static const struct
@@ -438,7 +483,6 @@ static void sdl_gamepad_state(SDL_Gamepad *gamepad, XINPUT_GAMEPAD *pad)
 	};
 	int index;
 	int left_trigger, right_trigger;
-	SHORT value;
 
 	for (index = 0; index < (int)(sizeof(digital) / sizeof(digital[0])); index++)
 	{
@@ -461,14 +505,19 @@ static void sdl_gamepad_state(SDL_Gamepad *gamepad, XINPUT_GAMEPAD *pad)
 		pad->bAnalogButtons[XINPUT_GAMEPAD_RIGHT_TRIGGER] = (BYTE)right_trigger;
 
 	/* a stick only overrides the keyboard when it is pushed further */
-	value = stick(SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_LEFTX), FALSE);
-	if (abs(value) > abs(pad->sThumbLX)) pad->sThumbLX = value;
-	value = stick(SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_LEFTY), TRUE);
-	if (abs(value) > abs(pad->sThumbLY)) pad->sThumbLY = value;
-	value = stick(SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_RIGHTX), FALSE);
-	if (abs(value) > abs(pad->sThumbRX)) pad->sThumbRX = value;
-	value = stick(SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_RIGHTY), TRUE);
-	if (abs(value) > abs(pad->sThumbRY)) pad->sThumbRY = value;
+	{
+		SHORT left_x = stick(SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_LEFTX), FALSE);
+		SHORT left_y = stick(SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_LEFTY), TRUE);
+		SHORT right_x = stick(SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_RIGHTX), FALSE);
+		SHORT right_y = stick(SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_RIGHTY), TRUE);
+
+		stick_dead_zone(&left_x, &left_y);
+		stick_dead_zone(&right_x, &right_y);
+		if (abs(left_x) > abs(pad->sThumbLX)) pad->sThumbLX = left_x;
+		if (abs(left_y) > abs(pad->sThumbLY)) pad->sThumbLY = left_y;
+		if (abs(right_x) > abs(pad->sThumbRX)) pad->sThumbRX = right_x;
+		if (abs(right_y) > abs(pad->sThumbRY)) pad->sThumbRY = right_y;
+	}
 }
 
 /* ---------- XAPI */
