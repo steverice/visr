@@ -388,6 +388,10 @@ char *nv2a_vertex_shader_translate(const struct nv2a_dialect *dialect, const DWO
 		xgpu_text_append(&text, "\tgl_Position.y = -gl_Position.y;\n");
 	if (dialect->clip_z_remap)
 		xgpu_text_append(&text, "\tgl_Position.z = 2.0 * gl_Position.z - gl_Position.w;\n");
+	/* Metal draws reversed-Z (gpu_metal.m): depth 1 at the near plane, 0 at
+	the far, so a float depth buffer keeps its precision at a distance */
+	if (dialect->msl)
+		xgpu_text_append(&text, "\tgl_Position.z = gl_Position.w - gl_Position.z;\n");
 	xgpu_text_append(&text,
 		"\tgl_PointSize = oPts.x;\n"
 		"\txD0 = clamp(oD0, 0.0, 1.0);\n"

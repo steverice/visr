@@ -156,6 +156,8 @@ read rather than messages to the array */
 static id<MTLDevice> device;
 static id<MTLCommandQueue> queue;
 static CAMetalLayer *layer;
+/* reversed-Z (see depth_compare_function) */
+static float reversed_depth(float depth);
 #if TARGET_OS_VISION
 #include "host_theater.h"
 /* display.immersive: frames go to the theater screen while its space is open */
@@ -549,7 +551,7 @@ static void target_zero(id<MTLTexture> texture)
 		pass.depthAttachment.texture = texture;
 		pass.depthAttachment.loadAction = MTLLoadActionClear;
 		pass.depthAttachment.storeAction = MTLStoreActionStore;
-		pass.depthAttachment.clearDepth = 0.0;
+		pass.depthAttachment.clearDepth = reversed_depth(0.0f);
 		pass.stencilAttachment.texture = texture;
 		pass.stencilAttachment.loadAction = MTLLoadActionClear;
 		pass.stencilAttachment.storeAction = MTLStoreActionStore;
@@ -975,7 +977,7 @@ static BOOL pass_begin(gpu_texture color, gpu_texture depth, const struct gpu_cl
 		pass.depthAttachment.texture = depth_record->texture;
 		pass.depthAttachment.loadAction = clear && (clear->flags & GPU_CLEAR_DEPTH) ? MTLLoadActionClear : MTLLoadActionLoad;
 		pass.depthAttachment.storeAction = MTLStoreActionUnknown;
-		pass.depthAttachment.clearDepth = clear ? clear->depth : 1.0;
+		pass.depthAttachment.clearDepth = reversed_depth(clear ? clear->depth : 1.0f);
 		pass.stencilAttachment.texture = depth_record->texture;
 		pass.stencilAttachment.loadAction = clear && (clear->flags & GPU_CLEAR_STENCIL) ? MTLLoadActionClear : MTLLoadActionLoad;
 		pass.stencilAttachment.storeAction = MTLStoreActionUnknown;
@@ -1119,7 +1121,7 @@ static void gpu_metal_clear(const struct gpu_clear *clear, const struct gpu_rect
 		uint32_t mask = flags & GPU_CLEAR_COLOR ? clear->channel_mask & 0xf : 0;
 		MetalTexture *color = texture_record(clear->color_target), *depth = texture_record(clear->depth_target);
 
-		float color_value[4], depth_value = clear->depth;
+		float color_value[4], depth_value = reversed_depth(clear->depth);
 
 		frame_begin();
 		if (!flags || !count || (!mask && !(flags & (GPU_CLEAR_DEPTH | GPU_CLEAR_STENCIL))))
@@ -1308,6 +1310,27 @@ static MTLCompareFunction compare_function(uint8_t function)
 	return function <= GPU_COMPARE_ALWAYS ? (MTLCompareFunction)function : MTLCompareFunctionNever;
 }
 
+/* Reversed-Z: the vertex shaders write w - z (nv2a_vsh.c's MSL epilogue), so
+a depth the game gives as d is stored as 1 - d, and its depth tests and
+biases point the other way. With Depth32Float that keeps depth precision at a
+distance, which a longer draw distance (rasterizer_far_clip_distance) needs */
+static float reversed_depth(float depth)
+{
+	return 1.0f - depth;
+}
+
+static MTLCompareFunction depth_compare_function(uint8_t function)
+{
+	switch (function)
+	{
+	case GPU_COMPARE_LESS: return MTLCompareFunctionGreater;
+	case GPU_COMPARE_LESS_EQUAL: return MTLCompareFunctionGreaterEqual;
+	case GPU_COMPARE_GREATER: return MTLCompareFunctionLess;
+	case GPU_COMPARE_GREATER_EQUAL: return MTLCompareFunctionLessEqual;
+	default: return compare_function(function);
+	}
+}
+
 static MTLStencilOperation stencil_operation(uint8_t operation)
 {
 	switch (operation)
@@ -1468,7 +1491,7 @@ static id<MTLDepthStencilState> depth_state(const struct gpu_depth_stencil_state
 	{
 		MTLDepthStencilDescriptor *descriptor = [MTLDepthStencilDescriptor new];
 
-		descriptor.depthCompareFunction = key.depth_test ? compare_function(key.depth_function) : MTLCompareFunctionAlways;
+		descriptor.depthCompareFunction = key.depth_test ? depth_compare_function(key.depth_function) : MTLCompareFunctionAlways;
 		descriptor.depthWriteEnabled = key.depth_write;
 		if (key.stencil_test)
 		{
@@ -1766,7 +1789,7 @@ static uint32_t gpu_metal_draw(const struct gpu_draw *draw, const struct gpu_con
 			MTLWindingCounterClockwise : MTLWindingClockwise];
 		/* glPolygonOffset(slope, constant); filled polygons only, as on ES */
 		if (draw->raster.depth_bias_enable)
-			[encoder setDepthBias:draw->raster.depth_bias_constant slopeScale:draw->raster.depth_bias_slope clamp:0.0f];
+			[encoder setDepthBias:-draw->raster.depth_bias_constant slopeScale:-draw->raster.depth_bias_slope clamp:0.0f];
 		else
 			[encoder setDepthBias:0.0f slopeScale:0.0f clamp:0.0f];
 		[encoder setBlendColorRed:(float)((draw->blend.color >> 16) & 0xff) / 255.0f
