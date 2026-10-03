@@ -23,6 +23,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "visionOS")
     target_sources(SDL3-static PRIVATE "${ROOT}/build/third_party/SDL3/src/joystick/virtual/SDL_virtualjoystick.c")
     target_compile_definitions(SDL3-static PRIVATE SDL_JOYSTICK_VIRTUAL=1)
 endif()
+# iPhone and visionOS: each build a new CFBundleVersion (tools/ios_build.py), so
+# installing over the app replaces it and keeps its Documents (the imported game)
+set(HALO_BUILD_NUMBER 6 CACHE STRING "CFBundleVersion")
 if(CMAKE_SYSTEM_NAME STREQUAL "tvOS")
     # Controllers only, no Files app: the XISO arrives from a browser
     # (host/host_tv_import.m).
@@ -43,9 +46,6 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "visionOS")
     # following the window when it's resized (d3d8_device.c's halo_screen_commit)
     set(HALO_RENDER_HEIGHT 0 CACHE STRING "Internal render height (display.render_height)")
     option(HALO_EXTENDED_VIRTUAL_ADDRESSING "Sign with the extended virtual addressing entitlement" OFF)
-    # each build a new CFBundleVersion (tools/ios_build.py), so installing over
-    # the app replaces it and keeps its Documents (the imported game)
-    set(HALO_BUILD_NUMBER 6 CACHE STRING "CFBundleVersion")
     set(HALO_PLATFORM_SOURCES Assets-visionOS.xcassets host/host_tv.m host/host_import.m host/host_orientation.m)
     set(HALO_INFO_PLIST Info-visionOS.plist)
     set(HALO_DEVICE_FAMILY 7)

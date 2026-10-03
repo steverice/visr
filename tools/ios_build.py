@@ -100,7 +100,7 @@ def main():
              f'-DHALO_BUNDLE_IDENTIFIER={args.bundle_id}', f'-DHALO_DEVELOPMENT_TEAM={args.team or ""}',
              f'-DHALO_RENDER_HEIGHT={args.render_height}',
              f'-DHALO_EXTENDED_VIRTUAL_ADDRESSING={"ON" if args.extended_virtual_addressing else "OFF"}']
-    if args.visionos:
+    if not args.tvos:
         # a new CFBundleVersion each build, so an install over the app replaces it
         import time
         command.append(f'-DHALO_BUILD_NUMBER={time.strftime("%Y%m%d.%H%M%S")}')
