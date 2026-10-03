@@ -57,6 +57,7 @@ to the recording, a summary to the log, and the game quits.
 extern unsigned char game_time_initialized(void);
 extern long game_time_get(void);
 extern float game_time_get_tick_fraction(void);
+extern unsigned char game_time_get_paused(void);
 /* port/linux/game/input_replay_scenario.c */
 extern unsigned char input_replay_main_menu_loaded(void);
 extern void input_replay_skip_cinematic(void);
@@ -270,6 +271,19 @@ static double game_ticks(void)
 	return ticks + replay.timeline_offset;
 }
 
+/* ends a recording: both files close, and nothing more is written */
+static void record_end(const char *why)
+{
+	if (replay.record_file)
+		fclose(replay.record_file);
+	if (replay.actions_file)
+		fclose(replay.actions_file);
+	replay.record_file = replay.actions_file = NULL;
+	replay.record_ended = TRUE;
+	replay.record_actions_path[0] = 0;
+	platform_log("debug.input_record: %s; the recording ends", why);
+}
+
 static void record(const XINPUT_GAMEPAD *pad, double ticks)
 {
 	int index;
@@ -338,7 +352,17 @@ void input_replay_filter(XINPUT_GAMEPAD *pad)
 	ticks = game_ticks();
 	if (ticks < 0.0)
 		return;
-	if (*replay.record_path)
+	if (*replay.record_path && !replay.record_ended &&
+		(pad->wButtons & (XINPUT_GAMEPAD_BACK | XINPUT_GAMEPAD_START)) == (XINPUT_GAMEPAD_BACK | XINPUT_GAMEPAD_START))
+	{
+		/* Back and Start together end a recording, so it doesn't need trimming
+		of the presses that quit the game; the game doesn't see them */
+		record_end("Back and Start were pressed together");
+		pad->wButtons &= (WORD)~(XINPUT_GAMEPAD_BACK | XINPUT_GAMEPAD_START);
+	}
+	/* nor the presses that work the pause menu, while the game time stands
+	still: a replay would press them at a moment it can't reach */
+	if (*replay.record_path && !game_time_get_paused())
 		record(pad, ticks);
 	if (*replay.replay_path && !replay.replay_finished)
 		play(pad, ticks);
