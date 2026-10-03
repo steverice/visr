@@ -12,9 +12,12 @@ renders differently yet; later code reads halo_stereo_frame().
 
 /* port/linux/src/port_config.c */
 const char *config_string(const char *name);
+double config_real(const char *name);
 
-/* port/linux/src/sdl_platform.h */
+/* port/linux/src/sdl_platform.c (the host's port/ios/host/host_gpu.c on iOS);
+   d3d8_device.c declares it the same way */
 void platform_video_drawable_size(int *width, int *height);
+void platform_log(const char *format, ...);
 
 /* the debug side-by-side eyes: fixed frusta and a typical eye separation */
 #define SIDE_BY_SIDE_TANGENT 0.8f
@@ -24,23 +27,35 @@ static struct halo_stereo_frame stereo_frame;
 static int stereo_layer = HALO_STEREO_LAYER_MONO;
 static int stereo_mode = -1; /* read once, on the first frame */
 
-static int mode_from_name(const char *name)
+static const char *const mode_names[] = {"off", "head", "screen", "side_by_side"};
+
+/* the mode a display.stereo string names; sets *recognized to 0 for an unknown string */
+static int mode_from_name(const char *name, int *recognized)
 {
-	if (name) {
-		if (strcmp(name, "head") == 0)
-			return HALO_STEREO_HEAD;
-		if (strcmp(name, "screen") == 0)
-			return HALO_STEREO_SCREEN;
-		if (strcmp(name, "side_by_side") == 0)
-			return HALO_STEREO_SIDE_BY_SIDE;
+	int mode;
+
+	*recognized = 1;
+	for (mode = 0; mode < 4; mode++) {
+		if (name && strcmp(name, mode_names[mode]) == 0)
+			return mode;
 	}
+	*recognized = 0;
 	return HALO_STEREO_OFF;
 }
 
 void halo_stereo_frame_begin(void)
 {
-	if (stereo_mode < 0)
-		stereo_mode = mode_from_name(config_string("display.stereo"));
+	if (stereo_mode < 0) {
+		const char *name = config_string("display.stereo");
+		const char *turn = config_string("input.turn");
+		int recognized;
+
+		stereo_mode = mode_from_name(name, &recognized);
+		platform_log("stereo: display.stereo %s, input.turn %s, input.snap_angle %.1f",
+			mode_names[stereo_mode], turn ? turn : "(none)", config_real("input.snap_angle"));
+		if (!recognized)
+			platform_log("stereo: display.stereo \"%s\" is not recognized; using off", name ? name : "(none)");
+	}
 
 	memset(&stereo_frame, 0, sizeof(stereo_frame));
 	stereo_frame.mode = stereo_mode;
@@ -51,6 +66,8 @@ void halo_stereo_frame_begin(void)
 		int eye;
 
 		platform_video_drawable_size(&width, &height);
+		if (width <= 0 || height <= 0)
+			return; /* no drawable yet: mono this frame */
 		stereo_frame.eye_count = 2;
 		stereo_frame.eye_width = width / 2;
 		stereo_frame.eye_height = height;
