@@ -296,10 +296,27 @@ static void record(const XINPUT_GAMEPAD *pad, double ticks)
 
 static void play(XINPUT_GAMEPAD *pad, double ticks)
 {
+	WORD pressed = 0;
+	BYTE analog[8] = { 0 };
+	int index;
+
+	/* a press that began and ended between two frames still reaches the
+	game for one frame: the buttons pressed in any state passed this frame */
 	while (replay.next_state < replay.state_count && replay.states[replay.next_state].ticks <= ticks)
+	{
 		replay.replay_pad = replay.states[replay.next_state++].pad;
+		pressed |= replay.replay_pad.wButtons;
+		for (index = 0; index < 8; index++)
+			if (replay.replay_pad.bAnalogButtons[index] > analog[index])
+				analog[index] = replay.replay_pad.bAnalogButtons[index];
+	}
 	*pad = replay.replay_pad;
-	if (replay.next_state == replay.state_count &&
+	pad->wButtons |= pressed;
+	for (index = 0; index < 8; index++)
+		if (analog[index] > pad->bAnalogButtons[index])
+			pad->bAnalogButtons[index] = analog[index];
+	/* with tick actions, the replay ends with them (input_replay_tick_action) */
+	if (!replay.action_count && replay.next_state == replay.state_count &&
 		ticks > replay.states[replay.state_count - 1].ticks + REPLAY_TAIL_TICKS)
 		replay.replay_finished = TRUE;
 }
@@ -380,6 +397,11 @@ void input_replay_tick_action(void *action)
 		if (replay.next_action < replay.action_count &&
 			!compare_action_keys(&replay.actions[replay.next_action], replay.segment, tick))
 			memcpy(action, replay.actions[replay.next_action].words, sizeof(words));
+		/* the replay ends a little after the last recorded action, in the
+		action's own segment, whenever the controller's timeline puts it */
+		if (compare_action_keys(&replay.actions[replay.action_count - 1], replay.segment,
+			tick - (long)REPLAY_TAIL_TICKS) < 0)
+			replay.replay_finished = TRUE;
 	}
 }
 
