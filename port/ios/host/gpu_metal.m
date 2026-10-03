@@ -78,12 +78,16 @@ Handles index tables of these; 0 is none. */
 @implementation MetalShader
 @end
 
-/* a handle table: index 0 holds NSNull */
+/* a handle table: index 0 holds NSNull. objects owns the records; lookup
+mirrors them as plain pointers, so get: (once or more per draw) is an array
+read rather than messages to the array */
 @interface MetalTable : NSObject
 {
 @public
 	NSMutableArray *objects;
 	NSMutableIndexSet *free_handles;
+	__unsafe_unretained id *lookup;
+	NSUInteger lookup_capacity;
 }
 @end
 @implementation MetalTable
@@ -96,6 +100,20 @@ Handles index tables of these; 0 is none. */
 	}
 	return self;
 }
+- (void)mirror:(NSUInteger)handle object:(id)object
+{
+	if (handle >= lookup_capacity)
+	{
+		NSUInteger capacity = lookup_capacity ? lookup_capacity : 1024;
+
+		while (capacity <= handle)
+			capacity *= 2;
+		lookup = (__unsafe_unretained id *)realloc((void *)lookup, capacity * sizeof(*lookup));
+		memset((void *)(lookup + lookup_capacity), 0, (capacity - lookup_capacity) * sizeof(*lookup));
+		lookup_capacity = capacity;
+	}
+	lookup[handle] = object;
+}
 - (uint32_t)add:(id)object
 {
 	NSUInteger handle = free_handles.firstIndex;
@@ -103,23 +121,26 @@ Handles index tables of these; 0 is none. */
 	if (handle == NSNotFound)
 	{
 		[objects addObject:object];
-		return (uint32_t)(objects.count - 1);
+		handle = objects.count - 1;
 	}
-	[free_handles removeIndex:handle];
-	objects[handle] = object;
+	else
+	{
+		[free_handles removeIndex:handle];
+		objects[handle] = object;
+	}
+	[self mirror:handle object:object];
 	return (uint32_t)handle;
 }
 - (id)get:(uint32_t)handle
 {
-	id object = handle && handle < objects.count ? objects[handle] : nil;
-
-	return object == [NSNull null] ? nil : object;
+	return handle < lookup_capacity ? lookup[handle] : nil;
 }
 - (void)remove:(uint32_t)handle
 {
 	if (!handle || handle >= objects.count || objects[handle] == [NSNull null])
 		return;
 	objects[handle] = [NSNull null];
+	[self mirror:handle object:nil];
 	[free_handles addIndex:handle];
 }
 @end
@@ -1080,6 +1101,51 @@ struct pipeline_key
 	uint32_t color_format, depth_format;
 };
 
+/* a direct-mapped cache in front of pipelines, depth_states and samplers:
+nearly every draw repeats a recent key, which then costs a hash and a
+compare of its bytes rather than an NSData and a dictionary lookup. The
+dictionaries keep every object for good, so the cache needn't retain them. */
+#define FRONT_CACHE_ENTRIES 256
+#define FRONT_CACHE_KEY 32
+struct front_cache
+{
+	struct
+	{
+		uint8_t key[FRONT_CACHE_KEY];
+		__unsafe_unretained id object;
+	} entries[FRONT_CACHE_ENTRIES];
+};
+
+static struct front_cache pipeline_cache, depth_state_cache, sampler_cache;
+
+static unsigned long front_cache_index(const void *key, size_t length)
+{
+	const uint8_t *bytes = key;
+	uint32_t hash = 2166136261u;
+	size_t index;
+
+	for (index = 0; index < length; index++)
+		hash = (hash ^ bytes[index]) * 16777619u;
+	return (hash ^ (hash >> 16)) & (FRONT_CACHE_ENTRIES - 1);
+}
+
+/* the object cached for key, or nil */
+static id front_cache_get(struct front_cache *cache, const void *key, size_t length)
+{
+	unsigned long index = front_cache_index(key, length);
+
+	return cache->entries[index].object && !memcmp(cache->entries[index].key, key, length) ?
+		cache->entries[index].object : nil;
+}
+
+static void front_cache_put(struct front_cache *cache, const void *key, size_t length, id object)
+{
+	unsigned long index = front_cache_index(key, length);
+
+	memcpy(cache->entries[index].key, key, length);
+	cache->entries[index].object = object;
+}
+
 static NSMutableDictionary<NSData *, id> *pipelines;
 static NSMutableDictionary<NSData *, id<MTLDepthStencilState>> *depth_states;
 static NSMutableDictionary<NSData *, id<MTLSamplerState>> *samplers;
@@ -1215,6 +1281,9 @@ static id<MTLRenderPipelineState> draw_pipeline(const struct gpu_draw *draw, Met
 	key.write_mask = draw->color_target ? draw->blend.color_write_mask & 0xf : 0;
 	key.color_format = (uint32_t)color;
 	key.depth_format = (uint32_t)depth;
+	_Static_assert(sizeof(key) <= FRONT_CACHE_KEY, "pipeline_key fits the front cache");
+	if ((pipeline = front_cache_get(&pipeline_cache, &key, sizeof(key))))
+		return pipeline == [NSNull null] ? nil : pipeline;
 	name = [NSData dataWithBytes:&key length:sizeof(key)];
 	pipeline = pipelines[name];
 	if (!pipeline)
@@ -1259,6 +1328,7 @@ static id<MTLRenderPipelineState> draw_pipeline(const struct gpu_draw *draw, Met
 		}
 		pipelines[name] = pipeline;
 	}
+	front_cache_put(&pipeline_cache, &key, sizeof(key), pipeline);
 	return pipeline == [NSNull null] ? nil : pipeline;
 }
 
@@ -1287,6 +1357,9 @@ static id<MTLDepthStencilState> depth_state(const struct gpu_depth_stencil_state
 		key.stencil_read_mask = state->stencil_read_mask & 0xff;
 		key.stencil_write_mask = state->stencil_write_mask & 0xff;
 	}
+	_Static_assert(sizeof(key) <= FRONT_CACHE_KEY, "the depth key fits the front cache");
+	if ((result = front_cache_get(&depth_state_cache, &key, sizeof(key))))
+		return result;
 	name = [NSData dataWithBytes:&key length:sizeof(key)];
 	result = depth_states[name];
 	if (!result)
@@ -1311,6 +1384,7 @@ static id<MTLDepthStencilState> depth_state(const struct gpu_depth_stencil_state
 		result = [device newDepthStencilStateWithDescriptor:descriptor];
 		depth_states[name] = result;
 	}
+	front_cache_put(&depth_state_cache, &key, sizeof(key), result);
 	return result;
 }
 
@@ -1320,9 +1394,14 @@ is D3D's MAXMIPLEVEL, BORDER addressing clamps to the edge (border_clamp is 0),
 and the LOD bias is the shader's */
 static id<MTLSamplerState> sampler_state(const struct gpu_sampler_state *state)
 {
-	NSData *name = [NSData dataWithBytes:state length:sizeof(*state)];
-	id<MTLSamplerState> result = samplers[name];
+	NSData *name;
+	id<MTLSamplerState> result;
 
+	_Static_assert(sizeof(*state) <= FRONT_CACHE_KEY, "gpu_sampler_state fits the front cache");
+	if ((result = front_cache_get(&sampler_cache, state, sizeof(*state))))
+		return result;
+	name = [NSData dataWithBytes:state length:sizeof(*state)];
+	result = samplers[name];
 	if (!result)
 	{
 		MTLSamplerDescriptor *descriptor = [MTLSamplerDescriptor new];
@@ -1346,6 +1425,7 @@ static id<MTLSamplerState> sampler_state(const struct gpu_sampler_state *state)
 		result = [device newSamplerStateWithDescriptor:descriptor];
 		samplers[name] = result;
 	}
+	front_cache_put(&sampler_cache, state, sizeof(*state), result);
 	return result;
 }
 
