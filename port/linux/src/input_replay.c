@@ -8,10 +8,13 @@ on every build (debug.input_record, debug.input_replay, debug.benchmark).
 A recording is the controller's state each time it changes, stamped with the
 game time: ticks since the map loaded, plus the fraction into the next tick.
 A replay at 45 frames a second and one at 90 then press the same buttons at
-the same moments of the game. Only reads while a map's game time runs are
+the same moments of the game. Only reads while a level's game time runs are
 recorded; before that (menus, including the main menu's own map, and
-loading) the real controller drives the game,
-and a recording ends when the game time goes back (a new map). During a
+loading) the real controller drives the game. The game time goes back when
+the game reverts to a checkpoint (skipping a cinematic does, as does dying)
+or loads the next level; the recorded time carries on from where it was
+instead, the same way on recording and replay, so a recording can span
+them. During a
 replay the real controller is ignored while the game time runs. The look
 stick turns the view by its deflection times each frame's length, so aim
 can differ slightly between replays at different frame rates.
@@ -32,6 +35,7 @@ to the recording, a summary to the log, and the game quits.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include <time.h>
 
 /* source/game/game_time.c */
@@ -59,7 +63,9 @@ static struct
 	char record_path[512], replay_path[512], replay_name[256];
 	FILE *record_file;
 	BOOL record_ended;
-	double last_ticks;
+	/* the game time last seen, and what's added to it to make the recorded
+	time, which never goes back */
+	double last_game_ticks, timeline_offset;
 	XINPUT_GAMEPAD last_pad;
 	struct recorded_state *states;
 	long state_count, next_state;
@@ -154,13 +160,28 @@ static void configure(void)
 	}
 }
 
-/* the game time, in ticks with the fraction into the next, or a negative
-number while no level's game time runs (the main menu's doesn't count) */
+/* the recorded time: the game time in ticks, with the fraction into the
+next, carried on across the game time going back (a checkpoint revert or
+the next level); or a negative number while no level's game time runs (the
+main menu's doesn't count) */
 static double game_ticks(void)
 {
+	double ticks;
+
 	if (!game_time_initialized() || input_replay_main_menu_loaded())
 		return -1.0;
-	return (double)game_time_get() + (double)game_time_get_tick_fraction();
+	ticks = (double)game_time_get() + (double)game_time_get_tick_fraction();
+	if (replay.last_game_ticks > 0.0 && ticks + 1.0 < replay.last_game_ticks)
+	{
+		/* resume at the next whole tick after the last seen, so recording
+		and replay, whose last frames before the jump fall at different
+		fractions, agree */
+		replay.timeline_offset += ceil(replay.last_game_ticks) - ticks;
+		platform_log("debug.input_record/input_replay: the game time went back from %.2f to %.2f ticks; the recorded time carries on",
+			replay.last_game_ticks, ticks);
+	}
+	replay.last_game_ticks = ticks;
+	return ticks + replay.timeline_offset;
 }
 
 static void record(const XINPUT_GAMEPAD *pad, double ticks)
@@ -179,18 +200,8 @@ static void record(const XINPUT_GAMEPAD *pad, double ticks)
 			return;
 		}
 		fprintf(replay.record_file, "%s\n", RECORDING_HEADER);
-		replay.last_ticks = ticks;
 		memset(&replay.last_pad, 0xff, sizeof(replay.last_pad));
 	}
-	if (ticks + 1.0 < replay.last_ticks)
-	{
-		platform_log("debug.input_record: the game time went back (a new map); the recording ends");
-		fclose(replay.record_file);
-		replay.record_file = NULL;
-		replay.record_ended = TRUE;
-		return;
-	}
-	replay.last_ticks = ticks;
 	if (!memcmp(pad, &replay.last_pad, sizeof(*pad)))
 		return;
 	replay.last_pad = *pad;
