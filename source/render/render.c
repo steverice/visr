@@ -429,7 +429,10 @@ static void render_window(
 			interface_draw_screen_effects();
 	}
 
-	bink_playback_render();
+	/* port: in stereo the movie draws once, in the HUD pass: each call can
+	decode a frame and wait for the next */
+	if (halo_stereo_current_layer() == HALO_STEREO_LAYER_MONO)
+		bink_playback_render();
 	render_camera_debug_frustum(&render.camera, &render.frustum);
 	render_debug();
 	editor_render();
@@ -540,8 +543,11 @@ static void render_player_frame_stereo(
 			has_mirror);
 	}
 
-	/* the HUD pass: its layer clears to 0,0,0,0 (fog color black, alpha 0),
-	and the presenter blends it over each eye by its alpha */
+	/* the HUD pass: the presenter blends its layer over each eye by its
+	alpha. The transparent clear relies on the zeroed fog color (black) and
+	on real_rgb_color_to_pixel32 leaving alpha at 0. While a movie plays, it
+	draws here, once, as a flat picture for both eyes (as render_window
+	draws it in mono: in place of the HUD) */
 	halo_stereo_layer(HALO_STEREO_LAYER_HUD);
 	memset(&parameters, 0, sizeof(parameters));
 	render.local_player_index = window->local_player_index;
@@ -561,6 +567,7 @@ static void render_player_frame_stereo(
 		render_ui_widgets(window->local_player_index, &window->rasterizer_camera.viewport_bounds);
 		halo_screen_ui_offset(FALSE);
 	}
+	bink_playback_render();
 	rasterizer_window_end();
 	halo_stereo_layer(HALO_STEREO_LAYER_MONO);
 	render_stereo_eyes_drawn = TRUE;
