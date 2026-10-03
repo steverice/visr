@@ -1888,6 +1888,9 @@ static struct
 	CFTimeInterval due;              /* when the next frame shows, as the schedule reckons it */
 	unsigned long window;
 	unsigned long reported;
+	/* CPU and GPU time and frames since the last report, for its averages */
+	double cpu_total, gpu_total;
+	unsigned long timed;
 } pacing;
 
 static void pacing_start(uint32_t flags)
@@ -1986,15 +1989,25 @@ static CFTimeInterval pacing_schedule(id<CAMetalDrawable> drawable, uint32_t *ne
 		if (!pacing.off && up > pacing.refreshes)
 			pacing.misses++;
 	}
+	if (cpu > 0.0)
+	{
+		pacing.cpu_total += cpu;
+		pacing.gpu_total += gpu;
+		pacing.timed++;
+	}
 	if (frames >= pacing.reported + 600)
 	{
 		pacing.reported = frames;
 		platform_log("Metal: frames shown for 1/2/3/4/5+ refreshes at %.1f Hz: %lu/%lu/%lu/%lu/%lu (pacing %s); "
-			"frame CPU %.1f ms, GPU %.1f ms", 1.0 / period, pacing.shown[1], pacing.shown[2], pacing.shown[3],
+			"frame CPU %.1f ms, GPU %.1f ms (averages)", 1.0 / period, pacing.shown[1], pacing.shown[2], pacing.shown[3],
 			pacing.shown[4], pacing.shown[5],
 			pacing.off ? "off" : pacing.refreshes == 1 ? "1 refresh" : pacing.refreshes == 2 ? "2 refreshes" :
-			pacing.refreshes == 3 ? "3 refreshes" : "4 refreshes", cpu * 1000.0, gpu * 1000.0);
+			pacing.refreshes == 3 ? "3 refreshes" : "4 refreshes",
+			pacing.timed ? pacing.cpu_total * 1000.0 / (double)pacing.timed : 0.0,
+			pacing.timed ? pacing.gpu_total * 1000.0 / (double)pacing.timed : 0.0);
 		memset(pacing.shown, 0, sizeof(pacing.shown));
+		pacing.cpu_total = pacing.gpu_total = 0.0;
+		pacing.timed = 0;
 	}
 	if (pacing.off)
 		return 0.0;
