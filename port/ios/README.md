@@ -155,6 +155,24 @@ the drawable and GPU texture limit. Existing configuration files without
 `render_height` automatically use native resolution. Anti-aliasing and an
 in-app graphics settings menu are not implemented yet.
 
+With the Metal renderer (`renderer = "metal"`; always on Apple Vision Pro),
+these `[display]` settings also apply:
+
+```toml
+render_scale = 1.0           # Render this fraction of the display's pixels each way (0.25-1.0)
+upscaler = "bilinear"        # "metalfx": scale a smaller render up with MetalFX (on a device)
+compressed_textures = true   # Keep the game's DXT textures compressed on the GPU
+anisotropic_filtering = 16   # 1 (as on the Xbox) to 16
+shadow_map_size = 512        # 128 (as on the Xbox) to 2048
+effect_resolution = true     # Active camouflage at the screen's resolution, not 320x240
+frame_pacing = "off"         # Experimental: "tick" or "refresh" hold every frame for whole refreshes
+direct_camera = true         # On foot, the view follows the stick every frame
+```
+
+`render_scale = 0.67` with `upscaler = "metalfx"` draws under half the
+pixels and scales them back up with sharper edges than a plain stretch; the
+HUD is scaled with the rest. The simulators have no MetalFX.
+
 ### Touch and controller input
 
 The left stick moves and the right stick aims. The four arrows navigate menus.
@@ -224,6 +242,17 @@ files, cancellation/retry, existing files, and malformed directory mutations.
 
 These tests do not replace a device campaign test. See [the validation record](VALIDATION.md)
 for observed device/simulator behavior and remaining limitations.
+
+### Benchmarks
+
+`debug.input_record = "name"` records controller 1 while a map plays, to
+`name.input` in Documents. `debug.input_replay = "name"` plays a recording back
+at the same moments of the game, and with `debug.benchmark = true` the game
+times every frame of the replay, writes `benchmark-name-<UTC time>.txt` to
+Documents (frame-time percentiles, frames over each refresh budget, and every
+frame's time) and quits when the replay ends. The Metal renderer also logs,
+every 600 frames, how many refreshes frames stayed on screen, each frame's CPU
+and GPU time, and its render passes' memory traffic (`stderr.log`).
 
 ## Simulator
 
