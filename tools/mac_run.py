@@ -74,6 +74,8 @@ DEFAULTS = {
     "display.effect_resolution": "false",
     "display.compressed_textures": "false",
     "display.frame_pacing": '"off"',
+    "display.render_scale": "1.0",
+    "display.upscaler": '"bilinear"',
     "debug.null_renderer": "false",
     "debug.gl_debug": "false",
     "debug.fixed_timestep": "false",
