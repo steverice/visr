@@ -106,6 +106,9 @@ static const struct config_setting config_settings[] =
 		"How a picture rendered below the display's size is scaled up: \"bilinear\"\n"
 		"(default), or \"metalfx\" (Metal renderer, on a device: MetalFX's spatial\n"
 		"scaler, sharper edges and text for a fraction of a millisecond)." },
+	{ "display.immersive", _config_boolean, "false", "HALO_IMMERSIVE", _environment_value, _platform_ios,
+		"Apple Vision Pro, visionOS 26 and later: show the game on a screen standing\n"
+		"in the room (an immersive space) instead of in a window." },
 	{ "display.renderer", _config_string, "\"gl\"", "HALO_RENDERER", _environment_value, _platform_ios,
 		"What draws the game: \"gl\" (default) OpenGL ES, or \"metal\" Metal.\n"
 		"Changes apply on relaunch." },

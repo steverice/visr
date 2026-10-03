@@ -784,7 +784,8 @@ static void gl_initialize(void)
 		(config_boolean("debug.frame_counter") ? GPU_INITIALIZE_FRAME_COUNTER : 0) |
 		(platform_fixed_timestep() ? GPU_INITIALIZE_FIXED_TIMESTEP : 0) | frame_pacing_flags() |
 		(config_boolean("display.compressed_textures") ? GPU_INITIALIZE_COMPRESSED_TEXTURES : 0) |
-		(!strcmp(config_string("display.upscaler"), "metalfx") ? GPU_INITIALIZE_METALFX : 0), &device_capabilities);
+		(!strcmp(config_string("display.upscaler"), "metalfx") ? GPU_INITIALIZE_METALFX : 0) |
+		(config_boolean("display.immersive") ? GPU_INITIALIZE_IMMERSIVE : 0), &device_capabilities);
 	screen_maximum_texture_size = (int32_t)device_capabilities.max_texture_size;
 #ifdef HALO_ILP32
 	/* Select the real Retina drawable before allocating any screen targets. */

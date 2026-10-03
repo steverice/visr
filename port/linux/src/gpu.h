@@ -426,6 +426,9 @@ enum
 	/* display.upscaler = "metalfx": a back buffer smaller than its place on
 	screen is scaled up by MetalFX (Metal), not bilinearly */
 	GPU_INITIALIZE_METALFX = 128,
+	/* display.immersive: the picture goes on a screen in an immersive space
+	(Metal, visionOS 26 and later) */
+	GPU_INITIALIZE_IMMERSIVE = 256,
 };
 /* probe the context, which must be current, and set it up */
 void gpu_initialize(uint32_t flags, struct gpu_capabilities *capabilities);

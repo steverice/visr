@@ -1,6 +1,10 @@
 # Build the iPhone/iPad (or Apple TV, or Apple Vision Pro) host and SDL around the statically compiled guest image.
 cmake_minimum_required(VERSION 3.24)
 project(HaloCE LANGUAGES C CXX OBJC ASM)
+# theater mode's immersive space is SwiftUI (host/Theater.swift)
+if(CMAKE_SYSTEM_NAME STREQUAL "visionOS")
+    enable_language(Swift)
+endif()
 set(HALO_BUNDLE_IDENTIFIER "org.haloce.ios" CACHE STRING "App bundle identifier")
 get_filename_component(ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
 set(SDL_SHARED OFF CACHE BOOL "" FORCE)
@@ -46,7 +50,8 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "visionOS")
     # following the window when it's resized (d3d8_device.c's halo_screen_commit)
     set(HALO_RENDER_HEIGHT 0 CACHE STRING "Internal render height (display.render_height)")
     option(HALO_EXTENDED_VIRTUAL_ADDRESSING "Sign with the extended virtual addressing entitlement" OFF)
-    set(HALO_PLATFORM_SOURCES Assets-visionOS.xcassets host/host_tv.m host/host_import.m host/host_orientation.m)
+    set(HALO_PLATFORM_SOURCES Assets-visionOS.xcassets host/host_tv.m host/host_import.m host/host_orientation.m
+        host/host_theater.m host/Theater.swift)
     set(HALO_INFO_PLIST Info-visionOS.plist)
     set(HALO_DEVICE_FAMILY 7)
 else()
@@ -64,7 +69,7 @@ target_include_directories(HaloCE PRIVATE host "${ROOT}/port/runtime" "${ROOT}/p
     "${ROOT}/port/runtime/guest/runtime" "${ROOT}/port/linux/src" "${ROOT}/build/ios/host"
     "${ROOT}/build/ios/embedded")
 target_compile_definitions(HaloCE PRIVATE HALO_IOS=1 st_mtim=st_mtimespec st_atim=st_atimespec st_ctim=st_ctimespec)
-target_compile_options(HaloCE PRIVATE -Wno-deprecated-declarations)
+target_compile_options(HaloCE PRIVATE "$<$<NOT:$<COMPILE_LANGUAGE:Swift>>:-Wno-deprecated-declarations>")
 if(NOT HALO_VISIONOS)
     # the GL backend (step 4): OpenGL ES through gl.h's pointer table, resolved by name
     target_sources(HaloCE PRIVATE "${ROOT}/port/linux/src/gpu_gl.c" "${ROOT}/port/linux/src/gl_functions.c")
@@ -84,8 +89,13 @@ if(HALO_TVOS)
     target_link_libraries(HaloCE PRIVATE "-framework Network" "-framework CoreImage")
     set_source_files_properties(Assets-tvOS.xcassets PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
 elseif(HALO_VISIONOS)
-    target_link_libraries(HaloCE PRIVATE "-framework UniformTypeIdentifiers")
+    target_link_libraries(HaloCE PRIVATE "-framework UniformTypeIdentifiers" "-framework CompositorServices"
+        "-framework ARKit" "-framework SwiftUI")
     set_source_files_properties(Assets-visionOS.xcassets PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+    # Theater.swift calls host_theater.m's C functions
+    set_target_properties(HaloCE PROPERTIES
+        XCODE_ATTRIBUTE_SWIFT_OBJC_BRIDGING_HEADER "${CMAKE_CURRENT_SOURCE_DIR}/host/host_theater.h"
+        XCODE_ATTRIBUTE_SWIFT_VERSION 5.0)
     # the guest pool can grow to about 1.9 GB; extended virtual addressing only
     # if a device refuses the 4 GB arena (tools/ios_build.py)
     if(HALO_EXTENDED_VIRTUAL_ADDRESSING)

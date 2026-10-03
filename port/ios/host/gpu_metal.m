@@ -156,6 +156,11 @@ read rather than messages to the array */
 static id<MTLDevice> device;
 static id<MTLCommandQueue> queue;
 static CAMetalLayer *layer;
+#if TARGET_OS_VISION
+#include "host_theater.h"
+/* display.immersive: frames go to the theater screen while its space is open */
+static BOOL theater_wanted;
+#endif
 static MetalTable *textures, *buffers, *shaders;
 static int metal_debug;
 /* display.compressed_textures, where the GPU has BC formats: DXT textures
@@ -2189,6 +2194,30 @@ static uint32_t gpu_metal_present(gpu_texture back_buffer)
 
 		command_buffer();
 		pass_finish(YES);
+#if TARGET_OS_VISION
+		/* theater mode: the picture, at the window's size, goes on the screen
+		in the immersive space, whose frames pace the game; the window isn't
+		drawn meanwhile */
+		if (theater_wanted && record && record->texture && host_theater_active())
+		{
+			long window_width = (long)layer.drawableSize.width, window_height = (long)layer.drawableSize.height;
+			long width = window_width, height = window_width * (long)record->description.height / (long)record->description.width;
+			id<MTLTexture> picture;
+
+			if (height > window_height)
+			{
+				height = window_height;
+				width = window_height * (long)record->description.width / (long)record->description.height;
+			}
+			picture = upscale(record->texture, width, height);
+			use_texture(record);
+			commit(YES);
+			host_theater_present(queue, picture);
+			frames++;
+			pacing.work_started = CACurrentMediaTime();
+			return 0;
+		}
+#endif
 		waited = CACurrentMediaTime();
 		drawable = [layer nextDrawable];
 		pacing_waited += CACurrentMediaTime() - waited;
@@ -2285,6 +2314,13 @@ static void gpu_metal_initialize(uint32_t flags, struct gpu_capabilities *capabi
 		if (!layer || !device)
 			host_fatal("Metal is unavailable (layer %p, device %p)", (__bridge void *)layer, (__bridge void *)device);
 		queue = [device newCommandQueue];
+#if TARGET_OS_VISION
+		if (flags & GPU_INITIALIZE_IMMERSIVE)
+		{
+			theater_wanted = YES;
+			host_theater_open();
+		}
+#endif
 		/* SDL's view sets the layer's scale and drawableSize (from layoutSubviews) */
 		layer.device = device;
 		layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
