@@ -267,6 +267,18 @@ static double game_ticks(void)
 		and replay, whose last frames before the jump fall at different
 		fractions, agree */
 		replay.timeline_offset += ceil(replay.last_game_ticks) - ticks;
+		/* a replay lets go of its buttons at the jump and drops the states
+		recorded before it: a press held across the jump can't be released
+		while the game time stands still, and an accept held into a cinematic
+		that the revert made skippable again skips it every frame, so the game
+		time never moves (c40's opening) */
+		if (*replay.replay_path)
+		{
+			memset(&replay.replay_pad, 0, sizeof(replay.replay_pad));
+			while (replay.next_state < replay.state_count &&
+				replay.states[replay.next_state].ticks < ticks + replay.timeline_offset)
+				replay.next_state++;
+		}
 		replay.jumps++;
 		replay.jumped = halo_frame_trace_milliseconds();
 		platform_log("debug.input_record/input_replay: the game time went back from %.2f to %.2f ticks; the recorded time carries on",
