@@ -109,8 +109,9 @@ static struct
 	struct recorded_action *actions;
 	long action_count, next_action;
 	long segment, last_action_tick;
-	/* when the game tick last changed in the recording's last segment */
-	double last_tick_change;
+	/* when the game tick last changed, and when the replay reached its
+	current segment */
+	double last_tick_change, segment_entered;
 } replay;
 
 /* NAME.input's actions file, NAME.actions */
@@ -367,7 +368,10 @@ void input_replay_tick_action(void *action)
 		return;
 	tick = game_time_get();
 	if (replay.last_action_tick > 0 && tick < replay.last_action_tick)
+	{
 		replay.segment++;
+		replay.segment_entered = halo_frame_trace_milliseconds();
+	}
 	if (tick != replay.last_action_tick)
 		replay.last_tick_change = halo_frame_trace_milliseconds();
 	replay.last_action_tick = tick;
@@ -507,6 +511,23 @@ void input_replay_frame(long width, long height)
 		platform_log("debug.benchmark: the game time stopped in the recording's last segment");
 		replay.replay_finished = TRUE;
 		return;
+	}
+	/* and a backstop, whatever the game time does there: the last segment's
+	recorded length (from its first action to its last) plus ten seconds */
+	if (replay.action_count && replay.segment > 0 &&
+		replay.segment >= replay.actions[replay.action_count - 1].segment && replay.segment_entered > 0.0)
+	{
+		const struct recorded_action *last = &replay.actions[replay.action_count - 1];
+		long first = replay.action_count - 1;
+
+		while (first > 0 && replay.actions[first - 1].segment == last->segment)
+			first--;
+		if (now - replay.segment_entered > (double)(last->tick - replay.actions[first].tick) * 1000.0 / 30.0 + 10000.0)
+		{
+			platform_log("debug.benchmark: the replay's last segment ran long; ending it");
+			replay.replay_finished = TRUE;
+			return;
+		}
 	}
 	if (replay.next_state == 0)
 		return;
