@@ -98,6 +98,14 @@ static const struct config_setting config_settings[] =
 		"With the Metal renderer, keep the game's DXT textures compressed on the GPU\n"
 		"where it supports them (BC1-3): a quarter to an eighth of the memory, and\n"
 		"faster loads. false decodes them, as OpenGL ES must." },
+	{ "display.render_scale", _config_real, "1.0", "HALO_RENDER_SCALE", _environment_value, _platform_ios,
+		"Render at this fraction of the display's pixels each way (0.25 to 1.0;\n"
+		"0.67 draws under half the pixels), scaled back up by display.upscaler.\n"
+		"display.render_height, when set, caps the result." },
+	{ "display.upscaler", _config_string, "\"bilinear\"", "HALO_UPSCALER", _environment_value, _platform_ios,
+		"How a picture rendered below the display's size is scaled up: \"bilinear\"\n"
+		"(default), or \"metalfx\" (Metal renderer, on a device: MetalFX's spatial\n"
+		"scaler, sharper edges and text for a fraction of a millisecond)." },
 	{ "display.renderer", _config_string, "\"gl\"", "HALO_RENDERER", _environment_value, _platform_ios,
 		"What draws the game: \"gl\" (default) OpenGL ES, or \"metal\" Metal.\n"
 		"Changes apply on relaunch." },

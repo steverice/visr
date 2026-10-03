@@ -116,6 +116,17 @@ static void screen_mode_choose(long *width, float scale[2])
 		drawable_width = pixels_x ? atoi(pixels_x) : (int)*width;
 		drawable_height = pixels_y ? atoi(pixels_y) : SCREEN_HEIGHT;
 	}
+	{
+		/* display.render_scale: a fraction of the display's pixels each way
+		(display.upscaler scales the picture back up) */
+		double render_scale = config_real("display.render_scale");
+
+		if (render_scale > 0.25 && render_scale < 1.0)
+		{
+			drawable_width = (int)lround(drawable_width * render_scale);
+			drawable_height = (int)lround(drawable_height * render_scale);
+		}
+	}
 	pixels = halo_display_render_size(drawable_width, drawable_height, *width,
 		requested_width, config_integer("display.render_height"), screen_maximum_texture_size);
 	scale[0] = (float)pixels.width / (float)*width;
@@ -723,7 +734,8 @@ static void gl_initialize(void)
 		(platform_renderer_metal() ? GPU_INITIALIZE_METAL : 0) |
 		(config_boolean("debug.frame_counter") ? GPU_INITIALIZE_FRAME_COUNTER : 0) |
 		(platform_fixed_timestep() ? GPU_INITIALIZE_FIXED_TIMESTEP : 0) | frame_pacing_flags() |
-		(config_boolean("display.compressed_textures") ? GPU_INITIALIZE_COMPRESSED_TEXTURES : 0), &device_capabilities);
+		(config_boolean("display.compressed_textures") ? GPU_INITIALIZE_COMPRESSED_TEXTURES : 0) |
+		(!strcmp(config_string("display.upscaler"), "metalfx") ? GPU_INITIALIZE_METALFX : 0), &device_capabilities);
 	screen_maximum_texture_size = (int32_t)device_capabilities.max_texture_size;
 #ifdef HALO_ILP32
 	/* Select the real Retina drawable before allocating any screen targets. */

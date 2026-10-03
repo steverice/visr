@@ -26,6 +26,11 @@ but never returns to its run loop, which would otherwise drain them.
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <QuartzCore/QuartzCore.h>
+#include <TargetConditionals.h>
+#if __has_include(<MetalFX/MetalFX.h>) && !TARGET_OS_SIMULATOR
+#import <MetalFX/MetalFX.h>
+#define HAVE_METALFX 1
+#endif
 #include <math.h>
 #include <os/lock.h>
 #include <stdatomic.h>
@@ -908,6 +913,17 @@ static BOOL pass_begin(gpu_texture color, gpu_texture depth, const struct gpu_cl
 color format (or none), depth-stencil format (or none) and write mask */
 static NSMutableDictionary<NSNumber *, id<MTLRenderPipelineState>> *clear_pipelines;
 static NSMutableDictionary<NSNumber *, id<MTLDepthStencilState>> *clear_depth_states;
+/* display.upscaler = "metalfx": a back buffer smaller than its place in the
+drawable is scaled up by MetalFX's spatial scaler (edge-aware, with
+sharpening) into upscaled, which the present quad then draws 1:1, rather
+than stretched by the quad's bilinear sampler. The scaler is made again when
+either size changes. */
+static BOOL metalfx_wanted;
+#ifdef HAVE_METALFX
+static id<MTLFXSpatialScaler> upscaler API_AVAILABLE(ios(16.0), tvos(16.0), visionos(1.0));
+#endif
+static id<MTLTexture> upscaled;
+
 static id<MTLFunction> clear_vertex, clear_fragment, present_vertex, present_fragment;
 static id<MTLRenderPipelineState> present_pipeline;
 static id<MTLSamplerState> present_sampler;
@@ -1982,6 +1998,57 @@ static void gpu_metal_flush(void)
 {
 }
 
+/* the back buffer scaled to width x height by MetalFX when it's smaller and
+display.upscaler asks for it, else the back buffer itself */
+static id<MTLTexture> upscale(id<MTLTexture> back_buffer, long width, long height)
+{
+#ifdef HAVE_METALFX
+	if (@available(iOS 16.0, tvOS 16.0, visionOS 1.0, *))
+	{
+		if (!metalfx_wanted || (long)back_buffer.width >= width || (long)back_buffer.height >= height)
+			return back_buffer;
+		if (!upscaler || upscaler.inputWidth != back_buffer.width || upscaler.inputHeight != back_buffer.height ||
+			upscaler.outputWidth != (NSUInteger)width || upscaler.outputHeight != (NSUInteger)height)
+		{
+			MTLFXSpatialScalerDescriptor *descriptor = [MTLFXSpatialScalerDescriptor new];
+			MTLTextureDescriptor *output;
+
+			descriptor.inputWidth = back_buffer.width;
+			descriptor.inputHeight = back_buffer.height;
+			descriptor.outputWidth = (NSUInteger)width;
+			descriptor.outputHeight = (NSUInteger)height;
+			descriptor.colorTextureFormat = back_buffer.pixelFormat;
+			descriptor.outputTextureFormat = back_buffer.pixelFormat;
+			/* the game's colors are display-encoded, not linear */
+			descriptor.colorProcessingMode = MTLFXSpatialScalerColorProcessingModePerceptual;
+			if (![MTLFXSpatialScalerDescriptor supportsDevice:device] ||
+				!(upscaler = [descriptor newSpatialScalerWithDevice:device]))
+			{
+				platform_log("Metal: MetalFX's spatial scaler is unavailable; the picture is scaled bilinearly");
+				metalfx_wanted = NO;
+				return back_buffer;
+			}
+			output = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:back_buffer.pixelFormat
+				width:(NSUInteger)width height:(NSUInteger)height mipmapped:NO];
+			output.storageMode = MTLStorageModePrivate;
+			output.usage = upscaler.outputTextureUsage | MTLTextureUsageShaderRead;
+			upscaled = [device newTextureWithDescriptor:output];
+			platform_log("Metal: MetalFX scales %lux%lu up to %ldx%ld", (unsigned long)back_buffer.width,
+				(unsigned long)back_buffer.height, width, height);
+		}
+		upscaler.colorTexture = back_buffer;
+		upscaler.outputTexture = upscaled;
+		upscaler.inputContentWidth = back_buffer.width;
+		upscaler.inputContentHeight = back_buffer.height;
+		[upscaler encodeToCommandBuffer:commands];
+		return upscaled;
+	}
+#endif
+	(void)width;
+	(void)height;
+	return back_buffer;
+}
+
 /* the back buffer letterboxed into the drawable, as gpu_gl.c's gpu_present,
 without its vertical flip: GL's window shows row 0 at the bottom, Metal's
 drawable at the top */
@@ -2007,12 +2074,14 @@ static uint32_t gpu_metal_present(gpu_texture back_buffer)
 			long window_width = (long)drawable.texture.width, window_height = (long)drawable.texture.height;
 			long width = window_width, height = window_width * (long)record->description.height / (long)record->description.width;
 			id<MTLRenderCommandEncoder> present;
+			id<MTLTexture> picture;
 
 			if (height > window_height)
 			{
 				height = window_height;
 				width = window_height * (long)record->description.width / (long)record->description.height;
 			}
+			picture = upscale(record->texture, width, height);
 			pass.colorAttachments[0].texture = drawable.texture;
 			pass.colorAttachments[0].loadAction = MTLLoadActionClear;
 			pass.colorAttachments[0].storeAction = MTLStoreActionStore;
@@ -2021,7 +2090,7 @@ static uint32_t gpu_metal_present(gpu_texture back_buffer)
 			[present setRenderPipelineState:present_pipeline];
 			[present setViewport:(MTLViewport){ (double)((window_width - width) / 2), (double)((window_height - height) / 2),
 				(double)width, (double)height, 0.0, 1.0 }];
-			[present setFragmentTexture:record->texture atIndex:0];
+			[present setFragmentTexture:picture atIndex:0];
 			[present setFragmentSamplerState:present_sampler atIndex:0];
 			[present drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
 			[present endEncoding];
@@ -2067,6 +2136,12 @@ static void gpu_metal_initialize(uint32_t flags, struct gpu_capabilities *capabi
 		memset(capabilities, 0, sizeof(*capabilities));
 		metal_debug = (flags & GPU_INITIALIZE_DEBUG) != 0;
 		visibility_wait = (flags & GPU_INITIALIZE_FIXED_TIMESTEP) != 0;
+		metalfx_wanted = (flags & GPU_INITIALIZE_METALFX) != 0;
+#ifndef HAVE_METALFX
+		if (metalfx_wanted)
+			platform_log("Metal: this build has no MetalFX; the picture is scaled bilinearly");
+		metalfx_wanted = NO;
+#endif
 		pacing_start(flags);
 		layer = (__bridge CAMetalLayer *)host_sdl_metal_layer();
 		device = MTLCreateSystemDefaultDevice();

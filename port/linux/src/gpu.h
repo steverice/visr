@@ -423,6 +423,9 @@ enum
 	/* display.compressed_textures: DXT textures upload as BC1-3 where the
 	GPU has them (Metal; GL decides from its extensions) */
 	GPU_INITIALIZE_COMPRESSED_TEXTURES = 64,
+	/* display.upscaler = "metalfx": a back buffer smaller than its place on
+	screen is scaled up by MetalFX (Metal), not bilinearly */
+	GPU_INITIALIZE_METALFX = 128,
 };
 /* probe the context, which must be current, and set it up */
 void gpu_initialize(uint32_t flags, struct gpu_capabilities *capabilities);

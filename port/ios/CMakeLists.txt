@@ -76,6 +76,10 @@ endif()
 target_compile_options(HaloCE PRIVATE "$<$<COMPILE_LANGUAGE:OBJC>:-fobjc-arc>")
 target_link_libraries(HaloCE PRIVATE SDL3::SDL3-static "-framework Foundation" "-framework UIKit"
     "-framework Metal" "-framework QuartzCore")
+# display.upscaler = "metalfx" (gpu_metal.m); the simulators have no MetalFX
+if(NOT CMAKE_OSX_SYSROOT MATCHES "[Ss]imulator")
+    target_link_libraries(HaloCE PRIVATE "-weak_framework MetalFX")
+endif()
 if(HALO_TVOS)
     target_link_libraries(HaloCE PRIVATE "-framework Network" "-framework CoreImage")
     set_source_files_properties(Assets-tvOS.xcassets PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
