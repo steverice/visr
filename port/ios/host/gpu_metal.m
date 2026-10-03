@@ -1903,6 +1903,12 @@ static void pacing_start(uint32_t flags)
 	NSThread *thread = [[NSThread alloc] initWithBlock:^{
 		CADisplayLink *link = [CADisplayLink displayLinkWithTarget:[PacingClock new] selector:@selector(refresh:)];
 
+#if !TARGET_OS_VISION
+		/* ask for 120 Hz, which the system clamps to what the screen can do: a ProMotion
+		iPhone otherwise stays at 60 Hz, even with CADisableMinimumFrameDurationOnPhone
+		(Info.plist) */
+		link.preferredFrameRateRange = CAFrameRateRangeMake(80, 120, 120);
+#endif
 		[link addToRunLoop:NSRunLoop.currentRunLoop forMode:NSDefaultRunLoopMode];
 		for (;;)
 			[NSRunLoop.currentRunLoop run];
