@@ -334,13 +334,36 @@ static id<MTLCommandBuffer> command_buffer(void)
 	return commands;
 }
 
-static void pass_end(void)
+/* the open pass's depth-stencil target, whose store is decided when the pass
+ends (pass_finish) */
+static id<MTLTexture> pass_depth_texture;
+
+static void pass_attachment_traffic(id<MTLTexture> texture, MTLLoadAction load, MTLStoreAction store, double bytes_per_pixel);
+
+/* ends the open pass. The depth-stencil target is stored, unless the pass
+ends the frame (Present): nothing reads the screen's depth after it, and at
+the display's size it's tens of megabytes of writes a frame */
+static void pass_finish(BOOL frame_end)
 {
+	if (encoder && pass_depth_texture)
+	{
+		MTLStoreAction store = frame_end ? MTLStoreActionDontCare : MTLStoreActionStore;
+
+		[encoder setDepthStoreAction:store];
+		[encoder setStencilStoreAction:store];
+		pass_attachment_traffic(pass_depth_texture, MTLLoadActionDontCare, store, 5.0);
+	}
+	pass_depth_texture = nil;
 	[encoder endEncoding];
 	encoder = nil;
 	visibility.entry_open = 0;
 	pass_color = pass_depth = 0;
 	pass_commands = 0;
+}
+
+static void pass_end(void)
+{
+	pass_finish(NO);
 }
 
 /* commits the open command buffer; the frame's last one (at Present) also
@@ -923,12 +946,13 @@ static BOOL pass_begin(gpu_texture color, gpu_texture depth, const struct gpu_cl
 	{
 		pass.depthAttachment.texture = depth_record->texture;
 		pass.depthAttachment.loadAction = clear && (clear->flags & GPU_CLEAR_DEPTH) ? MTLLoadActionClear : MTLLoadActionLoad;
-		pass.depthAttachment.storeAction = MTLStoreActionStore;
+		pass.depthAttachment.storeAction = MTLStoreActionUnknown;
 		pass.depthAttachment.clearDepth = clear ? clear->depth : 1.0;
 		pass.stencilAttachment.texture = depth_record->texture;
 		pass.stencilAttachment.loadAction = clear && (clear->flags & GPU_CLEAR_STENCIL) ? MTLLoadActionClear : MTLLoadActionLoad;
-		pass.stencilAttachment.storeAction = MTLStoreActionStore;
+		pass.stencilAttachment.storeAction = MTLStoreActionUnknown;
 		pass.stencilAttachment.clearStencil = clear ? clear->stencil & 0xff : 0;
+		pass_depth_texture = depth_record->texture;
 		use_texture(depth_record);
 	}
 	pass_traffic_count(pass);
@@ -2099,7 +2123,7 @@ static uint32_t gpu_metal_present(gpu_texture back_buffer)
 		uint32_t next_frame_due = 0;
 
 		command_buffer();
-		pass_end();
+		pass_finish(YES);
 		waited = CACurrentMediaTime();
 		drawable = [layer nextDrawable];
 		pacing_waited += CACurrentMediaTime() - waited;
