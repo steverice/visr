@@ -3601,7 +3601,8 @@ void WINAPI D3DDevice_Clear(DWORD count, CONST D3DRECT *rectangles, DWORD flags,
 
 /* ---------- presentation */
 
-static void write_screenshot(struct render_target_entry *target)
+/* suffix: "" for the usual frameNNNNN.bmp, else e.g. "-left" */
+static void write_screenshot(struct render_target_entry *target, const char *suffix)
 {
 	const char *directory = *config_string("debug.screenshot_directory") ?
 		config_string("debug.screenshot_directory") : NULL;
@@ -3625,7 +3626,7 @@ static void write_screenshot(struct render_target_entry *target)
 	image viewers would show it as transparency */
 	for (row = 0; row < width * height; row++)
 		pixels[row * 4 + 3] = 0xff;
-	snprintf(path, sizeof(path), "%s/frame%05lu.bmp", directory, device.frame);
+	snprintf(path, sizeof(path), "%s/frame%05lu%s.bmp", directory, device.frame, suffix);
 	file = fopen(path, "wb");
 	if (file)
 	{
@@ -3689,7 +3690,17 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 			platform_log("present back buffer %08lx texture %u", (unsigned long)device.back_buffer.Data,
 				back_buffer->target.texture);
 		if (screenshot_every > 0 && device.frame % (unsigned long)screenshot_every == 0)
-			write_screenshot(back_buffer);
+		{
+			write_screenshot(back_buffer, "");
+			/* and each picture of a stereo frame, to free-view or inspect */
+			if (stereo_frame)
+			{
+				write_screenshot(back_buffer, "-left");
+				write_screenshot(render_target_get_layer(&device.back_buffer, 1), "-right");
+				if (hud)
+					write_screenshot(hud, "-hud");
+			}
+		}
 		if (stereo_frame)
 		{
 			struct gpu_stereo_present present = { 0 };
