@@ -529,8 +529,10 @@ void input_replay_frame(long width, long height)
 		exit(EXIT_SUCCESS);
 	}
 	/* past the recording's last jump back (counted frame by frame), the
-	replay is over once the game time stands still for three seconds (a10's
-	second cinematic fades to white and holds it), or at the latest after
+	replay is over once the game time stands still for three seconds within a
+	second of the last recorded tick (a10's second cinematic fades to white
+	and holds it; a pause earlier in the segment, such as the load after
+	skipping c40's opening cinematic, isn't the end), or at the latest after
 	that last segment's recorded length plus ten seconds */
 	if (replay.action_count && replay.jumps >= replay.actions[replay.action_count - 1].segment && replay.jumped > 0.0)
 	{
@@ -539,7 +541,7 @@ void input_replay_frame(long width, long height)
 
 		while (first > 0 && replay.actions[first - 1].segment == last->segment)
 			first--;
-		if (now - replay.moved > 3000.0 ||
+		if ((now - replay.moved > 3000.0 && game_time_get() >= last->tick - 30) ||
 			now - replay.jumped > (double)(last->tick - replay.actions[first].tick) * 1000.0 / 30.0 + 10000.0)
 		{
 			platform_log("debug.benchmark: past the recording's end (the game time stopped or ran long)");
