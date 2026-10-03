@@ -16,6 +16,7 @@ layouts).
 #define __GUEST_HOST_H
 
 #include "gpu.h"
+#include "halo_stereo.h"
 
 /* ---------- process */
 
@@ -120,5 +121,13 @@ void host_gpu_pipeline_warm(const struct gpu_pipeline_description *description);
 void host_gpu_warm_end(void);
 uint32_t host_gpu_pipeline_built_take(struct gpu_pipeline_description *description);
 void host_gpu_initialize(uint32_t flags, struct gpu_capabilities *capabilities);
+
+/* ---------- stereo (port/linux/game/stereo.c; the host's port/ios/host/host_stereo.m)
+
+struct halo_stereo_frame crosses as it is (tools/ios_test.py pins its layout). */
+
+/* HEAD mode, at the game's frame begin: opens the Compositor's next frame and
+fills the eyes and the head's turn from it; eye_count stays 0 without one */
+void host_stereo_frame(struct halo_stereo_frame *frame);
 
 #endif

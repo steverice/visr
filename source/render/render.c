@@ -469,6 +469,12 @@ static void render_player_frame_stereo(
 	real time_delta_since_tick_sec;
 
 	stereo = halo_stereo_frame();
+	/* head-tracked stereo: the cameras turn by the head's turn the look takes
+	in next frame, and tilt by its roll (the render's alone; the aim has no
+	roll), so the picture matches the pose the presenter hands the
+	Compositor. Both cameras, so culling and the HUD's projections match */
+	halo_stereo_head_orient(&camera->forward.i, &camera->up.i);
+	halo_stereo_head_orient(&window->rasterizer_camera.forward.i, &window->rasterizer_camera.up.i);
 	/* the presenter's depth range (d3d8_device.c): the eyes' planes */
 	halo_stereo_set_depth_range(window->rasterizer_camera.z_near, window->rasterizer_camera.z_far);
 	aspect = (real)(window->rasterizer_camera.viewport_bounds.x1 - window->rasterizer_camera.viewport_bounds.x0) /

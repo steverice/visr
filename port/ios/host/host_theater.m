@@ -6,7 +6,9 @@ window's drawable. Each eye sees the screen through its own pose and
 projection, so the room reads in stereo while the picture is flat; the screen
 is fixed in the room (ARKit's device anchor), placed in front of the player
 where they first look when the space opens. Without a device anchor (the
-simulator) the screen follows the head. */
+simulator) the screen follows the head. The Compositor's frame is shared with
+head-tracked stereo (host_stereo.m), which opens it at the game's frame begin
+to read the eyes' poses and presents it full view. */
 #import <ARKit/ARKit.h>
 #import <CompositorServices/CompositorServices.h>
 #import <Metal/Metal.h>
@@ -41,6 +43,24 @@ static MTLPixelFormat pipeline_color, pipeline_depth;
 static id<MTLDepthStencilState> depth_state;
 static id<MTLSamplerState> sampler;
 static unsigned long theater_frames;
+
+/* The Compositor's frame, open from host_theater_frame_begin (at the game's
+frame begin in head-tracked stereo, host_stereo.m; else at the present) to
+host_theater_frame_end after the present, with each drawable's device anchor
+queried at its presentation time */
+#define MAXIMUM_DRAWABLES 4
+static cp_frame_t open_frame;
+static size_t open_count;
+static cp_drawable_t open_drawables[MAXIMUM_DRAWABLES];
+static simd_float4x4 open_origin_from_device[MAXIMUM_DRAWABLES];
+static BOOL open_anchored[MAXIMUM_DRAWABLES];
+
+/* forgets the open frame without ending it: the space closed under it */
+static void frame_drop(void)
+{
+	open_frame = NULL;
+	open_count = 0;
+}
 
 void host_theater_log_c(const char *message)
 {
@@ -115,6 +135,7 @@ int host_theater_active(void)
 	if (cp_layer_renderer_get_state(layer_renderer) == cp_layer_renderer_state_invalidated)
 	{
 		host_logf(HOST_LOG_INFO, "theater: the immersive space closed; back to the window");
+		frame_drop();
 		layer_renderer = nil;
 		window_hidden(NO);
 		return 0;
@@ -211,30 +232,40 @@ static void place_screen(simd_float4x4 origin_from_device)
 	screen_placed = YES;
 }
 
-void host_theater_present(id<MTLCommandQueue> queue, id<MTLTexture> picture)
+int host_theater_frame_begin(void)
 {
 	if (@available(visionOS 26.0, *))
 	{
+		if (open_frame)
+			return 1;
 		if (!host_theater_active() || cp_layer_renderer_get_state(layer_renderer) != cp_layer_renderer_state_running)
-			return;
+			return 0;
 		/* waits for the Compositor's next frame, which paces the game to it */
 		cp_frame_t frame = cp_layer_renderer_query_next_frame(layer_renderer);
 		if (!frame)
-			return;
+			return 0;
 		cp_frame_timing_t timing = cp_frame_predict_timing(frame);
 		if (!timing)
-			return;
+			return 0;
 		cp_frame_start_update(frame);
 		cp_frame_end_update(frame);
+		/* the poses are freshest at the optimal input time */
+		cp_time_wait_until(cp_frame_timing_get_optimal_input_time(timing));
 		cp_frame_start_submission(frame);
 		cp_drawable_array_t drawables = cp_frame_query_drawables(frame);
 		size_t count = cp_drawable_array_get_count(drawables);
+		/* none: the frame was canceled and is discarded */
+		if (count == 0)
+			return 0;
+		if (count > MAXIMUM_DRAWABLES)
+			count = MAXIMUM_DRAWABLES;
 		for (size_t index = 0; index < count; index++)
 		{
 			cp_drawable_t drawable = cp_drawable_array_get_drawable(drawables, index);
-			simd_float4x4 origin_from_device = matrix_identity_float4x4;
-			BOOL anchored = NO;
 
+			open_drawables[index] = drawable;
+			open_origin_from_device[index] = matrix_identity_float4x4;
+			open_anchored[index] = NO;
 			if (world_tracking)
 			{
 				ar_device_anchor_t anchor = ar_device_anchor_create();
@@ -245,16 +276,77 @@ void host_theater_present(id<MTLCommandQueue> queue, id<MTLTexture> picture)
 				if (ar_world_tracking_provider_query_device_anchor_at_timestamp(world_tracking, when, anchor) ==
 					ar_device_anchor_query_status_success)
 				{
-					origin_from_device = ar_anchor_get_origin_from_anchor_transform(anchor);
+					open_origin_from_device[index] = ar_anchor_get_origin_from_anchor_transform(anchor);
 					cp_drawable_set_device_anchor(drawable, anchor);
-					anchored = YES;
+					open_anchored[index] = YES;
 				}
 			}
+		}
+		open_frame = frame;
+		open_count = count;
+		return 1;
+	}
+	return 0;
+}
+
+int host_theater_frame_ready(void)
+{
+	if (!open_frame)
+		return 0;
+	/* the space closing mid-frame: the frame is dropped, and
+	host_theater_active returns the game to the window */
+	if (!host_theater_active() || cp_layer_renderer_get_state(layer_renderer) != cp_layer_renderer_state_running)
+	{
+		frame_drop();
+		return 0;
+	}
+	return 1;
+}
+
+size_t host_theater_drawable_count(void)
+{
+	return open_count;
+}
+
+cp_drawable_t host_theater_drawable(size_t index, simd_float4x4 *origin_from_device, int *anchored)
+{
+	if (origin_from_device)
+		*origin_from_device = open_origin_from_device[index];
+	if (anchored)
+		*anchored = open_anchored[index];
+	return open_drawables[index];
+}
+
+void host_theater_frame_end(void)
+{
+	if (open_frame)
+		cp_frame_end_submission(open_frame);
+	frame_drop();
+}
+
+void host_theater_present(id<MTLCommandQueue> queue, id<MTLTexture> picture)
+{
+	if (@available(visionOS 26.0, *))
+	{
+		/* the frame head-tracked stereo opened at the game's frame begin, when
+		this frame presents mono after all (a menu, a load), or the next one */
+		if (!host_theater_frame_begin() || !host_theater_frame_ready())
+			return;
+		size_t count = open_count;
+		for (size_t index = 0; index < count; index++)
+		{
+			cp_drawable_t drawable = open_drawables[index];
+			simd_float4x4 origin_from_device = open_origin_from_device[index];
+			BOOL anchored = open_anchored[index];
+
 			if (!screen_placed || (!anchored && !world_tracking))
 				place_screen(origin_from_device);
 			id<MTLTexture> first = cp_drawable_get_color_texture(drawable, 0);
 			if (!prepare(queue.device, first.pixelFormat, cp_drawable_get_depth_texture(drawable, 0).pixelFormat))
+			{
+				frame_drop();
 				return;
+			}
 			id<MTLCommandBuffer> commands = [queue commandBuffer];
 			size_t views = cp_drawable_get_view_count(drawable);
 			for (size_t view_index = 0; view_index < views; view_index++)
@@ -309,7 +401,7 @@ void host_theater_present(id<MTLCommandQueue> queue, id<MTLTexture> picture)
 			cp_drawable_encode_present(drawable, commands);
 			[commands commit];
 		}
-		cp_frame_end_submission(frame);
+		host_theater_frame_end();
 		if (theater_frames++ == 0)
 			host_logf(HOST_LOG_INFO, "theater: first frame on the screen (%zu drawable%s)", count, count == 1 ? "" : "s");
 	}

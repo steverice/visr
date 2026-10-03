@@ -13,6 +13,7 @@ so the audio callback is handed to a thread that has one.
 #include <TargetConditionals.h>
 #if TARGET_OS_VISION
 #include "host_theater.h"
+#include "host_stereo.h"
 #endif
 #include "host.h"
 
@@ -168,10 +169,12 @@ void host_sdl_window_size_in_pixels(uint32_t window, int *width, int *height)
 	*height = 0;
 #if TARGET_OS_VISION
 	/* theater mode: the game renders for the screen in the room, not for its
-	hidden window (host_theater.m) */
+	hidden window (host_theater.m); in head-tracked stereo, for the eyes'
+	views (host_stereo.m) */
 	if (object && host_theater_active())
 	{
-		host_theater_picture_size(width, height);
+		if (!host_stereo_picture_size(width, height))
+			host_theater_picture_size(width, height);
 		return;
 	}
 #endif

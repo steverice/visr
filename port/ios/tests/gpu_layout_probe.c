@@ -1,7 +1,9 @@
 /* prints _Static_asserts pinning every gpu.h struct's size and field offsets
+(and halo_stereo.h's, which host_stereo_frame passes)
 as this (64-bit host) compiler lays them out; tools/ios_test.py compiles the
 output with the guest's arm64_32 flags, where a mismatch fails the build */
 #include "gpu.h"
+#include "halo_stereo.h"
 
 #include <stddef.h>
 #include <stdio.h>
@@ -11,7 +13,7 @@ output with the guest's arm64_32 flags, where a mismatch fails the build */
 
 int main(void)
 {
-	printf("#include <stddef.h>\n#include \"gpu.h\"\n");
+	printf("#include <stddef.h>\n#include \"gpu.h\"\n#include \"halo_stereo.h\"\n");
 	SIZE(gpu_capabilities);
 	FIELD(gpu_capabilities, shader_language);
 	FIELD(gpu_capabilities, max_texture_size);
@@ -61,5 +63,16 @@ int main(void)
 	FIELD(gpu_stereo_present, mode);
 	FIELD(gpu_stereo_present, cinematic);
 	FIELD(gpu_stereo_present, fade);
+	/* host_stereo_frame's (guest_host.h) */
+	SIZE(halo_stereo_eye);
+	FIELD(halo_stereo_eye, left);
+	FIELD(halo_stereo_eye, down);
+	SIZE(halo_stereo_frame);
+	FIELD(halo_stereo_frame, mode);
+	FIELD(halo_stereo_frame, head_yaw);
+	FIELD(halo_stereo_frame, head_roll);
+	FIELD(halo_stereo_frame, eyes);
+	FIELD(halo_stereo_frame, eye_width);
+	FIELD(halo_stereo_frame, eye_height);
 	return 0;
 }

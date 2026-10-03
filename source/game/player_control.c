@@ -1137,6 +1137,9 @@ static void get_local_player_input_blob(
 				}
 				clamped_yaw = PIN(input_state->yaw * look_scale, -1.f, 1.f);
 				clamped_pitch = PIN(input_state->pitch * look_scale, -1.f, 1.f);
+				/* port: head-tracked stereo (port/linux/game/stereo.c): the head
+				pitches the view, the stick only turns it, smoothly or in snaps */
+				halo_stereo_stick_look(gamepad_index, &clamped_yaw, &clamped_pitch);
 
 				if (player_control_camera_control_is_active())
 				{
@@ -1300,6 +1303,19 @@ static void get_local_player_input_blob(
 							}
 							input->facing_delta.yaw += mouse_yaw;
 							input->facing_delta.pitch += mouse_pitch;
+						}
+					}
+					{
+						/* port: head-tracked stereo (port/linux/game/stereo.c): the
+						head's turn adds to the look as the mouse's does, but unscaled
+						by the zoom, so the world holds still as the head moves */
+						real head_yaw;
+						real head_pitch;
+
+						if (halo_stereo_head_look(gamepad_index, &head_yaw, &head_pitch))
+						{
+							input->facing_delta.yaw += head_yaw;
+							input->facing_delta.pitch += head_pitch;
 						}
 					}
 				}

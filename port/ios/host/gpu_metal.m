@@ -172,6 +172,7 @@ static CAMetalLayer *layer;
 static float reversed_depth(float depth);
 #if TARGET_OS_VISION
 #include "host_theater.h"
+#include "host_stereo.h"
 /* display.immersive: frames go to the theater screen while its space is open */
 static BOOL theater_wanted;
 #endif
@@ -3259,10 +3260,43 @@ static uint32_t gpu_metal_present(gpu_texture back_buffer)
 	}
 }
 
-/* a stereo frame goes to Compositor Services once that is connected; until
-then eye 0 goes through the mono path */
+/* a stereo frame: in head-tracked stereo (display.stereo = "head") each eye's
+picture and depth, and the HUD, go to the Compositor's frame that
+host_stereo_frame opened at the frame's begin (host_stereo.m); without one
+(the space closed, another mode) eye 0 goes through the mono path */
 static uint32_t gpu_metal_present_stereo(const struct gpu_stereo_present *present)
 {
+#if TARGET_OS_VISION
+	@autoreleasepool
+	{
+		MetalTexture *color[2] = { texture_record(present->eye_color[0]), texture_record(present->eye_color[1]) };
+		MetalTexture *depth[2] = { texture_record(present->eye_depth[0]), texture_record(present->eye_depth[1]) };
+		MetalTexture *hud = present->hud ? texture_record(present->hud) : nil;
+
+		if (theater_wanted && present->mode == HALO_STEREO_HEAD && color[0] && color[0]->texture && color[1] &&
+			color[1]->texture && depth[0] && depth[0]->texture && depth[1] && depth[1]->texture && host_stereo_ready())
+		{
+			int eye;
+
+			command_buffer();
+			/* the eyes' depth is read after the frame, so it's stored */
+			pass_end();
+			for (eye = 0; eye < 2; eye++)
+			{
+				use_texture(color[eye]);
+				use_texture(depth[eye]);
+			}
+			if (hud && hud->texture)
+				use_texture(hud);
+			commit(YES);
+			host_stereo_present(queue, color[0]->texture, color[1]->texture, depth[0]->texture, depth[1]->texture,
+				hud ? hud->texture : nil, present->near_meters, present->far_meters);
+			frames++;
+			pacing.work_started = CACurrentMediaTime();
+			return 0;
+		}
+	}
+#endif
 	return gpu_metal_present(present->eye_color[0]);
 }
 

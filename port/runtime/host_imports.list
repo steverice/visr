@@ -70,5 +70,7 @@ host_gpu_pipeline_warm
 host_gpu_warm_end
 host_gpu_pipeline_built_take
 host_gpu_initialize
+# stereo (halo_stereo.h)
+host_stereo_frame
 
 host_errno
