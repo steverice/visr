@@ -234,7 +234,7 @@ static void stereo_frame(struct halo_stereo_frame *frame) API_AVAILABLE(visionos
 	size_t views;
 	int eye;
 
-	if (frame->mode != HALO_STEREO_HEAD || !host_theater_frame_begin())
+	if (frame->mode != HALO_STEREO_HEAD || !host_theater_frame_begin(1))
 	{
 		head_known = NO;
 		picture_width = picture_height = 0;

@@ -11,14 +11,16 @@ void host_theater_present(id<MTLCommandQueue> queue, id<MTLTexture> picture);
 #if defined(__OBJC__) && !defined(__swift__)
 #import <CompositorServices/CompositorServices.h>
 /* The Compositor's frame, shared by the theater screen and head-tracked
-stereo (host_stereo.m). host_theater_frame_begin opens the next frame, if
-none is open: it waits for the frame and its optimal input time, then
-queries the drawables and each one's device anchor at its presentation
-time; 0 without a frame (the space isn't open, or the frame was canceled).
+stereo (host_stereo.m). host_theater_frame_begin opens the next frame: it
+waits for the frame and its optimal input time, then queries the drawables
+and each one's device anchor at its presentation time; 0 without a frame
+(the space isn't open, or the frame was canceled). Fresh (at the game's
+frame begin), it first ends any frame still open unpresented; otherwise (a
+present) it takes the open frame if there is one.
 host_theater_frame_ready says whether the open frame can still be drawn,
 dropping it if the space closed meanwhile. A present draws each drawable
 and calls host_theater_frame_end. */
-int host_theater_frame_begin(void);
+int host_theater_frame_begin(int fresh);
 int host_theater_frame_ready(void);
 size_t host_theater_drawable_count(void);
 /* the open frame's drawable, where the device was (identity when not

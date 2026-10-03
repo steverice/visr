@@ -232,12 +232,22 @@ static void place_screen(simd_float4x4 origin_from_device)
 	screen_placed = YES;
 }
 
-int host_theater_frame_begin(void)
+int host_theater_frame_begin(int fresh)
 {
 	if (@available(visionOS 26.0, *))
 	{
-		if (open_frame)
+		if (open_frame && !fresh)
 			return 1;
+		/* a frame that began and never presented (a game frame that drew
+		nothing): ended unpresented, so its old anchors aren't handed out */
+		if (open_frame)
+		{
+			static unsigned long stale;
+
+			if (stale++ == 0)
+				host_logf(HOST_LOG_INFO, "theater: a frame began and never presented; it's ended unpresented");
+			host_theater_frame_end();
+		}
 		if (!host_theater_active() || cp_layer_renderer_get_state(layer_renderer) != cp_layer_renderer_state_running)
 			return 0;
 		/* waits for the Compositor's next frame, which paces the game to it */
@@ -330,7 +340,7 @@ void host_theater_present(id<MTLCommandQueue> queue, id<MTLTexture> picture)
 	{
 		/* the frame head-tracked stereo opened at the game's frame begin, when
 		this frame presents mono after all (a menu, a load), or the next one */
-		if (!host_theater_frame_begin() || !host_theater_frame_ready())
+		if (!host_theater_frame_begin(0) || !host_theater_frame_ready())
 			return;
 		size_t count = open_count;
 		for (size_t index = 0; index < count; index++)
@@ -344,7 +354,8 @@ void host_theater_present(id<MTLCommandQueue> queue, id<MTLTexture> picture)
 			id<MTLTexture> first = cp_drawable_get_color_texture(drawable, 0);
 			if (!prepare(queue.device, first.pixelFormat, cp_drawable_get_depth_texture(drawable, 0).pixelFormat))
 			{
-				frame_drop();
+				/* the submission has started: end it, as host_stereo_present does */
+				host_theater_frame_end();
 				return;
 			}
 			id<MTLCommandBuffer> commands = [queue commandBuffer];
