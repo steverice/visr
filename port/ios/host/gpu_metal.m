@@ -1913,6 +1913,8 @@ static CFTimeInterval pacing_schedule(id<CAMetalDrawable> drawable, uint32_t *ne
 	if (!pacing_allowed(pacing.refreshes, period))
 		pacing.refreshes = 1;
 	hold = pacing.off ? 0.0 : period * (double)pacing.refreshes;
+	/* the simulators' drawables have no presented handlers */
+#if !TARGET_OS_SIMULATOR
 	{
 		long asked = pacing.off ? 0 : pacing.refreshes;
 
@@ -1937,6 +1939,7 @@ static CFTimeInterval pacing_schedule(id<CAMetalDrawable> drawable, uint32_t *ne
 			os_unfair_lock_unlock(&pacing_lock);
 		}];
 	}
+#endif
 	if (frames >= pacing.reported + 600)
 	{
 		unsigned long counts[6];
@@ -2098,10 +2101,15 @@ static uint32_t gpu_metal_present(gpu_texture back_buffer)
 			{
 				CFTimeInterval hold = pacing_schedule(drawable, &next_frame_due);
 
+#if TARGET_OS_SIMULATOR
+				(void)hold;
+				[commands presentDrawable:drawable];
+#else
 				if (hold > 0.0)
 					[commands presentDrawable:drawable afterMinimumDuration:hold];
 				else
 					[commands presentDrawable:drawable];
+#endif
 			}
 		}
 		drawable = nil;
