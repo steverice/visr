@@ -1485,10 +1485,27 @@ static id<MTLDepthStencilState> depth_state(const struct gpu_depth_stencil_state
 	return result;
 }
 
+/* whether the GPU has border colors (Apple7 and later, and Macs): BORDER
+addressing then samples the nearest of Metal's three border colors instead of
+clamping to the edge, which smeared a shadow map's edge texels into long
+streaks across the ground */
+static BOOL border_colors;
+
+/* Metal's border color nearest a D3DCOLOR (ARGB): the Xbox's uses are
+transparent or opaque black and opaque white */
+static MTLSamplerBorderColor border_color(uint32_t color)
+{
+	unsigned alpha = color >> 24, red = (color >> 16) & 0xff, green = (color >> 8) & 0xff, blue = color & 0xff;
+
+	if (alpha < 0x80)
+		return MTLSamplerBorderColorTransparentBlack;
+	return red + green + blue >= 3 * 0x80 ? MTLSamplerBorderColorOpaqueWhite : MTLSamplerBorderColorOpaqueBlack;
+}
+
 /* a stage's sampler, mapped as gpu_gl.c maps it on OpenGL ES: every filter
 but POINT is linear, ANISOTROPIC turns on anisotropy, the first level sampled
-is D3D's MAXMIPLEVEL, BORDER addressing clamps to the edge (border_clamp is 0),
-and the LOD bias is the shader's */
+is D3D's MAXMIPLEVEL, BORDER addressing clamps to the border (border_colors)
+or the edge, and the LOD bias is the shader's */
 static id<MTLSamplerState> sampler_state(const struct gpu_sampler_state *state)
 {
 	NSData *name;
@@ -1512,7 +1529,11 @@ static id<MTLSamplerState> sampler_state(const struct gpu_sampler_state *state)
 			state->mip_filter == GPU_FILTER_POINT ? MTLSamplerMipFilterNearest : MTLSamplerMipFilterLinear;
 		for (axis = 0; axis < 3; axis++)
 			modes[axis] = addresses[axis] == GPU_ADDRESS_WRAP ? MTLSamplerAddressModeRepeat :
-				addresses[axis] == GPU_ADDRESS_MIRROR ? MTLSamplerAddressModeMirrorRepeat : MTLSamplerAddressModeClampToEdge;
+				addresses[axis] == GPU_ADDRESS_MIRROR ? MTLSamplerAddressModeMirrorRepeat :
+				addresses[axis] == GPU_ADDRESS_BORDER && border_colors ? MTLSamplerAddressModeClampToBorderColor :
+				MTLSamplerAddressModeClampToEdge;
+		if (border_colors)
+			descriptor.borderColor = border_color(state->border_color);
 		descriptor.sAddressMode = modes[0];
 		descriptor.tAddressMode = modes[1];
 		descriptor.rAddressMode = modes[2];
@@ -2347,6 +2368,9 @@ static void gpu_metal_initialize(uint32_t flags, struct gpu_capabilities *capabi
 		capabilities->sampler_lod_bias = 0;
 		capabilities->occlusion_mode = GPU_OCCLUSION_ANY_SAMPLE;
 		capabilities->s3tc = compressed_textures ? 1 : 0;
+		/* border colors stay inside the backend: the front end doesn't read
+		border_clamp, and a GL run and a Metal run report the same line */
+		border_colors = [device supportsFamily:MTLGPUFamilyApple7] || [device supportsFamily:MTLGPUFamilyMac2];
 		capabilities->border_clamp = 0;
 		capabilities->max_texture_size = 16384;
 		capabilities->shader_language = GPU_SHADER_LANGUAGE_MSL;
