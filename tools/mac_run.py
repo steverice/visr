@@ -99,6 +99,7 @@ DEFAULTS = {
     "debug.gpu_debug_texture0": "false",
     "debug.gpu_debug_flat": "false",
     "debug.texture_dump_directory": '""',
+    "debug.texture_override_directory": '""',
     "debug.texture_log": "false",
     "debug.texture_no_cache": "false",
 }
