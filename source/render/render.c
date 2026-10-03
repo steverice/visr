@@ -454,7 +454,14 @@ static void render_player_frame_stereo(
 	real aspect;
 	real field_of_view_tangent;
 	real_rectangle2d cull_bounds;
+	struct render_camera cull_camera;
 	struct render_frustum cull_frustum;
+	real minimum_horizontal_tangent;
+	real minimum_vertical_tangent;
+	real maximum_offset_x;
+	real maximum_offset_y;
+	real maximum_offset_back;
+	real cull_distance_back;
 	real_vector3d right;
 	real_vector3d up;
 	short eye;
@@ -465,13 +472,36 @@ static void render_player_frame_stereo(
 		(real)(window->rasterizer_camera.viewport_bounds.y1 - window->rasterizer_camera.viewport_bounds.y0);
 	field_of_view_tangent = tangent(window->rasterizer_camera.vertical_field_of_view * 0.5f);
 
-	/* culling: the center camera, wide enough for both eyes, plus 2% for the
-	eyes' apexes sitting beside the center's */
-	cull_bounds.x0 = -MAX(stereo->eyes[0].left, stereo->eyes[1].left) / (aspect * field_of_view_tangent) * 1.02f;
-	cull_bounds.x1 = MAX(stereo->eyes[0].right, stereo->eyes[1].right) / (aspect * field_of_view_tangent) * 1.02f;
-	cull_bounds.y0 = -MAX(stereo->eyes[0].down, stereo->eyes[1].down) / field_of_view_tangent * 1.02f;
-	cull_bounds.y1 = MAX(stereo->eyes[0].up, stereo->eyes[1].up) / field_of_view_tangent * 1.02f;
-	render_camera_build_frustum(camera, &cull_bounds, &cull_frustum, TRUE);
+	/* culling: one frustum that contains both eyes' exactly. Its bounds are
+	the union of the eyes' tangents; its apex is the center camera moved back
+	along forward until every eye's apex is inside it. An eye offset by x to
+	the side sits inside a plane of tangent t once the apex is x / t behind it,
+	and the narrowest tangent is the worst case, so back by the larger of
+	max|x| / min(horizontal tangent) and max|y| / min(vertical tangent), plus
+	any eye's own offset back. render.camera stays the center camera (level of
+	detail, sprites); only the planes move. */
+	cull_bounds.x0 = -MAX(stereo->eyes[0].left, stereo->eyes[1].left) / (aspect * field_of_view_tangent);
+	cull_bounds.x1 = MAX(stereo->eyes[0].right, stereo->eyes[1].right) / (aspect * field_of_view_tangent);
+	cull_bounds.y0 = -MAX(stereo->eyes[0].down, stereo->eyes[1].down) / field_of_view_tangent;
+	cull_bounds.y1 = MAX(stereo->eyes[0].up, stereo->eyes[1].up) / field_of_view_tangent;
+	minimum_horizontal_tangent = MIN(
+		MIN(stereo->eyes[0].left, stereo->eyes[1].left),
+		MIN(stereo->eyes[0].right, stereo->eyes[1].right));
+	minimum_vertical_tangent = MIN(
+		MIN(stereo->eyes[0].down, stereo->eyes[1].down),
+		MIN(stereo->eyes[0].up, stereo->eyes[1].up));
+	maximum_offset_x = MAX(ABS(stereo->eyes[0].offset[0]), ABS(stereo->eyes[1].offset[0]));
+	maximum_offset_y = MAX(ABS(stereo->eyes[0].offset[1]), ABS(stereo->eyes[1].offset[1]));
+	maximum_offset_back = MAX(0.0f, MAX(stereo->eyes[0].offset[2], stereo->eyes[1].offset[2]));
+	cull_distance_back = maximum_offset_back + MAX(
+		minimum_horizontal_tangent > 0.0f ? maximum_offset_x / minimum_horizontal_tangent : 0.0f,
+		minimum_vertical_tangent > 0.0f ? maximum_offset_y / minimum_vertical_tangent : 0.0f);
+	cull_camera = *camera;
+	cull_camera.position.x -= cull_camera.forward.i * cull_distance_back;
+	cull_camera.position.y -= cull_camera.forward.j * cull_distance_back;
+	cull_camera.position.z -= cull_camera.forward.k * cull_distance_back;
+	cull_camera.z_far += cull_distance_back;
+	render_camera_build_frustum(&cull_camera, &cull_bounds, &cull_frustum, TRUE);
 
 	cross_product3d(&window->rasterizer_camera.forward, &window->rasterizer_camera.up, &right);
 	normalize3d(&right);
@@ -504,6 +534,9 @@ static void render_player_frame_stereo(
 		/* the layer is set before the mirror, so a screen-sized target the
 		mirror pass touches is this eye's */
 		halo_stereo_layer(eye);
+		/* the mirror's render_window runs in the eye's layer, so it skips
+		rasterizer_screen_flash and render_ui_widgets, deliberately: they
+		draw once, in the HUD pass */
 		if (structure_visibility_find_mirror(&eye_camera, &eye_frustum, &mirror))
 		{
 			short saved_cluster_index;
