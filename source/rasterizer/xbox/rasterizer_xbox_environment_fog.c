@@ -1030,10 +1030,13 @@ void _rasterizer_environment_fog_screen_begin(
 				local_fog_screen_first_time = FALSE;
 			}
 
-			rasterizer_environment_fog_screen_wind_update(screen, &window->wind);
+			/* port: once per frame in stereo: the wind turns and blows in eye 0
+			only; eye 1 still moves the layers by its own camera */
+			if (halo_stereo_current_layer() != 1)
+				rasterizer_environment_fog_screen_wind_update(screen, &window->wind);
 			rasterizer_environment_fog_screen_wind_get_vector(
 				global_window_parameters.window_index,
-				global_frame_parameters.dt,
+				halo_stereo_current_layer() == 1 ? 0.0f : global_frame_parameters.dt,
 				&vector);
 			wind_matrix.position.x = vector.i;
 			wind_matrix.position.y = vector.j;
