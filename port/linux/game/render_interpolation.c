@@ -42,6 +42,7 @@ with their unit, and with what it rides.
 #include "game/players.h"
 #include "render/render_cameras.h"
 #include "units/units.h"
+#include "../src/halo_stereo.h"
 
 /* port/linux/src/port_config.c */
 int config_boolean(const char *name);
@@ -556,6 +557,7 @@ void halo_render_scale_overlay(void);
 
 void render_interpolation_frame_begin(void)
 {
+	halo_stereo_frame_begin();
 	halo_render_scale_overlay();
 	interpolation_rendering = halo_interpolation_enabled();
 	interpolation_frame++;

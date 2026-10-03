@@ -133,6 +133,14 @@ static const struct config_setting config_settings[] =
 	{ "display.immersive", _config_boolean, "false", "HALO_IMMERSIVE", _environment_value, _platform_ios,
 		"Apple Vision Pro, visionOS 26 and later: show the game on a screen standing\n"
 		"in the room (an immersive space) instead of in a window." },
+	{ "display.stereo", _config_string, "\"off\"", "HALO_STEREO", _environment_value, _platform_ios,
+		"Apple Vision Pro: \"off\" (flat), \"head\" (in stereo, the head turns the view),\n"
+		"\"screen\" (in stereo on the theater screen), or \"side_by_side\" (a debug view\n"
+		"of both eyes in the window)." },
+	{ "input.turn", _config_string, "\"smooth\"", "HALO_TURN", _environment_value, _platform_ios,
+		"With display.stereo = \"head\": the right stick turns smoothly, or \"snap\"s." },
+	{ "input.snap_angle", _config_real, "30.0", "HALO_SNAP_ANGLE", _environment_value, _platform_ios,
+		"With input.turn = \"snap\": degrees per snap." },
 	{ "display.theater_width", _config_real, "60.0", "HALO_THEATER_WIDTH", _environment_value, _platform_ios,
 		"With display.immersive: how much of the view the screen spans, in degrees\n"
 		"across (the headset's view is about 100; 60 is the front of a cinema).\n"
