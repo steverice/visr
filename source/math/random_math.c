@@ -58,7 +58,6 @@ symbols in this file:
 #include "cseries_windows.h"
 #include "real_math.h"
 #include "geometry.h"
-#include "random_math.h"
 #include "game_engine.h"
 
 /* ---------- constants */
@@ -96,8 +95,8 @@ direction3d_from_table(
 #ifndef HALO_ILP32 /* Mach-O section names differ; the default is .bss anyway */
 #pragma bss_seg(".bss")
 #endif
-struct random_math_globals random_math_globals;
-#ifndef HALO_ILP32
+static struct random_math_globals random_math_globals;
+#if !defined(HALO_ANDROID) && !defined(HALO_ILP32)
 #pragma bss_seg()
 #endif
 

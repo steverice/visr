@@ -107,8 +107,8 @@ symbols in this file:
 #ifndef HALO_ILP32 /* Mach-O section names differ; the default is .bss anyway */
 #pragma bss_seg(".bss")
 #endif
-char transport_address_string[256];
-#ifndef HALO_ILP32
+static char transport_address_string[256];
+#if !defined(HALO_ANDROID) && !defined(HALO_ILP32)
 #pragma bss_seg()
 #endif
 

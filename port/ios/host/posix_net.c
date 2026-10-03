@@ -61,3 +61,22 @@ static ssize_t ios_getrandom(void *p,size_t size,unsigned flags) {(void)flags;ar
 #define getpeername ios_getpeername
 #define getrandom ios_getrandom
 #include "../../linux/src/posix_net.c"
+
+/* ---------- UPnP (posix_upnp.c, with miniupnpc, isn't in the iOS host yet):
+internet play falls back to its other ways through a router */
+int posix_upnp_forward_udp(unsigned short port, unsigned short preferred_port, posix_ulong *external_address,
+	unsigned short *external_port, char *error, int error_size)
+{
+	(void)port;
+	(void)preferred_port;
+	(void)external_address;
+	(void)external_port;
+	if (error && error_size > 0)
+		snprintf(error, (size_t)error_size, "UPnP isn't available on this platform");
+	return 0;
+}
+
+void posix_upnp_stop_forwarding_udp(unsigned short external_port)
+{
+	(void)external_port;
+}

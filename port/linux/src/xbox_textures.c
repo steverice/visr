@@ -15,6 +15,8 @@ memory_watch.c detects that by write-protecting the pages.
 */
 
 #include "xgpu.h"
+#include "hud_hires.h"
+#include "text_hires.h"
 #include "port_config.h"
 
 #include <stdio.h>
@@ -599,6 +601,8 @@ struct texture_entry
 	unsigned long address, size;
 	unsigned long generation;
 	unsigned long last_used_frame;
+	/* the high-res HUD texture drawn in its place (hud_hires.h), or -1 */
+	long override;
 };
 
 #define TEXTURE_BUCKET_COUNT 4096
@@ -641,6 +645,39 @@ static unsigned long palette_hash(const D3DCOLOR *palette)
 	return hash ? hash : 1;
 }
 
+/* an entry's texture, type and description: its high-res HUD texture's, if
+it has one, with the bitmap's own size (which its coordinates are in) */
+static gpu_texture texture_entry_result(struct texture_entry *entry, uint32_t *type,
+	struct xgpu_texture_description *description)
+{
+	*type = entry->type;
+	*description = entry->description;
+	/* (the high-res text's atlas, for its placeholder bitmap: text_hires.h) */
+	{
+		gpu_texture atlas = text_hires_atlas_texture(entry->data);
+
+		if (atlas)
+		{
+			*type = GPU_TEXTURE_2D;
+			description->levels = 1;
+			return atlas;
+		}
+	}
+	if (entry->override >= 0)
+	{
+		gpu_texture texture = hud_hires_override_texture(entry->override, &description->levels);
+
+		if (texture)
+		{
+			*type = GPU_TEXTURE_2D;
+			description->hires = TRUE;
+			description->hires_coverage = hud_hires_override_coverage(entry->override);
+			return texture;
+		}
+	}
+	return entry->texture;
+}
+
 gpu_texture xgpu_texture_get(const DWORD *resource, const D3DCOLOR *palette, uint32_t *type,
 	struct xgpu_texture_description *description)
 {
@@ -664,9 +701,7 @@ gpu_texture xgpu_texture_get(const DWORD *resource, const D3DCOLOR *palette, uin
 	{
 		entry = recent_textures[recent].entry;
 		entry->last_used_frame = texture_frame;
-		*type = entry->type;
-		*description = entry->description;
-		return entry->texture;
+		return texture_entry_result(entry, type, description);
 	}
 
 	for (entry = *bucket; entry; entry = entry->next)
@@ -715,6 +750,7 @@ gpu_texture xgpu_texture_get(const DWORD *resource, const D3DCOLOR *palette, uin
 			texture.levels = (uint32_t)entry->description.levels;
 			entry->texture = gpu_texture_create(&texture);
 		}
+		entry->override = -1;
 		entry->next = *bucket;
 		*bucket = entry;
 	}
@@ -729,7 +765,19 @@ gpu_texture xgpu_texture_get(const DWORD *resource, const D3DCOLOR *palette, uin
 		entry->generation = memory_watch_generation(entry->address, entry->size);
 		if (!entry->generation)
 			entry->generation = 1;
-		if (platform_is_contiguous((void *)entry->address) &&
+		/* (which bitmap is here may have changed with the pixels) */
+		entry->override = -1;
+		if (!palettized && !entry->description.cube_map && entry->description.depth == 1)
+		{
+			unsigned long levels;
+
+			entry->override = hud_hires_override_find(entry->address, entry->description.width,
+				entry->description.height, entry->description.levels > 1 ?
+				xgpu_texture_level_offset(&entry->description, 1) : xgpu_texture_face_size(&entry->description));
+			if (entry->override >= 0 && !hud_hires_override_texture(entry->override, &levels))
+				entry->override = -1;
+		}
+		if (entry->override < 0 && platform_is_contiguous((void *)entry->address) &&
 			platform_is_contiguous((void *)(entry->address + entry->size - 1)))
 		{
 			if (config_boolean("debug.texture_log"))
@@ -760,9 +808,7 @@ gpu_texture xgpu_texture_get(const DWORD *resource, const D3DCOLOR *palette, uin
 		recent_textures[recent].watch_serial = watch_serial;
 		recent_textures[recent].drop_serial = texture_drop_serial;
 	}
-	*type = entry->type;
-	*description = entry->description;
-	return entry->texture;
+	return texture_entry_result(entry, type, description);
 }
 
 void xgpu_texture_cache_begin_frame(void)

@@ -61,6 +61,52 @@ uint32_t host_ios_default_framebuffer(void);
 #endif
 #endif
 
+#if !defined(GPU_GL_ES) && !defined(GPU_GL_HOST)
+/* Intel's graphics with Mesa's driver can hang the GPU in a long run of
+draws with no pipeline flush between them, which the game's effects make
+(hundreds of small draws in a row): the command streamer stops at a draw,
+and the reset that follows takes the desktop's other programs with it.
+Intel's workaround for a hang of this kind on their DG2 graphics
+(Wa_16014538804) is a flush at least every 3 draws, which Mesa does not
+apply to the others. A memory barrier is one (and only that: nothing here
+writes images). debug.gpu_flush_draws sets the interval; -1 picks 3 on Mesa
+Intel and never elsewhere. */
+#include "port_config.h"
+
+static unsigned long flush_every, flush_draws;
+
+static void draw_flush_initialize(void)
+{
+	long every = config_integer("debug.gpu_flush_draws");
+	const char *renderer = (const char *)glGetString(GL_RENDERER);
+
+	if (every < 0)
+		every = renderer && strstr(renderer, "Mesa Intel") ? 3 : 0;
+	if (every > 0)
+	{
+		flush_every = (unsigned long)every;
+		platform_log("GPU: a pipeline flush every %ld draws", every);
+	}
+}
+
+static void draw_flush(void)
+{
+	if (flush_every && ++flush_draws >= flush_every)
+	{
+		flush_draws = 0;
+		glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+	}
+}
+#else
+static void draw_flush_initialize(void)
+{
+}
+
+static void draw_flush(void)
+{
+}
+#endif
+
 /* ---------- streams */
 
 #ifdef GPU_GL_ES
@@ -915,6 +961,7 @@ static void gpu_gl_initialize(uint32_t flags, struct gpu_capabilities *capabilit
 	}
 	state_invalidate();
 	GPU_CAPABILITIES_LOG(platform_log, capabilities);
+	draw_flush_initialize();
 }
 
 /* ---------- textures
@@ -1600,6 +1647,7 @@ static uint32_t gpu_gl_draw(const struct gpu_draw *draw, const struct gpu_consta
 	uint32_t index;
 	int stage;
 
+	draw_flush();
 #ifdef GPU_GL_ES
 	/* the counter the active visibility test adds to, bound before
 	program_get, which may link a program */

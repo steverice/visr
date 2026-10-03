@@ -244,6 +244,7 @@ Windows it is __stdcall too, and SDL would include windows.h without it) */
 	X(glBeginQuery) \
 	X(glEndQuery) \
 	X(glGetQueryObjectuiv) \
+	X(glMemoryBarrier) \
 	X(glDebugMessageCallback)
 #endif
 
@@ -402,6 +403,7 @@ pointers, sees the declarations without these aliases */
 #define glFinish HALO_GL_COUNTED(halo_glFinish)
 #define glFlush HALO_GL_COUNTED(halo_glFlush)
 #define glClipControl HALO_GL_COUNTED(halo_glClipControl)
+#define glMemoryBarrier HALO_GL_COUNTED(halo_glMemoryBarrier)
 #define glGenTextures HALO_GL_COUNTED(halo_glGenTextures)
 #define glDeleteTextures HALO_GL_COUNTED(halo_glDeleteTextures)
 #define glBindTexture HALO_GL_COUNTED(halo_glBindTexture)

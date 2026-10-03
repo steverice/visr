@@ -162,6 +162,13 @@ long halo_screen_width(void)
 	return screen_width;
 }
 
+/* the display's pixels for each of the 480 lines (text_hires.c) */
+float halo_screen_pixel_scale(void)
+{
+	halo_screen_width();
+	return screen_scale[1];
+}
+
 void halo_screen_ui_offset(unsigned char centered)
 {
 	ui_offset = centered ? (halo_screen_width() - 640) / 2 : 0;
@@ -1653,20 +1660,23 @@ static uint8_t gpu_address(DWORD mode)
 }
 
 /* the sampler state of a stage; without mipmaps the mip filter is none */
-static void sampler_state_fill(int stage, BOOL mipmapped, struct gpu_sampler_state *sampler)
+/* hires: a high-res HUD texture (hud_hires.h), drawn smaller than it is, so
+filtered and from its mip levels whatever the game asks: the HUD's meters are
+point sampled for one player, to keep the Xbox bitmaps' texels sharp */
+static void sampler_state_fill(int stage, BOOL mipmapped, BOOL hires, struct gpu_sampler_state *sampler)
 {
 	DWORD *state = D3D__TextureState[stage];
 
 	memset(sampler, 0, sizeof(*sampler));
-	sampler->min_filter = gpu_filter(state[D3DTSS_MINFILTER]);
-	sampler->mip_filter = mipmapped ? gpu_filter(state[D3DTSS_MIPFILTER]) : GPU_FILTER_NONE;
-	sampler->mag_filter = gpu_filter(state[D3DTSS_MAGFILTER]);
+	sampler->min_filter = hires ? GPU_FILTER_LINEAR : gpu_filter(state[D3DTSS_MINFILTER]);
+	sampler->mip_filter = hires ? GPU_FILTER_LINEAR : mipmapped ? gpu_filter(state[D3DTSS_MIPFILTER]) : GPU_FILTER_NONE;
+	sampler->mag_filter = hires ? GPU_FILTER_LINEAR : gpu_filter(state[D3DTSS_MAGFILTER]);
 	sampler->address_u = gpu_address(state[D3DTSS_ADDRESSU]);
 	sampler->address_v = gpu_address(state[D3DTSS_ADDRESSV]);
 	sampler->address_w = gpu_address(state[D3DTSS_ADDRESSW]);
-	sampler->max_mip_level = (uint32_t)state[D3DTSS_MAXMIPLEVEL];
+	sampler->max_mip_level = hires ? 0 : (uint32_t)state[D3DTSS_MAXMIPLEVEL];
 	sampler->max_anisotropy = (uint32_t)state[D3DTSS_MAXANISOTROPY];
-	sampler->lod_bias = dword_to_float(state[D3DTSS_MIPMAPLODBIAS]);
+	sampler->lod_bias = hires ? 0.0f : dword_to_float(state[D3DTSS_MIPMAPLODBIAS]);
 	sampler->border_color = (uint32_t)state[D3DTSS_BORDERCOLOR];
 	/* display.anisotropic_filtering: the game never asks for anisotropic
 	filtering (the Xbox ran 1x), so every linear, mipmapped stage gets it.
@@ -1780,7 +1790,7 @@ static void stages_fill(struct nv2a_pixel_shader_key *key, float texture_scale[4
 		}
 		{
 			struct xgpu_render_target *target = xgpu_render_target_find(texture->Data);
-			struct xgpu_texture_description description;
+			struct xgpu_texture_description description = { 0 };
 			uint32_t type;
 			gpu_texture handle;
 
@@ -1814,7 +1824,9 @@ static void stages_fill(struct nv2a_pixel_shader_key *key, float texture_scale[4
 			}
 			packet_stage->texture = handle;
 			packet_stage->type = (uint8_t)type;
-			sampler_state_fill(stage, description.levels > 1, &packet_stage->sampler);
+			sampler_state_fill(stage, description.levels > 1, description.hires, &packet_stage->sampler);
+			if (stage == 0)
+				key->coverage_alpha = description.hires_coverage != FALSE;
 			key->sampler_type[stage] = type == GPU_TEXTURE_CUBE ? _xgpu_sampler_cube :
 				type == GPU_TEXTURE_3D ? _xgpu_sampler_3d : _xgpu_sampler_2d;
 		}
@@ -2014,6 +2026,10 @@ static BOOL prepare_draw(struct gpu_draw *draw, BOOL immediate)
 		key.alpha_kill[stage] = D3D__TextureState[stage][D3DTSS_ALPHAKILL] == D3DTALPHAKILL_ENABLE;
 		key.color_sign[stage] = (unsigned char)((D3D__TextureState[stage][D3DTSS_COLORSIGN] >> 28) & 0xf);
 	}
+	/* (only with the meter's blend: hud_hires.h, nv2a_pixel_shader_key) */
+	key.coverage_alpha = key.coverage_alpha && D3D__RenderState[D3DRS_ALPHABLENDENABLE] &&
+		D3D__RenderState[D3DRS_SRCBLEND] == D3DBLEND_CONSTANTCOLOR &&
+		D3D__RenderState[D3DRS_DESTBLEND] == D3DBLEND_SRCALPHA;
 	key.alpha_test_function = D3D__RenderState[D3DRS_ALPHATESTENABLE] ? D3D__RenderState[D3DRS_ALPHAFUNC] : 0;
 	key.fog_enable = D3D__RenderState[D3DRS_FOGENABLE] != 0;
 	key.fog_table_mode = (unsigned char)D3D__RenderState[D3DRS_FOGTABLEMODE];

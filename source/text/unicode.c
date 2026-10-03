@@ -271,8 +271,8 @@ enum
 #ifndef HALO_ILP32 /* Mach-O section names differ; the default is .bss anyway */
 #pragma bss_seg(".bss")
 #endif
-wchar_t bss_004c1a08[0x100];
-#ifndef HALO_ILP32
+static wchar_t bss_004c1a08[0x100];
+#if !defined(HALO_ANDROID) && !defined(HALO_ILP32)
 #pragma bss_seg()
 #endif
 

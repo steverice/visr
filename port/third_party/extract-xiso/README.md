@@ -11,5 +11,10 @@ The native iOS importer in `port/runtime/xiso.c` adapts the upstream
 halo-ce-universal XISO reader, retaining the notice and adding bounded reads,
 map validation, cancellation, and safe staging. The complete license is
 included in built apps under `Licenses/extract-xiso.txt`.
+None of its code is built as it is: `port/linux/src/xiso.c`, which copies
+the maps folder out of a disc image when a desktop port starts without game
+data, reads the format as `extract-xiso.c` does and carries its notice. The
+desktop builds' artifacts include `LICENSE.TXT` as
+`extract-xiso-LICENSE.txt`.
 
 This product includes software developed by in <in@fishtank.com>.

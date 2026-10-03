@@ -10,7 +10,10 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List
 
-from .linux_build import LINUX_PROFILE, XDK_INCLUDE, compile_launcher, pgo_mode, pgo_profile, profile_use_flags, xdk_headers
+from .embed_assets import hud_assets_build
+from .linux_build import (LINUX_PROFILE, MUSL_MATH_DIR, XDK_INCLUDE, compile_launcher, game_defines_and_includes,
+                          game_sources, musl_math_cflags, musl_math_sources, pgo_mode, pgo_profile, profile_use_flags,
+                          xdk_headers)
 from .ninja_syntax import Writer
 
 PORT_DIR = Path("port/runtime")
@@ -299,7 +302,6 @@ def generate_ios_guest_build(n: Writer, sln: Any) -> None:
 
     # the game
     objects: List[Path] = []
-    excluded = set(config.get("exclude_sources", []))
     game_flags = [
         "-std=gnu89", "-D__STRICT_ANSI__", "-w",
         "-Wno-error=incompatible-pointer-types",
@@ -309,29 +311,18 @@ def generate_ios_guest_build(n: Writer, sln: Any) -> None:
         "-Wno-error=implicit-int",
         "-Wno-error=return-type",
     ]
-    for proj in sln.projects:
-        if proj.name not in config["projects"]:
-            continue
-        options = proj.options
-        defines = " ".join(f"-D{d}" for d in options.get("defines") or [])
-        includes = " ".join(
-            f"-I{_quote(d)}" for d in options.get("include_dirs") or [] if Path(d) != Path("xbox/include")
-        )
-        game_cflags = " ".join([
-            guest_abi, guest_code, " ".join(game_flags), profile_flags,
-            f"-include {prefix_header}", f"-include {semantics_header}", defines,
-            f"-I{LINUX_DIR}/include", includes, *libc_includes, f"-idirafter {XDK_INCLUDE}",
-        ])
-        for obj in proj.objects:
-            name = str(obj.file_path).replace(os.sep, "/")
-            if obj.status.name == "Missing" or name in excluded or obj.file_path.suffix.lower() != ".c":
-                continue
-            cflags = game_cflags
-            if name in VARIADIC_PROTOTYPE_FILES:
-                cflags += f" -include {PORT_DIR}/include/halo_guest_variadic_prototypes.h"
-            objects.append(guest_object(obj.file_path, cflags))
-        for source in sorted(Path(config["game_sources"]).glob("*.c")):
-            objects.append(guest_object(source, game_cflags))
+    game_cflags = " ".join([
+        guest_abi, guest_code, " ".join(game_flags), profile_flags,
+        f"-include {prefix_header}", f"-include {semantics_header}",
+        f"-I{LINUX_DIR}/include", game_defines_and_includes(config), *libc_includes, f"-idirafter {XDK_INCLUDE}",
+    ])
+    for source in game_sources(config):
+        cflags = game_cflags
+        if source.as_posix() in VARIADIC_PROTOTYPE_FILES:
+            cflags += f" -include {PORT_DIR}/include/halo_guest_variadic_prototypes.h"
+        objects.append(guest_object(source, cflags))
+    for source in sorted(Path(config["game_sources"]).glob("*.c")):
+        objects.append(guest_object(source, game_cflags))
 
     # the platform layer shared with Linux, and the guest runtime
     platform_cflags = " ".join([
@@ -347,8 +338,15 @@ def generate_ios_guest_build(n: Writer, sln: Any) -> None:
         if source.name.startswith("posix_") or source.name in guest_host_only:
             continue
         objects.append(guest_object(source, platform_cflags))
+    # the high-res HUD's, text's and titles' assets (port/assets; hud_hires.c, text_hires.c)
+    for source in hud_assets_build(n, "ios", obj_dir / "gen" / "hud_hires_assets.c"):
+        objects.append(guest_object(source, platform_cflags))
     # the settings file's parser (port/third_party/tomlc17)
     objects.append(guest_object(TOML_DIR / "tomlc17.c", platform_cflags))
+    # the game's sin, pow and the rest, the same on every port (port/include/halo_math.h)
+    for source in musl_math_sources():
+        objects.append(guest_object(source, " ".join([guest_abi, profile_flags, *libc_includes,
+                                                      musl_math_cflags("")])))
     # internet play's reliable streams (port/third_party/kcp; p2p.c)
     objects.append(guest_object(KCP_DIR / "ikcp.c", platform_cflags))
     runtime_internal_cflags = " ".join([

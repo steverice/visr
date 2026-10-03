@@ -18,11 +18,15 @@ and the debug keyboard that the game's console reads.
 #include "port_config.h"
 #include "halo_virtual_clock.h"
 #include "p2p.h"
+#include "xiso.h"
 
 #include <SDL3/SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if !defined(_WIN32) && !defined(HALO_ANDROID) && !defined(HALO_ILP32)
+#include <signal.h>
+#endif
 
 static SDL_Window *platform_window;
 static SDL_GLContext platform_gl_context;
@@ -39,16 +43,38 @@ static struct platform_ui_pointer ui_pointer;
 static float ui_pointer_wheel;
 #endif
 static pthread_mutex_t input_lock = PTHREAD_MUTEX_INITIALIZER;
+/* the multiplayer scoreboard is open (platform_scoreboard_scroll): the wheel
+and Page Up/Down scroll it, and the wheel switches no weapon; how far they
+have moved it since the game last asked (notches down, pages down). Open
+until the game stops saying so for SCOREBOARD_OPEN_MS (a game that ends with
+it open never says it closed). */
+#define SCOREBOARD_OPEN_MS 250
+static Uint64 scoreboard_open_until_ms;
+static float scoreboard_wheel;
+static long scoreboard_notches;
+static long scoreboard_pages;
 
 /* debug keyboard queue */
 #define KEYSTROKE_QUEUE_SIZE 64
 static struct platform_keystroke keystroke_queue[KEYSTROKE_QUEUE_SIZE];
 static unsigned long keystroke_head, keystroke_count;
 
+#if !defined(HALO_ANDROID) && !defined(HALO_ILP32)
+/* updater.c's: the desktop self-updater */
+void updater_start(void);
+void updater_poll(SDL_Window *window);
+#endif
+
 BOOL platform_sdl_initialize(void)
 {
 	if (platform_sdl_started)
 		return TRUE;
+#if !defined(_WIN32) && !defined(HALO_ANDROID) && !defined(HALO_ILP32)
+	/* a write to a connection the other end closed fails instead of ending
+	the game (the game's sockets and Discord's pass MSG_NOSIGNAL, but UPnP's
+	miniupnpc does not, nor does a write to a closed pipe's standard error) */
+	signal(SIGPIPE, SIG_IGN);
+#endif
 	/* a copy of the game started to open an invite link hands it to the
 	one already running, and goes */
 	if (p2p_hand_off_invite())
@@ -68,6 +94,13 @@ BOOL platform_sdl_initialize(void)
 		return FALSE;
 	}
 	platform_sdl_started = TRUE;
+#if !defined(HALO_ANDROID) && !defined(HALO_ILP32)
+	/* found (or offered to the player, platform_offer_game_data) before the
+	game's window opens */
+	platform_data_root();
+	/* (a new version looked for meanwhile, updater_poll asking about it) */
+	updater_start();
+#endif
 	return TRUE;
 }
 
@@ -81,6 +114,216 @@ int halo_frame_trace_enabled(void)
 		enabled = config_boolean("debug.frame_trace");
 	return enabled;
 }
+
+#if !defined(HALO_ANDROID) && !defined(HALO_ILP32)
+/* ---------- first start without game data (xbox_files.c) */
+
+struct data_extraction
+{
+	pthread_mutex_t lock;
+	char image[1024];
+	char destination[1024];
+	char file[256];
+	unsigned long long done;
+	unsigned long long total;
+	BOOL finished;
+	BOOL succeeded;
+	char error[512];
+};
+
+static void data_extraction_progress(void *context, const char *file, unsigned long long done,
+	unsigned long long total)
+{
+	struct data_extraction *extraction = context;
+
+	pthread_mutex_lock(&extraction->lock);
+	snprintf(extraction->file, sizeof(extraction->file), "%s", file);
+	extraction->done = done;
+	extraction->total = total;
+	pthread_mutex_unlock(&extraction->lock);
+}
+
+static void *data_extraction_thread(void *context)
+{
+	struct data_extraction *extraction = context;
+	BOOL succeeded = xiso_extract_maps(extraction->image, extraction->destination, data_extraction_progress,
+		extraction, extraction->error, sizeof(extraction->error)) != 0;
+
+	pthread_mutex_lock(&extraction->lock);
+	extraction->succeeded = succeeded;
+	extraction->finished = TRUE;
+	pthread_mutex_unlock(&extraction->lock);
+	return NULL;
+}
+
+/* copies the maps, showing how far it has got; closing the window quits */
+static BOOL data_extract(const char *image, const char *destination, char *error, int error_size)
+{
+	static struct data_extraction extraction;
+	SDL_Window *window;
+	SDL_Renderer *renderer = NULL;
+	pthread_t thread;
+	BOOL finished = FALSE;
+
+	memset(&extraction, 0, sizeof(extraction));
+	pthread_mutex_init(&extraction.lock, NULL);
+	snprintf(extraction.image, sizeof(extraction.image), "%s", image);
+	snprintf(extraction.destination, sizeof(extraction.destination), "%s", destination);
+	if (pthread_create(&thread, NULL, data_extraction_thread, &extraction) != 0)
+	{
+		snprintf(error, (size_t)error_size, "Could not start the extraction.");
+		return FALSE;
+	}
+	/* (waited for through extraction.finished; the Windows port's threads
+	cannot be joined) */
+	pthread_detach(thread);
+	window = SDL_CreateWindow("Halo", 640, 150, 0);
+	if (window)
+	{
+		renderer = SDL_CreateRenderer(window, NULL);
+		if (renderer)
+			SDL_SetRenderVSync(renderer, 1);
+	}
+	while (!finished)
+	{
+		SDL_Event event;
+		char file[256];
+		unsigned long long done, total;
+
+		while (SDL_PollEvent(&event))
+		{
+			if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED)
+			{
+				platform_log("extraction cancelled");
+				exit(EXIT_SUCCESS);
+			}
+		}
+		pthread_mutex_lock(&extraction.lock);
+		finished = extraction.finished;
+		snprintf(file, sizeof(file), "%s", extraction.file);
+		done = extraction.done;
+		total = extraction.total;
+		pthread_mutex_unlock(&extraction.lock);
+		if (renderer)
+		{
+			char line[320];
+			SDL_FRect bar = { 20.0f, 100.0f, 600.0f, 24.0f };
+			float fraction = total ? (float)((double)done / (double)total) : 0.0f;
+
+			SDL_SetRenderDrawColor(renderer, 12, 16, 20, 255);
+			SDL_RenderClear(renderer);
+			SDL_SetRenderDrawColor(renderer, 230, 230, 230, 255);
+			SDL_SetRenderScale(renderer, 2.0f, 2.0f);
+			SDL_RenderDebugText(renderer, 10.0f, 10.0f, "Extracting the maps folder...");
+			SDL_SetRenderScale(renderer, 1.0f, 1.0f);
+			snprintf(line, sizeof(line), "%s  (%llu of %llu MB)", file, done >> 20, total >> 20);
+			SDL_RenderDebugText(renderer, 20.0f, 70.0f, line);
+			SDL_SetRenderDrawColor(renderer, 60, 66, 72, 255);
+			SDL_RenderFillRect(renderer, &bar);
+			bar.w *= fraction;
+			SDL_SetRenderDrawColor(renderer, 90, 160, 90, 255);
+			SDL_RenderFillRect(renderer, &bar);
+			SDL_RenderPresent(renderer);
+		}
+		SDL_Delay(16);
+	}
+	if (renderer)
+		SDL_DestroyRenderer(renderer);
+	if (window)
+		SDL_DestroyWindow(window);
+	if (!extraction.succeeded)
+		snprintf(error, (size_t)error_size, "%s", extraction.error);
+	return extraction.succeeded;
+}
+
+struct data_image_choice
+{
+	SDL_AtomicInt done;
+	char path[1024];
+};
+
+static void SDLCALL data_image_chosen(void *userdata, const char * const *files, int filter)
+{
+	struct data_image_choice *choice = userdata;
+
+	(void)filter;
+	if (files && files[0])
+		snprintf(choice->path, sizeof(choice->path), "%s", files[0]);
+	SDL_SetAtomicInt(&choice->done, 1);
+}
+
+/* the disc image the player picks; FALSE if they pick none */
+static BOOL data_choose_image(char *path, int size)
+{
+	static const SDL_DialogFileFilter filters[] =
+	{
+		{ "Xbox disc images", "iso;xiso" },
+		{ "All files", "*" },
+	};
+	static struct data_image_choice choice;
+
+	memset(&choice, 0, sizeof(choice));
+	SDL_ShowOpenFileDialog(data_image_chosen, &choice, NULL, filters, 2, NULL, false);
+	/* the dialog answers through events (and on some systems another
+	thread) */
+	while (!SDL_GetAtomicInt(&choice.done))
+	{
+		SDL_PumpEvents();
+		SDL_Delay(50);
+	}
+	if (!choice.path[0])
+		return FALSE;
+	snprintf(path, (size_t)size, "%s", choice.path);
+	return TRUE;
+}
+
+BOOL platform_offer_game_data(const char *destination)
+{
+	static const SDL_MessageBoxButtonData buttons[] =
+	{
+		{ SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, "Yes" },
+		{ SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "No" },
+	};
+	char message[1400];
+
+	/* not for runs nobody is watching */
+	if (config_boolean("debug.hidden_window") || config_real("debug.exit_after") > 0.0 ||
+		!SDL_Init(SDL_INIT_VIDEO))
+	{
+		return FALSE;
+	}
+	snprintf(message, sizeof(message),
+		"Halo's game data (its maps folder) was not found.\n\n"
+		"Extract the maps folder from an Xbox disc image (.iso) of Halo: Combat Evolved? "
+		"It is copied to %s/maps (about 2 GB).\n\n"
+		"(Or put the maps folder there yourself, or set paths.data in config.toml.)",
+		destination);
+	for (;;)
+	{
+		SDL_MessageBoxData question = { SDL_MESSAGEBOX_INFORMATION, NULL, "Halo", message, 2, buttons, NULL };
+		char image[1024];
+		char error[512];
+		int answer = 0;
+
+		if (!SDL_ShowMessageBox(&question, &answer) || answer != 1)
+		{
+			platform_log("no game data: quitting");
+			exit(EXIT_SUCCESS);
+		}
+		/* no image picked: ask again */
+		if (!data_choose_image(image, sizeof(image)))
+			continue;
+		platform_log("extracting the maps folder from %s to %s", image, destination);
+		if (data_extract(image, destination, error, sizeof(error)))
+		{
+			platform_log("extracted the maps folder");
+			return TRUE;
+		}
+		platform_log("extraction failed: %s", error);
+		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Halo", error, NULL);
+	}
+}
+#endif
 
 int halo_interpolation_enabled(void)
 {
@@ -245,9 +488,57 @@ void platform_video_drawable_size(int *width, int *height)
 	SDL_GetWindowSizeInPixels(platform_window, width, height);
 }
 
+#if !defined(HALO_ANDROID) && !defined(HALO_ILP32)
+/* with vsync off, the time between frames display.max_fps asks for (0:
+twice the display's refresh rate), or 0 for no limit. A GPU never left idle
+can hang (Intel's Raptor Lake graphics, whose reset then takes the desktop
+with it); the limit gives it a rest every frame. */
+static Uint64 frame_interval_ns(void)
+{
+	static int vsync = -1;
+	static long maximum;
+	float rate;
+
+	if (vsync < 0)
+	{
+		vsync = config_boolean("display.vsync");
+		maximum = config_integer("display.max_fps");
+	}
+	if (vsync || maximum < 0)
+		return 0;
+	rate = (float)maximum;
+	if (!maximum)
+	{
+		SDL_DisplayID display = SDL_GetDisplayForWindow(platform_window);
+		const SDL_DisplayMode *mode = display ? SDL_GetCurrentDisplayMode(display) : NULL;
+
+		rate = 2.0f * (mode && mode->refresh_rate > 0.0f ? mode->refresh_rate : 60.0f);
+	}
+	return (Uint64)(1e9f / rate);
+}
+
+#endif
 void platform_video_swap(void)
 {
+#if !defined(HALO_ANDROID) && !defined(HALO_ILP32)
+	static Uint64 next_frame;
+	Uint64 interval, now;
+
+#endif
 	SDL_GL_SwapWindow(platform_window);
+#if !defined(HALO_ANDROID) && !defined(HALO_ILP32)
+	interval = frame_interval_ns();
+	if (!interval)
+		return;
+	now = SDL_GetTicksNS();
+	if (next_frame > now)
+	{
+		SDL_DelayPrecise(next_frame - now);
+		now = next_frame;
+	}
+	/* (a frame more than an interval late starts the count again) */
+	next_frame = now - next_frame > interval ? now + interval : next_frame + interval;
+#endif
 }
 
 void platform_mouse_capture(BOOL capture)
@@ -403,6 +694,26 @@ BOOL platform_next_keystroke(struct platform_keystroke *keystroke)
 /* ---------- internet play's invite links (p2p.c) */
 
 
+/* whether the text has an invite link in it (its prefix, in any case) */
+static BOOL platform_text_has_invite_link(const char *text)
+{
+	static const char prefix[] = "halo://join/";
+	size_t length = sizeof(prefix) - 1;
+
+	for (; *text; text++)
+	{
+		size_t index;
+
+		for (index = 0; index < length && text[index] &&
+			(text[index] | 0x20) == prefix[index]; index++)
+		{
+		}
+		if (index == length)
+			return TRUE;
+	}
+	return FALSE;
+}
+
 /* puts a new invite on the clipboard, and joins one found there when the
 game comes to the front */
 static void platform_invite_clipboard(BOOL look)
@@ -424,14 +735,95 @@ static void platform_invite_clipboard(BOOL look)
 		if (text && strcmp(text, seen) && strlen(text) < sizeof(seen))
 		{
 			snprintf(seen, sizeof(seen), "%s", text);
-			if (p2p_join_invite(text))
-				platform_log("Joining the invite on the clipboard");
+			/* (a link, not a bare code: 64 hex digits alone are as often a
+			checksum copied for something else) */
+			if (platform_text_has_invite_link(text) && p2p_join_invite(text))
+			{
+#ifdef HALO_ANDROID
+				SDL_ShowAndroidToast("Joining the invite on the clipboard", 1, -1, 0, 0);
+#endif
+			}
 		}
 		SDL_free(text);
 	}
 }
 
+/* ---------- messages for the player */
+
+/* a message waiting for the event pump to show it (on the window's thread,
+between frames) */
+static pthread_mutex_t platform_message_lock = PTHREAD_MUTEX_INITIALIZER;
+static char platform_message_title[80];
+static char platform_message_text[600];
+static BOOL platform_message_pending;
+
+/* shows the player a message in a box of its own (the network code's: a
+host of another version), and logs it */
+void platform_show_message(const char *title, const char *message)
+{
+	platform_log("%s: %s", title, message);
+	/* (a run nobody watches: the log only) */
+	if (config_boolean("debug.hidden_window") || config_boolean("debug.null_renderer"))
+		return;
+	pthread_mutex_lock(&platform_message_lock);
+	snprintf(platform_message_title, sizeof(platform_message_title), "%s", title);
+	snprintf(platform_message_text, sizeof(platform_message_text), "%s", message);
+	platform_message_pending = TRUE;
+	pthread_mutex_unlock(&platform_message_lock);
+}
+
+static void platform_show_pending_message(void)
+{
+	char title[sizeof(platform_message_title)];
+	char text[sizeof(platform_message_text)];
+	BOOL pending;
+
+	pthread_mutex_lock(&platform_message_lock);
+	pending = platform_message_pending;
+	platform_message_pending = FALSE;
+	memcpy(title, platform_message_title, sizeof(title));
+	memcpy(text, platform_message_text, sizeof(text));
+	pthread_mutex_unlock(&platform_message_lock);
+	if (!pending)
+		return;
+#if defined(HALO_ANDROID) || defined(HALO_ILP32)
+	SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_WARNING, title, text, NULL);
+#else
+	{
+		/* (a box cannot show above a fullscreen game) */
+		int fullscreen = (SDL_GetWindowFlags(platform_window) & SDL_WINDOW_FULLSCREEN) != 0;
+
+		if (fullscreen)
+			SDL_SetWindowFullscreen(platform_window, false);
+		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_WARNING, title, text, platform_window);
+		if (fullscreen)
+			SDL_SetWindowFullscreen(platform_window, true);
+	}
+#endif
+}
+
 /* ---------- events */
+
+void platform_scoreboard_scroll(int open, long *notches, long *pages)
+{
+	Uint64 now = SDL_GetTicks();
+
+	pthread_mutex_lock(&input_lock);
+	if (!open || now >= scoreboard_open_until_ms)
+	{
+		scoreboard_wheel = 0.0f;
+		scoreboard_notches = 0;
+		scoreboard_pages = 0;
+	}
+	scoreboard_open_until_ms = open ? now + SCOREBOARD_OPEN_MS : 0;
+	if (notches)
+		*notches = scoreboard_notches;
+	if (pages)
+		*pages = scoreboard_pages;
+	scoreboard_notches = 0;
+	scoreboard_pages = 0;
+	pthread_mutex_unlock(&input_lock);
+}
 
 void platform_pump_events(void)
 {
@@ -461,6 +853,10 @@ void platform_pump_events(void)
 		platform_log("exiting after debug.exit_after");
 		exit(EXIT_SUCCESS);
 	}
+	platform_show_pending_message();
+#if !defined(HALO_ANDROID) && !defined(HALO_ILP32)
+	updater_poll(platform_window);
+#endif
 	pthread_mutex_lock(&input_lock);
 	while (SDL_PollEvent(&event))
 	{
@@ -479,6 +875,11 @@ void platform_pump_events(void)
 					keys_pressed[event.key.scancode] = 1;
 			}
 			queue_keystroke(&event.key);
+			if (SDL_GetTicks() < scoreboard_open_until_ms && event.key.down &&
+				(event.key.scancode == SDL_SCANCODE_PAGEUP || event.key.scancode == SDL_SCANCODE_PAGEDOWN))
+			{
+				scoreboard_pages += event.key.scancode == SDL_SCANCODE_PAGEDOWN ? 1 : -1;
+			}
 			/* F12 releases or recaptures the mouse */
 			if (event.key.down && !event.key.repeat && event.key.scancode == SDL_SCANCODE_F12)
 			{
@@ -534,7 +935,23 @@ void platform_pump_events(void)
 				input_state.mouse_buttons[event.button.button] = event.button.down;
 			break;
 		case SDL_EVENT_MOUSE_WHEEL:
-#ifndef HALO_ILP32
+			if (SDL_GetTicks() < scoreboard_open_until_ms)
+			{
+				/* whole notches, up (away) scrolling up */
+				scoreboard_wheel -= event.wheel.y;
+				while (scoreboard_wheel >= 1.0f)
+				{
+					scoreboard_notches++;
+					scoreboard_wheel -= 1.0f;
+				}
+				while (scoreboard_wheel <= -1.0f)
+				{
+					scoreboard_notches--;
+					scoreboard_wheel += 1.0f;
+				}
+				break;
+			}
+#if !defined(HALO_ANDROID) && !defined(HALO_ILP32)
 			if (input_state.ui_pointer)
 			{
 				/* whole notches: smooth-scrolling wheels send fractions */

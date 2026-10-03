@@ -459,3 +459,21 @@ uint32_t host_ios_default_framebuffer(void)
 	return window ? (uint32_t)SDL_GetNumberProperty(SDL_GetWindowProperties(window),
 		SDL_PROP_WINDOW_UIKIT_OPENGL_FRAMEBUFFER_NUMBER, 0) : 0;
 }
+
+/* ---------- messages for the player (sdl_platform.c, guest_sdl.c) */
+
+/* Android's short toast; iOS has none, so the message isn't shown */
+int host_sdl_show_toast(const char *message, int duration, int gravity, int x, int y)
+{
+	(void)message;
+	(void)duration;
+	(void)gravity;
+	(void)x;
+	(void)y;
+	return 0;
+}
+
+int host_sdl_show_simple_message_box(unsigned int flags, const char *title, const char *message)
+{
+	return SDL_ShowSimpleMessageBox((SDL_MessageBoxFlags)flags, title, message, host_sdl_window());
+}
