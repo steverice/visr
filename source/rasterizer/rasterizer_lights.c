@@ -381,6 +381,15 @@ static boolean screenshot_in_progress(
 	return global_screenshot_count>1 || (global_screenshot_count==1 && global_screenshot_size>1);
 }
 
+/* port: in stereo, eye 1's flares take a spare window index (stereo renders
+one window, so the last is never used) for their occlusion slots: each eye
+keeps its own results, fades them once per frame and draws only its own */
+static long lens_flare_window_index(
+	void)
+{
+	return halo_stereo_current_layer() == 1 ? MAXIMUM_WINDOWS - 1 : global_window_parameters.window_index;
+}
+
 static struct rasterizer_lens_flare_submit_parameters *lens_flare_parameters_get(
 	short lens_flare_index)
 {
@@ -567,6 +576,13 @@ void rasterizer_lens_flare_submit(
 					lens_flare_parameters_get((short)local_lens_flare_count++);
 
 				memcpy(lens_flare_parameters, parameters, sizeof(*lens_flare_parameters));
+				/* port: eye 1's own occlusion slots (lens_flare_window_index) */
+				if (halo_stereo_current_layer() == 1)
+				{
+					lens_flare_parameters->compressed_window_index= (byte)(
+						(parameters->compressed_window_index & _lens_flare_first_person_weapon_flag) |
+						lens_flare_window_index());
+				}
 
 				if (parameters->light_identifier==NONE)
 				{
@@ -847,7 +863,7 @@ void rasterizer_lens_flares_submit_occlusion_tests(
 			real_vector3d direction = uncompress_int32_to_real_vector3d(lens_flare_parameters->compressed_direction);
 
 			if ((lens_flare_parameters->compressed_window_index & _lens_flare_window_index_mask) ==
-				global_window_parameters.window_index)
+				lens_flare_window_index() /* port */)
 			{
 				real occlusion_radius = definition->occlusion_radius;
 				real_point3d occlusion_point;
@@ -917,7 +933,7 @@ void rasterizer_lens_flares_draw(
 			real_vector3d direction = uncompress_int32_to_real_vector3d(lens_flare_parameters->compressed_direction);
 
 			if ((lens_flare_parameters->compressed_window_index & _lens_flare_window_index_mask) ==
-				global_window_parameters.window_index)
+				lens_flare_window_index() /* port */)
 			{
 				struct lens_flare_definition *definition = lens_flare_parameters->definition;
 
@@ -1176,7 +1192,7 @@ void rasterizer_lens_flares_draw(
 
 				if (lens_flare_parameters->internal__occlusion_pixels > 0 &&
 					(lens_flare_parameters->compressed_window_index & _lens_flare_window_index_mask) ==
-						global_window_parameters.window_index &&
+						lens_flare_window_index() /* port */ &&
 					(lens_flare_parameters->definition->occlusion_radius == 50.0f ||
 						TEST_FLAG(lens_flare_parameters->definition->flags, _lens_flare_sun_bit)))
 				{

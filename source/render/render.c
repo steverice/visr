@@ -466,6 +466,7 @@ static void render_player_frame_stereo(
 	real_vector3d up;
 	short eye;
 	struct rasterizer_window_begin_parameters parameters;
+	real time_delta_since_tick_sec;
 
 	stereo = halo_stereo_frame();
 	aspect = (real)(window->rasterizer_camera.viewport_bounds.x1 - window->rasterizer_camera.viewport_bounds.x0) /
@@ -508,6 +509,7 @@ static void render_player_frame_stereo(
 	cross_product3d(&right, &window->rasterizer_camera.forward, &up);
 	normalize3d(&up);
 
+	time_delta_since_tick_sec = render.time_delta_since_tick_sec;
 	for (eye = 0; eye < 2; eye++)
 	{
 		const struct halo_stereo_eye *stereo_eye = &stereo->eyes[eye];
@@ -534,6 +536,11 @@ static void render_player_frame_stereo(
 		/* the layer is set before the mirror, so a screen-sized target the
 		mirror pass touches is this eye's */
 		halo_stereo_layer(eye);
+		/* port: once per frame in stereo: what advances by the frame's time
+		while it renders (glow, the sky's animation, weather) advances in eye
+		0 only, and eye 1 (its mirror too) draws the same moment */
+		if (eye == 1)
+			render.time_delta_since_tick_sec = 0.0f;
 		/* the mirror's render_window runs in the eye's layer, so it skips
 		rasterizer_screen_flash and render_ui_widgets, deliberately: they
 		draw once, in the HUD pass */
@@ -575,6 +582,7 @@ static void render_player_frame_stereo(
 			_render_target_primary,
 			has_mirror);
 	}
+	render.time_delta_since_tick_sec = time_delta_since_tick_sec;
 
 	/* the HUD pass: the presenter blends its layer over each eye by its
 	alpha. The transparent clear relies on the zeroed fog color (black) and

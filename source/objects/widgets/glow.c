@@ -1418,7 +1418,9 @@ static void glow_update(
 		rotation_per_unit_t = effect_rotational_velocity / effect_translational_velocity;
 	}
 
-	glow->accumulated_trailing_particle_generation_ticks += (short)game_time_get();
+	/* port: once per frame in stereo */
+	if (halo_stereo_current_layer() != 1)
+		glow->accumulated_trailing_particle_generation_ticks += (short)game_time_get();
 
 	if (glow->number_of_markers > 1)
 	{
@@ -1442,7 +1444,9 @@ static void glow_update(
 	{
 		if (TEST_FLAG(particle->flags, _glow_particle_trailing_bit))
 		{
-			particle->ticks_in_existence += (short)game_time_get();
+			/* port: once per frame in stereo */
+			if (halo_stereo_current_layer() != 1)
+				particle->ticks_in_existence += (short)game_time_get();
 			glow_trailing_particle_update_color(glow, particle);
 			glow_trailing_particle_update_size(glow, particle);
 			glow_trailing_particle_update_velocity(glow, particle);
