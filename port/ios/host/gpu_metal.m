@@ -1838,9 +1838,10 @@ PACING_SETTLE frames that would fit in fewer with room to spare. With
 display.frame_pacing = "tick" only numbers that give a multiple of 30 frames a
 second are used (1 or 3 at 90 Hz, 1 or 2 at 60 Hz), so every game tick spans
 the same number of frames; "refresh" allows any (2 at 90 Hz: 45 a second).
-Pacing is off by default (display.frame_pacing = "off"): in a visionOS
-window the presented handlers never report a time, so it can't see a frame
-stay up too long.
+Pacing is off by default (display.frame_pacing = "off") until it has been
+tried on a Vision Pro; frames are measured by the time between Presents
+(pacing_schedule). The simulators can't hold a frame, so there it only
+measures.
 
 The refresh period comes from a display link on a thread of its own, since
 the game's thread doesn't return to its run loop. Every 600 frames the log
@@ -1863,12 +1864,6 @@ this much of them */
 
 static os_unfair_lock pacing_lock = OS_UNFAIR_LOCK_INIT;
 static CFTimeInterval refresh_period; /* CACurrentMediaTime's clock */
-/* the latest frame shown: its number (frames) and when; and how long frames
-stayed on screen, in refreshes (the last bucket: 5 or more) */
-static unsigned long shown_frame;
-static CFTimeInterval shown_time;
-static unsigned long shown_refreshes[6];
-
 @implementation PacingClock
 - (void)refresh:(CADisplayLink *)link
 {
@@ -1887,7 +1882,10 @@ static struct
 	double cost;                     /* the slowest frame (CPU or GPU) since the rate last changed, in seconds */
 	unsigned long over;              /* frames since then too slow for one refresh fewer */
 	unsigned long since_change;
-	_Atomic unsigned long misses;    /* frames up longer than asked, since the window began */
+	unsigned long misses;            /* frames up longer than asked, since the window began */
+	unsigned long shown[6];          /* frames that stayed up 1-4 and 5 or more refreshes, since the last report */
+	CFTimeInterval last_present;     /* when Present last asked for a schedule */
+	CFTimeInterval due;              /* when the next frame shows, as the schedule reckons it */
 	unsigned long window;
 	unsigned long reported;
 } pacing;
@@ -1942,75 +1940,61 @@ static void pacing_set(long refreshes, CFTimeInterval period, const char *why)
 	pacing.over = 0;
 	pacing.since_change = 0;
 	pacing.window = 0;
-	atomic_store(&pacing.misses, 0);
+	pacing.misses = 0;
 }
 
 /* how long drawable must stay up after the frame before it (0: no minimum),
 and how long from now until the next frame should show, in microseconds
-(0: unknown); picks the rate for the frames after this one */
+(0: unknown); picks the rate for the frames after this one.
+
+Frames are measured by the time between Presents. Present waits in
+nextDrawable for a drawable the display has let go of, so once frames are
+held for whole refreshes, Presents come that many refreshes apart; one that
+comes later stayed up longer than asked (a miss). That works where a
+drawable's presented handler never reports a time (a visionOS window, the
+simulators). The next frame is due a frame's refreshes after this one, or a
+frame's refreshes from now when the game ran late; only how much that lead
+varies from frame to frame matters to the blend (render_interpolation.c). */
 static CFTimeInterval pacing_schedule(id<CAMetalDrawable> drawable, uint32_t *next_frame_due)
 {
-	CFTimeInterval now = CACurrentMediaTime(), period, last_time, hold, due;
-	unsigned long last_frame, this_frame = frames;
+	CFTimeInterval now = CACurrentMediaTime(), period, hold, interval;
 	uint64_t gpu_total = atomic_load(&pacing_gpu_nanoseconds);
 	double cpu, gpu;
-	long lower;
+	long lower, up;
 
 	*next_frame_due = 0;
 	cpu = pacing.work_started > 0.0 ? now - pacing.work_started - pacing_waited : 0.0;
 	gpu = (double)(gpu_total - pacing.gpu_counted) / 1e9;
 	pacing.gpu_counted = gpu_total;
 	pacing_waited = 0.0;
+	interval = pacing.last_present > 0.0 ? now - pacing.last_present : 0.0;
+	pacing.last_present = now;
 	os_unfair_lock_lock(&pacing_lock);
 	period = refresh_period;
-	last_frame = shown_frame;
-	last_time = shown_time;
 	os_unfair_lock_unlock(&pacing_lock);
 	if (!drawable || period < 1.0 / 240.0 || period > 1.0 / 20.0)
 		return 0.0;
 	if (!pacing_allowed(pacing.refreshes, period))
 		pacing.refreshes = 1;
 	hold = pacing.off ? 0.0 : period * (double)pacing.refreshes;
-	/* the simulators' drawables have no presented handlers */
-#if !TARGET_OS_SIMULATOR
+	/* how many refreshes the frame before this one stayed up; a quarter
+	second or more is a load or the background, not a frame */
+	up = interval > 0.0 && interval < 0.25 ? lround(interval / period) : 0;
+	if (up > 0)
 	{
-		long asked = pacing.off ? 0 : pacing.refreshes;
-
-		[drawable addPresentedHandler:^(id<MTLDrawable> shown)
-		{
-			CFTimeInterval when = shown.presentedTime;
-
-			if (when <= 0.0)
-				return;
-			os_unfair_lock_lock(&pacing_lock);
-			/* the frame right after the last one shown */
-			if (shown_frame + 1 == this_frame && shown_time > 0.0)
-			{
-				long up = lround((when - shown_time) / period);
-
-				shown_refreshes[up < 1 ? 1 : up > 5 ? 5 : up]++;
-				if (asked && up > asked)
-					atomic_fetch_add(&pacing.misses, 1);
-			}
-			shown_frame = this_frame;
-			shown_time = when;
-			os_unfair_lock_unlock(&pacing_lock);
-		}];
+		pacing.shown[up > 5 ? 5 : up]++;
+		if (!pacing.off && up > pacing.refreshes)
+			pacing.misses++;
 	}
-#endif
 	if (frames >= pacing.reported + 600)
 	{
-		unsigned long counts[6];
-
 		pacing.reported = frames;
-		os_unfair_lock_lock(&pacing_lock);
-		memcpy(counts, shown_refreshes, sizeof(counts));
-		memset(shown_refreshes, 0, sizeof(shown_refreshes));
-		os_unfair_lock_unlock(&pacing_lock);
 		platform_log("Metal: frames shown for 1/2/3/4/5+ refreshes at %.1f Hz: %lu/%lu/%lu/%lu/%lu (pacing %s); "
-			"frame CPU %.1f ms, GPU %.1f ms", 1.0 / period, counts[1], counts[2], counts[3], counts[4], counts[5],
+			"frame CPU %.1f ms, GPU %.1f ms", 1.0 / period, pacing.shown[1], pacing.shown[2], pacing.shown[3],
+			pacing.shown[4], pacing.shown[5],
 			pacing.off ? "off" : pacing.refreshes == 1 ? "1 refresh" : pacing.refreshes == 2 ? "2 refreshes" :
 			pacing.refreshes == 3 ? "3 refreshes" : "4 refreshes", cpu * 1000.0, gpu * 1000.0);
+		memset(pacing.shown, 0, sizeof(pacing.shown));
 	}
 	if (pacing.off)
 		return 0.0;
@@ -2026,8 +2010,9 @@ static CFTimeInterval pacing_schedule(id<CAMetalDrawable> drawable, uint32_t *ne
 	pacing.since_change++;
 	if (++pacing.window >= PACING_WINDOW)
 	{
-		unsigned long misses = atomic_exchange(&pacing.misses, 0);
+		unsigned long misses = pacing.misses;
 
+		pacing.misses = 0;
 		pacing.window = 0;
 		if (misses >= PACING_MISSES && pacing_step(pacing.refreshes, 1, period) != pacing.refreshes)
 			pacing_set(pacing_step(pacing.refreshes, 1, period), period, "frames stayed up longer than asked");
@@ -2041,14 +2026,8 @@ static CFTimeInterval pacing_schedule(id<CAMetalDrawable> drawable, uint32_t *ne
 		pacing.over = 0;
 		pacing.since_change = 0;
 	}
-	/* the next frame shows a frame's refreshes after this one, which shows
-	that long after the frame before, back to the latest one shown */
-	if (last_time > 0.0 && this_frame > last_frame && this_frame - last_frame <= FRAMES + 1)
-	{
-		due = last_time + (double)(this_frame + 1 - last_frame) * hold;
-		if (due > now)
-			*next_frame_due = (uint32_t)fmax(1.0, (due - now) * 1e6);
-	}
+	pacing.due = fmax(pacing.due + hold, now + hold);
+	*next_frame_due = (uint32_t)fmax(1.0, (pacing.due - now) * 1e6);
 	return hold;
 }
 
