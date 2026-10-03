@@ -109,6 +109,16 @@ static const struct config_setting config_settings[] =
 	{ "display.immersive", _config_boolean, "false", "HALO_IMMERSIVE", _environment_value, _platform_ios,
 		"Apple Vision Pro, visionOS 26 and later: show the game on a screen standing\n"
 		"in the room (an immersive space) instead of in a window." },
+	{ "display.theater_width", _config_real, "60.0", "HALO_THEATER_WIDTH", _environment_value, _platform_ios,
+		"With display.immersive: how much of the view the screen spans, in degrees\n"
+		"across (the headset's view is about 100; 60 is the front of a cinema).\n"
+		"The picture is rendered as sharp as the headset can show at that size." },
+	{ "display.theater_distance", _config_real, "4.0", "HALO_THEATER_DISTANCE", _environment_value, _platform_ios,
+		"With display.immersive: how far away the screen stands, in meters." },
+	{ "display.theater_environment", _config_string, "\"passthrough\"", "HALO_THEATER_ENVIRONMENT", _environment_value,
+		_platform_ios,
+		"With display.immersive: around the screen, \"passthrough\" (the room) or\n"
+		"\"dark\" (black)." },
 	{ "display.renderer", _config_string, "\"gl\"", "HALO_RENDERER", _environment_value, _platform_ios,
 		"What draws the game: \"gl\" (default) OpenGL ES, or \"metal\" Metal.\n"
 		"Changes apply on relaunch." },

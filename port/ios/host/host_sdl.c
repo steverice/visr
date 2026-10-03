@@ -10,6 +10,10 @@ native guest arena (host_thread.c). SDL's audio thread is the exception: it has 
 so the audio callback is handed to a thread that has one.
 */
 
+#include <TargetConditionals.h>
+#if TARGET_OS_VISION
+#include "host_theater.h"
+#endif
 #include "host.h"
 
 #include <SDL3/SDL.h>
@@ -144,6 +148,15 @@ void host_sdl_window_size_in_pixels(uint32_t window, int *width, int *height)
 
 	*width = 0;
 	*height = 0;
+#if TARGET_OS_VISION
+	/* theater mode: the game renders for the screen in the room, not for its
+	hidden window (host_theater.m) */
+	if (object && host_theater_active())
+	{
+		host_theater_picture_size(width, height);
+		return;
+	}
+#endif
 	if (object)
 		SDL_GetWindowSizeInPixels(object, width, height);
 }

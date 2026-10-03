@@ -51,7 +51,7 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "visionOS")
     set(HALO_RENDER_HEIGHT 0 CACHE STRING "Internal render height (display.render_height)")
     option(HALO_EXTENDED_VIRTUAL_ADDRESSING "Sign with the extended virtual addressing entitlement" OFF)
     set(HALO_PLATFORM_SOURCES Assets-visionOS.xcassets host/host_tv.m host/host_import.m host/host_orientation.m
-        host/host_theater.m host/Theater.swift)
+        host/host_theater.m host/host_config.c host/Theater.swift)
     set(HALO_INFO_PLIST Info-visionOS.plist)
     set(HALO_DEVICE_FAMILY 7)
 else()

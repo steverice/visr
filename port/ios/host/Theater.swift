@@ -20,14 +20,16 @@ struct TheaterLayerConfiguration: CompositorLayerConfiguration {
 
 @available(visionOS 26.0, *)
 final class TheaterSceneDelegate: UIResponder, UIHostingSceneDelegate {
+    static let environment: any ImmersionStyle = host_theater_dark() != 0 ? .full : .mixed
+
     static var rootScene: some Scene {
         ImmersiveSpace(id: "theater") {
             CompositorLayer(configuration: TheaterLayerConfiguration()) { renderer in
                 host_theater_attach(Unmanaged.passUnretained(renderer).toOpaque())
             }
         }
-        // the room stays visible around the screen
-        .immersionStyle(selection: .constant(.mixed), in: .mixed)
+        // display.theater_environment: the room around the screen, or the dark
+        .immersionStyle(selection: .constant(Self.environment), in: .mixed, .full)
     }
 }
 

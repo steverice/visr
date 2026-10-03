@@ -12,12 +12,24 @@ simulator) the screen follows the head. */
 #import <Metal/Metal.h>
 #import <UIKit/UIKit.h>
 #include <simd/simd.h>
+#include "host_config.h"
 #include "host_theater.h"
 #include "host.h"
+#include <math.h>
+#include <string.h>
 
-/* the screen: its width in meters, and how far in front of the player it stands */
-#define SCREEN_WIDTH 2.0f
-#define SCREEN_DISTANCE 2.5f
+/* about what the Vision Pro's displays resolve at the center of the view: a
+picture with more pixels per degree than this is wasted work (MetalFX's cost
+grows with its output) */
+#define PIXELS_PER_DEGREE 40.0
+/* the screen's shape: the game's widescreen layout */
+#define SCREEN_ASPECT (16.0 / 9.0)
+
+/* config.toml's display.theater_*: the screen's angle across, in degrees, and
+its distance and width in meters; whether it stands in the dark */
+static double screen_degrees = 60.0;
+static float screen_distance = 4.0f, screen_width = 4.6f;
+static int environment_dark;
 
 static cp_layer_renderer_t layer_renderer;
 static ar_session_t session;
@@ -46,6 +58,36 @@ static void window_hidden(BOOL hidden)
 		for (UIWindow *window in ((UIWindowScene *)scene).windows)
 			window.hidden = hidden;
 	}
+}
+
+void host_theater_load_settings(void)
+{
+	char environment[32];
+
+	screen_degrees = host_config_real("display.theater_width", 60.0);
+	if (screen_degrees < 20.0)
+		screen_degrees = 20.0;
+	if (screen_degrees > 100.0)
+		screen_degrees = 100.0;
+	screen_distance = (float)host_config_real("display.theater_distance", 4.0);
+	if (screen_distance < 1.0f)
+		screen_distance = 1.0f;
+	screen_width = 2.0f * screen_distance * tanf((float)(screen_degrees * M_PI / 360.0));
+	host_config_string("display.theater_environment", "passthrough", environment, sizeof(environment));
+	environment_dark = !strcmp(environment, "dark");
+	host_logf(HOST_LOG_INFO, "theater: a %.0f-degree screen (%.1f m wide) %.1f m away, %s around it",
+		screen_degrees, screen_width, screen_distance, environment_dark ? "dark" : "the room");
+}
+
+int host_theater_dark(void)
+{
+	return environment_dark;
+}
+
+void host_theater_picture_size(int *width, int *height)
+{
+	*width = (int)lround(screen_degrees * PIXELS_PER_DEGREE) & ~1;
+	*height = (int)lround(*width / SCREEN_ASPECT) & ~1;
 }
 
 void host_theater_attach(void *renderer)
@@ -164,10 +206,9 @@ static void place_screen(simd_float4x4 origin_from_device)
 		{ cosf(yaw), 0.0f, -sinf(yaw), 0.0f },
 		{ 0.0f, 1.0f, 0.0f, 0.0f },
 		{ sinf(yaw), 0.0f, cosf(yaw), 0.0f },
-		{ position.x + forward.x * SCREEN_DISTANCE, position.y, position.z + forward.z * SCREEN_DISTANCE, 1.0f },
+		{ position.x + forward.x * screen_distance, position.y, position.z + forward.z * screen_distance, 1.0f },
 	} };
 	screen_placed = YES;
-	host_logf(HOST_LOG_INFO, "theater: the screen stands %.1f m ahead, %.1f m wide", SCREEN_DISTANCE, SCREEN_WIDTH);
 }
 
 void host_theater_present(id<MTLCommandQueue> queue, id<MTLTexture> picture)
@@ -233,7 +274,7 @@ void host_theater_present(id<MTLCommandQueue> queue, id<MTLTexture> picture)
 				pass.colorAttachments[0].slice = cp_view_texture_map_get_slice_index(map);
 				pass.colorAttachments[0].loadAction = MTLLoadActionClear;
 				pass.colorAttachments[0].storeAction = MTLStoreActionStore;
-				pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
+				pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, environment_dark ? 1.0 : 0.0);
 				pass.depthAttachment.texture = depth;
 				pass.depthAttachment.slice = cp_view_texture_map_get_slice_index(map);
 				pass.depthAttachment.loadAction = MTLLoadActionClear;
@@ -250,8 +291,8 @@ void host_theater_present(id<MTLCommandQueue> queue, id<MTLTexture> picture)
 					pass.renderTargetArrayLength = 1;
 				uniforms.clip_from_screen = simd_mul(projection,
 					simd_mul(simd_inverse(origin_from_view), origin_from_screen));
-				uniforms.half_size = (simd_float2){ SCREEN_WIDTH / 2.0f,
-					SCREEN_WIDTH / 2.0f * (float)picture.height / (float)picture.width };
+				uniforms.half_size = (simd_float2){ screen_width / 2.0f,
+					screen_width / 2.0f * (float)picture.height / (float)picture.width };
 				uniforms.decode_srgb = color.pixelFormat == MTLPixelFormatBGRA8Unorm_sRGB ||
 					color.pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB;
 				id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];

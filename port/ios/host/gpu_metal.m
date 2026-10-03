@@ -2218,14 +2218,21 @@ static uint32_t gpu_metal_present(gpu_texture back_buffer)
 		command_buffer();
 		pass_finish(YES);
 #if TARGET_OS_VISION
-		/* theater mode: the picture, at the window's size, goes on the screen
+		/* theater mode: the picture, at the screen's size (sharp enough for its
+		angle, host_theater_picture_size), goes on the screen
 		in the immersive space, whose frames pace the game; the window isn't
 		drawn meanwhile */
 		if (theater_wanted && record && record->texture && host_theater_active())
 		{
-			long window_width = (long)layer.drawableSize.width, window_height = (long)layer.drawableSize.height;
-			long width = window_width, height = window_width * (long)record->description.height / (long)record->description.width;
+			int screen_width, screen_height;
+			long window_width, window_height, width, height;
 			id<MTLTexture> picture;
+
+			host_theater_picture_size(&screen_width, &screen_height);
+			window_width = screen_width;
+			window_height = screen_height;
+			width = window_width;
+			height = window_width * (long)record->description.height / (long)record->description.width;
 
 			if (height > window_height)
 			{
@@ -2341,6 +2348,7 @@ static void gpu_metal_initialize(uint32_t flags, struct gpu_capabilities *capabi
 		if (flags & GPU_INITIALIZE_IMMERSIVE)
 		{
 			theater_wanted = YES;
+			host_theater_load_settings();
 			host_theater_open();
 		}
 #endif
