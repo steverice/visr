@@ -488,6 +488,24 @@ int halo_linux_snprintf(char *buffer, size_t count, const char *format, ...)
 	return result;
 }
 
+int halo_linux_msvc_vsnprintf(char *buffer, size_t count, const char *format, va_list arguments)
+{
+	int result = halo_linux_vsnprintf(buffer, count, format, arguments);
+
+	return result < 0 || (size_t)result >= count ? -1 : result;
+}
+
+int halo_linux_msvc_snprintf(char *buffer, size_t count, const char *format, ...)
+{
+	va_list arguments;
+	int result;
+
+	va_start(arguments, format);
+	result = halo_linux_msvc_vsnprintf(buffer, count, format, arguments);
+	va_end(arguments);
+	return result;
+}
+
 int halo_linux_vsprintf(char *buffer, const char *format, va_list arguments)
 {
 	char translated_format[1024];

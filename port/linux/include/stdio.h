@@ -28,6 +28,11 @@ see port/linux/src/msvc_crt.c */
 #ifndef HALO_LINUX_PLATFORM_LAYER
 int halo_linux_vsnprintf(char *buffer, size_t count, const char *format, va_list arguments);
 int halo_linux_snprintf(char *buffer, size_t count, const char *format, ...);
+/* MSVC's _snprintf and _vsnprintf return -1 when the output doesn't fit,
+where C's return the length it needed; the game's code checks for MSVC's
+(terminal_printf asserts that a line fit). These still terminate. */
+int halo_linux_msvc_vsnprintf(char *buffer, size_t count, const char *format, va_list arguments);
+int halo_linux_msvc_snprintf(char *buffer, size_t count, const char *format, ...);
 int halo_linux_vsprintf(char *buffer, const char *format, va_list arguments);
 int halo_linux_sprintf(char *buffer, const char *format, ...);
 int halo_linux_vfprintf(FILE *stream, const char *format, va_list arguments);
@@ -38,8 +43,8 @@ int halo_linux_vprintf(const char *format, va_list arguments);
 #undef _vsnprintf
 #define snprintf halo_linux_snprintf
 #define vsnprintf halo_linux_vsnprintf
-#define _snprintf halo_linux_snprintf
-#define _vsnprintf halo_linux_vsnprintf
+#define _snprintf halo_linux_msvc_snprintf
+#define _vsnprintf halo_linux_msvc_vsnprintf
 #define sprintf halo_linux_sprintf
 #define vsprintf halo_linux_vsprintf
 #define fprintf halo_linux_fprintf
