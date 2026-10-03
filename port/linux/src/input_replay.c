@@ -9,7 +9,8 @@ A recording is the controller's state each time it changes, stamped with the
 game time: ticks since the map loaded, plus the fraction into the next tick.
 A replay at 45 frames a second and one at 90 then press the same buttons at
 the same moments of the game. Only reads while a map's game time runs are
-recorded; before that (menus, loading) the real controller drives the game,
+recorded; before that (menus, including the main menu's own map, and
+loading) the real controller drives the game,
 and a recording ends when the game time goes back (a new map). During a
 replay the real controller is ignored while the game time runs. The look
 stick turns the view by its deflection times each frame's length, so aim
@@ -37,6 +38,8 @@ to the recording, a summary to the log, and the game quits.
 extern unsigned char game_time_initialized(void);
 extern long game_time_get(void);
 extern float game_time_get_tick_fraction(void);
+/* port/linux/game/input_replay_scenario.c */
+extern unsigned char input_replay_main_menu_loaded(void);
 /* xbox_kernel.c */
 double halo_frame_trace_milliseconds(void);
 
@@ -152,10 +155,10 @@ static void configure(void)
 }
 
 /* the game time, in ticks with the fraction into the next, or a negative
-number while no map's game time runs */
+number while no level's game time runs (the main menu's doesn't count) */
 static double game_ticks(void)
 {
-	if (!game_time_initialized())
+	if (!game_time_initialized() || input_replay_main_menu_loaded())
 		return -1.0;
 	return (double)game_time_get() + (double)game_time_get_tick_fraction();
 }
