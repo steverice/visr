@@ -849,6 +849,39 @@ static id<MTLTexture> scratch_color(NSUInteger width, NSUInteger height)
 
 /* opens a pass on the pair, unless it is the open one; a load action of
 Clear clears what it names before anything in the pass */
+/* render passes and the memory their attachments load and store, which on a
+tile-based GPU is most of what a pass costs beyond its draws; logged every
+600 frames (gpu_metal_present) */
+static struct
+{
+	unsigned long passes;
+	double loaded, stored;           /* bytes */
+} pass_traffic;
+
+static void pass_attachment_traffic(id<MTLTexture> texture, MTLLoadAction load, MTLStoreAction store, double bytes_per_pixel)
+{
+	double bytes;
+
+	if (!texture)
+		return;
+	bytes = (double)texture.width * (double)texture.height * bytes_per_pixel;
+	if (load == MTLLoadActionLoad)
+		pass_traffic.loaded += bytes;
+	if (store == MTLStoreActionStore)
+		pass_traffic.stored += bytes;
+}
+
+static void pass_traffic_count(MTLRenderPassDescriptor *pass)
+{
+	pass_traffic.passes++;
+	pass_attachment_traffic(pass.colorAttachments[0].texture, pass.colorAttachments[0].loadAction,
+		pass.colorAttachments[0].storeAction, 4.0);
+	pass_attachment_traffic(pass.depthAttachment.texture, pass.depthAttachment.loadAction,
+		pass.depthAttachment.storeAction, 4.0);
+	pass_attachment_traffic(pass.stencilAttachment.texture, pass.stencilAttachment.loadAction,
+		pass.stencilAttachment.storeAction, 1.0);
+}
+
 static BOOL pass_begin(gpu_texture color, gpu_texture depth, const struct gpu_clear *clear)
 {
 	MetalTexture *color_record = texture_record(color), *depth_record = texture_record(depth);
@@ -898,6 +931,7 @@ static BOOL pass_begin(gpu_texture color, gpu_texture depth, const struct gpu_cl
 		pass.stencilAttachment.clearStencil = clear ? clear->stencil & 0xff : 0;
 		use_texture(depth_record);
 	}
+	pass_traffic_count(pass);
 	encoder = [command_buffer() renderCommandEncoderWithDescriptor:pass];
 	if (metal_debug)
 		encoder.label = [NSString stringWithFormat:@"targets %u/%u", color, depth];
@@ -2119,6 +2153,12 @@ static uint32_t gpu_metal_present(gpu_texture back_buffer)
 		{
 			platform_log("Metal: %lu renames in the last 600 frames", renames);
 			renames = 0;
+		}
+		if (frames % 600 == 0)
+		{
+			platform_log("Metal: a frame has %.1f render passes, which load %.0f MB and store %.0f MB",
+				(double)pass_traffic.passes / 600.0, pass_traffic.loaded / 600.0 / 1e6, pass_traffic.stored / 600.0 / 1e6);
+			memset(&pass_traffic, 0, sizeof(pass_traffic));
 		}
 		pacing.work_started = CACurrentMediaTime();
 		return next_frame_due;
