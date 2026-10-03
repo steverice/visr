@@ -110,9 +110,12 @@ static struct
 	struct recorded_action *actions;
 	long action_count, next_action;
 	long segment, last_action_tick;
-	/* when the game tick last changed, and when the replay reached its
-	current segment */
-	double last_tick_change, segment_entered;
+	/* the game time's jumps back seen frame by frame (the ticks' own
+	segment count can miss one: a cinematic can stop the player updates
+	right after its checkpoint), when the last came, and when the game
+	time last moved */
+	long jumps;
+	double jumped, moved;
 } replay;
 
 /* NAME.input's actions file, NAME.actions */
@@ -264,9 +267,13 @@ static double game_ticks(void)
 		and replay, whose last frames before the jump fall at different
 		fractions, agree */
 		replay.timeline_offset += ceil(replay.last_game_ticks) - ticks;
+		replay.jumps++;
+		replay.jumped = halo_frame_trace_milliseconds();
 		platform_log("debug.input_record/input_replay: the game time went back from %.2f to %.2f ticks; the recorded time carries on",
 			replay.last_game_ticks, ticks);
 	}
+	if (ticks != replay.last_game_ticks)
+		replay.moved = halo_frame_trace_milliseconds();
 	replay.last_game_ticks = ticks;
 	return ticks + replay.timeline_offset;
 }
@@ -392,12 +399,7 @@ void input_replay_tick_action(void *action)
 		return;
 	tick = game_time_get();
 	if (replay.last_action_tick > 0 && tick < replay.last_action_tick)
-	{
 		replay.segment++;
-		replay.segment_entered = halo_frame_trace_milliseconds();
-	}
-	if (tick != replay.last_action_tick)
-		replay.last_tick_change = halo_frame_trace_milliseconds();
 	replay.last_action_tick = tick;
 
 	if (*replay.record_actions_path)
@@ -526,29 +528,21 @@ void input_replay_frame(long width, long height)
 		platform_log("debug.benchmark: the replay ended; quitting");
 		exit(EXIT_SUCCESS);
 	}
-	/* the game time can stop for good near the end (a10's second cinematic
-	fades to white and holds it): in the recording's last segment, a replay
-	whose ticks haven't moved for three seconds is over */
-	if (replay.action_count && replay.segment >= replay.actions[replay.action_count - 1].segment &&
-		replay.last_tick_change > 0.0 && now - replay.last_tick_change > 3000.0)
-	{
-		platform_log("debug.benchmark: the game time stopped in the recording's last segment");
-		replay.replay_finished = TRUE;
-		return;
-	}
-	/* and a backstop, whatever the game time does there: the last segment's
-	recorded length (from its first action to its last) plus ten seconds */
-	if (replay.action_count && replay.segment > 0 &&
-		replay.segment >= replay.actions[replay.action_count - 1].segment && replay.segment_entered > 0.0)
+	/* past the recording's last jump back (counted frame by frame), the
+	replay is over once the game time stands still for three seconds (a10's
+	second cinematic fades to white and holds it), or at the latest after
+	that last segment's recorded length plus ten seconds */
+	if (replay.action_count && replay.jumps >= replay.actions[replay.action_count - 1].segment && replay.jumped > 0.0)
 	{
 		const struct recorded_action *last = &replay.actions[replay.action_count - 1];
 		long first = replay.action_count - 1;
 
 		while (first > 0 && replay.actions[first - 1].segment == last->segment)
 			first--;
-		if (now - replay.segment_entered > (double)(last->tick - replay.actions[first].tick) * 1000.0 / 30.0 + 10000.0)
+		if (now - replay.moved > 3000.0 ||
+			now - replay.jumped > (double)(last->tick - replay.actions[first].tick) * 1000.0 / 30.0 + 10000.0)
 		{
-			platform_log("debug.benchmark: the replay's last segment ran long; ending it");
+			platform_log("debug.benchmark: past the recording's end (the game time stopped or ran long)");
 			replay.replay_finished = TRUE;
 			return;
 		}
