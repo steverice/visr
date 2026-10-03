@@ -11,6 +11,11 @@ gpu_present_stereo (gpu_metal.m) hands the pictures here: each fills its view,
 with the game's depth (already reverse-Z, gpu_metal.m's reversed_depth) for
 the Compositor's reprojection, and the HUD floats head-locked in front.
 
+Stereo on the theater screen (display.stereo = "screen") reads the same frame
+for the eyes' positions only: the look stays on the stick, and the head moves
+each eye's frustum through the screen, as through a window (screen_eyes).
+host_theater_present_eyes puts each eye's picture on the screen for its view.
+
 Elsewhere host_stereo_frame leaves the frame mono. */
 #import <Foundation/Foundation.h>
 #include <TargetConditionals.h>
@@ -30,6 +35,13 @@ Elsewhere host_stereo_frame leaves the frame mono. */
 /* the HUD's quad, head-locked: how far ahead and how wide, in meters */
 #define HUD_DISTANCE 2.0f
 #define HUD_WIDTH 1.6f
+
+/* stereo on the screen: the nearest an eye may be to the screen's plane,
+and how far toward its edges an eye's offset may go, as a share of the
+screen's half width or height, so the frusta stay valid when the screen is
+seen nearly edge-on (where the picture then stops following the eye) */
+#define SCREEN_MINIMUM_DISTANCE 0.25f
+#define SCREEN_EDGE_SHARE 0.9f
 
 /* the eyes' picture size, while the head drives the view */
 static int picture_width, picture_height;
@@ -225,6 +237,76 @@ static void head_turn(struct halo_stereo_frame *frame, simd_float4x4 origin_from
 	head_known = YES;
 }
 
+/* Stereo on the screen: the eyes from where the viewer's eyes are in the
+screen's frame (its center the origin, x right, y up, z toward the viewer).
+
+The screen is a window, and the game's camera sits in it: the screen's
+center is the player's eye in the game, and the game's world lies behind
+the screen at its true scale (one world unit is 3.048 m). An eye at
+(ex, ey, d) in meters, d in front of the screen, is therefore offset from
+the game's camera by (ex, ey, d) / 3.048 world units right, up and back,
+and its frustum passes through the screen's edges:
+	left = (half_width + ex) / d     right = (half_width - ex) / d
+	up = (half_height - ey) / d      down = (half_height + ey) / d
+So the eye's picture fills the screen exactly as that eye sees it, and what
+the game shows at a distance z ahead of its camera appears z behind the
+screen: a point straight ahead on the screen's surface has no parallax, and
+the parallax rises toward the eyes' separation with distance (at 64 mm and
+a 4 m screen, a quarter of it 1.3 m behind the screen, half of it 4 m
+behind). Nothing in front of the game's camera comes out of the screen; the
+eye loop moves each eye's near plane out to the screen (render.c), so what
+is behind the game's camera, between it and the eye, isn't drawn. The game's
+field of view becomes the screen's angle (display.theater_width), and
+leaning or stepping moves the frusta as a window would. The orientation of
+the head plays no part. */
+static void screen_eyes(struct halo_stereo_frame *frame, cp_drawable_t drawable, simd_float4x4 origin_from_device)
+	API_AVAILABLE(visionos(26.0))
+{
+	simd_float4x4 origin_from_screen, screen_from_device;
+	simd_float2 half_size;
+	size_t views = cp_drawable_get_view_count(drawable);
+	int width, height;
+	int eye;
+	static unsigned long screen_frames;
+
+	if (views == 0)
+		return;
+	host_theater_screen(0, &origin_from_screen, &half_size);
+	screen_from_device = simd_mul(simd_inverse(origin_from_screen), origin_from_device);
+	/* the simulator has one view: both eyes are it */
+	for (eye = 0; eye < 2; eye++)
+	{
+		size_t view_index = (size_t)eye < views ? (size_t)eye : views - 1;
+		simd_float4x4 device_from_view = cp_view_get_transform(cp_drawable_get_view(drawable, view_index));
+		simd_float4 position = simd_mul(screen_from_device, device_from_view.columns[3]);
+		float ex = simd_clamp(position.x, -SCREEN_EDGE_SHARE * half_size.x, SCREEN_EDGE_SHARE * half_size.x);
+		float ey = simd_clamp(position.y, -SCREEN_EDGE_SHARE * half_size.y, SCREEN_EDGE_SHARE * half_size.y);
+		float d = fmaxf(position.z, SCREEN_MINIMUM_DISTANCE);
+		struct halo_stereo_eye *e = &frame->eyes[eye];
+
+		e->offset[0] = ex / METERS_PER_UNIT;
+		e->offset[1] = ey / METERS_PER_UNIT;
+		e->offset[2] = d / METERS_PER_UNIT;
+		e->left = (half_size.x + ex) / d;
+		e->right = (half_size.x - ex) / d;
+		e->up = (half_size.y - ey) / d;
+		e->down = (half_size.y + ey) / d;
+		if (screen_frames == 0)
+			host_logf(HOST_LOG_INFO, "stereo: on the screen, view %zu of %zu: the eye at %.4f %.4f %.4f m from "
+				"the screen's center (%.2f by %.2f m); tangents left %.3f right %.3f up %.3f down %.3f",
+				view_index, views, position.x, position.y, position.z, 2.0f * half_size.x, 2.0f * half_size.y,
+				e->left, e->right, e->up, e->down);
+	}
+	/* the screen's picture size and shape: the eyes' frusta have its shape */
+	host_theater_picture_size(&width, &height);
+	frame->eye_width = width;
+	frame->eye_height = height;
+	frame->eye_count = 2;
+	if (screen_frames++ == 0)
+		host_logf(HOST_LOG_INFO, "stereo: the game is in stereo on the screen; %zu view%s, eyes %dx%d", views,
+			views == 1 ? "" : "s", width, height);
+}
+
 static void stereo_frame(struct halo_stereo_frame *frame) API_AVAILABLE(visionos(26.0))
 {
 	simd_float4x4 origin_from_device;
@@ -232,13 +314,22 @@ static void stereo_frame(struct halo_stereo_frame *frame) API_AVAILABLE(visionos
 	size_t views;
 	int eye;
 
-	if (frame->mode != HALO_STEREO_HEAD || !host_theater_frame_begin(1))
+	if ((frame->mode != HALO_STEREO_HEAD && frame->mode != HALO_STEREO_SCREEN) || !host_theater_frame_begin(1))
 	{
 		head_known = NO;
 		picture_width = picture_height = 0;
 		return;
 	}
 	cp_drawable_t drawable = host_theater_drawable(0, &origin_from_device, &anchored);
+	/* on the screen, the head moves only the eyes: no turn, and the game
+	renders at the screen's picture size (host_theater_picture_size) */
+	if (frame->mode == HALO_STEREO_SCREEN)
+	{
+		head_known = NO;
+		picture_width = picture_height = 0;
+		screen_eyes(frame, drawable, origin_from_device);
+		return;
+	}
 	views = cp_drawable_get_view_count(drawable);
 	if (views == 0)
 		return;

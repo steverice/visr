@@ -3262,8 +3262,11 @@ static uint32_t gpu_metal_present(gpu_texture back_buffer)
 
 /* a stereo frame: in head-tracked stereo (display.stereo = "head") each eye's
 picture and depth, and the HUD, go to the Compositor's frame that
-host_stereo_frame opened at the frame's begin (host_stereo.m); without one
-(the space closed, another mode) eye 0 goes through the mono path */
+host_stereo_frame opened at the frame's begin (host_stereo.m); in stereo on
+the screen (display.stereo = "screen") each eye's picture, with the HUD over
+it, goes on the theater screen for its view (host_theater_present_eyes);
+without a frame (the space closed, another mode) eye 0 goes through the mono
+path */
 static uint32_t gpu_metal_present_stereo(const struct gpu_stereo_present *present)
 {
 #if TARGET_OS_VISION
@@ -3291,6 +3294,21 @@ static uint32_t gpu_metal_present_stereo(const struct gpu_stereo_present *presen
 			commit(YES);
 			host_stereo_present(queue, color[0]->texture, color[1]->texture, depth[0]->texture, depth[1]->texture,
 				hud ? hud->texture : nil, present->near_meters, present->far_meters);
+			frames++;
+			pacing.work_started = CACurrentMediaTime();
+			return 0;
+		}
+		if (theater_wanted && present->mode == HALO_STEREO_SCREEN && color[0] && color[0]->texture && color[1] &&
+			color[1]->texture && host_stereo_ready())
+		{
+			command_buffer();
+			pass_end();
+			use_texture(color[0]);
+			use_texture(color[1]);
+			if (hud && hud->texture)
+				use_texture(hud);
+			commit(YES);
+			host_theater_present_eyes(queue, color[0]->texture, color[1]->texture, hud ? hud->texture : nil);
 			frames++;
 			pacing.work_started = CACurrentMediaTime();
 			return 0;

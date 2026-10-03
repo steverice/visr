@@ -1,12 +1,13 @@
-/* Head-tracked stereo (display.stereo = "head", visionOS 26 and later):
-host_stereo.m */
+/* Head-tracked stereo and stereo on the theater screen (display.stereo =
+"head" or "screen", visionOS 26 and later): host_stereo.m */
 #pragma once
 
 #include "halo_stereo.h"
 
-/* the guest's import (guest_host.h): at the game's frame begin, in HEAD mode,
-opens the Compositor's frame and fills the eyes and the head's turn from it;
-eye_count stays 0 without one, and on every other platform */
+/* the guest's import (guest_host.h): at the game's frame begin, in HEAD or
+SCREEN mode, opens the Compositor's frame and fills the eyes (and in HEAD
+mode the head's turn) from it; eye_count stays 0 without one, and on every
+other platform */
 void host_stereo_frame(struct halo_stereo_frame *frame);
 /* the eyes' picture size in pixels while the head drives the view (the view's
 size in the Compositor's texture); 0 otherwise */

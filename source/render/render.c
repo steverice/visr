@@ -535,6 +535,16 @@ static void render_player_frame_stereo(
 			eye_camera.forward.j * stereo_eye->offset[2];
 		eye_camera.position.z += right.k * stereo_eye->offset[0] + up.k * stereo_eye->offset[1] -
 			eye_camera.forward.k * stereo_eye->offset[2];
+		/* port: stereo on the screen puts the eyes behind the camera, which
+		sits in the screen as in a window (host_stereo.m's screen_eyes):
+		each eye's near and far planes move out by its distance back, so the
+		near plane is the camera's and what is between the eye and the camera
+		isn't drawn */
+		if (stereo->mode == HALO_STEREO_SCREEN && stereo_eye->offset[2] > 0.0f)
+		{
+			eye_camera.z_near += stereo_eye->offset[2];
+			eye_camera.z_far += stereo_eye->offset[2];
+		}
 		eye_bounds.x0 = -stereo_eye->left / (aspect * field_of_view_tangent);
 		eye_bounds.x1 = stereo_eye->right / (aspect * field_of_view_tangent);
 		eye_bounds.y0 = -stereo_eye->down / field_of_view_tangent;

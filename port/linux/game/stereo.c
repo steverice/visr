@@ -5,7 +5,9 @@ The frame's stereo state (port/linux/src/halo_stereo.h): which stereo mode
 display.stereo asks for, and, in stereo, where the two eyes are. In HEAD
 mode the host's Compositor frame supplies the eyes and the head's turn
 (port/ios/host/host_stereo.m), which drives the player's look: the head turns
-the view, the right stick turns the body.
+the view, the right stick turns the body. In SCREEN mode it supplies the
+eyes alone, through the theater screen as a window: the look stays the
+stick's, as in mono.
 */
 
 #include <math.h>
@@ -100,7 +102,7 @@ void halo_stereo_frame_begin(void)
 			e->offset[0] = eye == 0 ? -SIDE_BY_SIDE_OFFSET : SIDE_BY_SIDE_OFFSET;
 			e->left = e->right = e->up = e->down = SIDE_BY_SIDE_TANGENT;
 		}
-	} else if (stereo_mode == HALO_STEREO_HEAD) {
+	} else if (stereo_mode == HALO_STEREO_HEAD || stereo_mode == HALO_STEREO_SCREEN) {
 #ifdef HALO_IOS
 		host_stereo_frame(&stereo_frame);
 #endif
@@ -109,12 +111,14 @@ void halo_stereo_frame_begin(void)
 			memset(&stereo_frame, 0, sizeof(stereo_frame));
 			stereo_frame.mode = stereo_mode;
 		}
-		/* the look takes this frame's turn in next frame (player_control
-		runs before the render); a turn it never took is dropped */
-		head_pending_yaw = stereo_frame.head_yaw;
-		head_pending_pitch = stereo_frame.head_pitch;
+		/* HEAD mode: the look takes this frame's turn in next frame
+		(player_control runs before the render); a turn it never took is
+		dropped. SCREEN mode has none */
+		if (stereo_mode == HALO_STEREO_HEAD) {
+			head_pending_yaw = stereo_frame.head_yaw;
+			head_pending_pitch = stereo_frame.head_pitch;
+		}
 	}
-	/* SCREEN stays mono (eye_count 0) until the host supplies its eyes */
 }
 
 const struct halo_stereo_frame *halo_stereo_frame(void)
