@@ -94,6 +94,12 @@ static const struct config_setting config_settings[] =
 	{ "display.effect_resolution", _config_boolean, "true", "HALO_EFFECT_RESOLUTION", _environment_value, _platform_all,
 		"Draw the active-camouflage effect at the screen's resolution rather than the\n"
 		"Xbox's 320x240." },
+	{ "display.mirror_resolution", _config_string, "\"half\"", "HALO_MIRROR_RESOLUTION", _environment_value, _platform_all,
+		"With display.effect_resolution: the reflections in mirror floors and the\n"
+		"active camouflage (both drawn into the Xbox's 320x240 target) at \"half\"\n"
+		"the screen's resolution each way, as the Xbox had them, or \"full\"\n"
+		"(sharper reflections; up to a whole second render of the scene's pixels\n"
+		"where a mirror shows)." },
 	{ "display.compressed_textures", _config_boolean, "true", "HALO_COMPRESSED_TEXTURES", _environment_value, _platform_ios,
 		"With the Metal renderer, keep the game's DXT textures compressed on the GPU\n"
 		"where it supports them (BC1-3): a quarter to an eighth of the memory, and\n"

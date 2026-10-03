@@ -79,6 +79,7 @@ DEFAULTS = {
     "display.high_res_hud": "true",
     "display.high_res_text": "true",
     "display.immersive": "false",
+    "display.mirror_resolution": '"half"',
     "display.theater_width": "60.0",
     "display.theater_distance": "4.0",
     "display.theater_environment": '"passthrough"',

@@ -509,19 +509,23 @@ static void offscreen_target_scale(unsigned long width, unsigned long height, DW
 {
 	static long shadow_size = -1;
 	static int effect_resolution = -1;
+	static float effect_factor = 1.0f;
 
 	if (shadow_size < 0)
 	{
 		shadow_size = config_integer("display.shadow_map_size");
 		shadow_size = shadow_size < 128 ? 128 : shadow_size > 2048 ? 2048 : shadow_size;
 		effect_resolution = config_boolean("display.effect_resolution");
+		/* display.mirror_resolution = "full": the 320x240 target at the
+		screen's full resolution, twice its Xbox proportion each way */
+		effect_factor = !strcmp(config_string("display.mirror_resolution"), "full") ? 2.0f : 1.0f;
 	}
 	if (width == 128 && height == 128 && (format == D3DFMT_R5G6B5 || format == D3DFMT_LIN_R5G6B5))
 		scale[0] = scale[1] = (float)shadow_size / 128.0f;
 	else if (width == 320 && height == 240 && effect_resolution)
 	{
-		scale[0] = screen_scale[1];
-		scale[1] = screen_scale[1];
+		scale[0] = screen_scale[1] * effect_factor;
+		scale[1] = screen_scale[1] * effect_factor;
 	}
 }
 
