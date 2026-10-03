@@ -59,6 +59,7 @@ extern long game_time_get(void);
 extern float game_time_get_tick_fraction(void);
 /* port/linux/game/input_replay_scenario.c */
 extern unsigned char input_replay_main_menu_loaded(void);
+extern void input_replay_skip_cinematic(void);
 /* xbox_kernel.c */
 double halo_frame_trace_milliseconds(void);
 
@@ -397,6 +398,13 @@ void input_replay_tick_action(void *action)
 		if (replay.next_action < replay.action_count &&
 			!compare_action_keys(&replay.actions[replay.next_action], replay.segment, tick))
 			memcpy(action, replay.actions[replay.next_action].words, sizeof(words));
+		/* past the end of this segment's actions: the recording went back to a
+		checkpoint here. When that was a cinematic skip, the moment the
+		cinematic can be skipped depends on loading (its script waits for the
+		map's sounds and textures), so skip it as soon as it can be */
+		else if (replay.next_action < replay.action_count &&
+			replay.actions[replay.next_action].segment > replay.segment)
+			input_replay_skip_cinematic();
 		/* the replay ends a little after the last recorded action, in the
 		action's own segment, whenever the controller's timeline puts it */
 		if (compare_action_keys(&replay.actions[replay.action_count - 1], replay.segment,
