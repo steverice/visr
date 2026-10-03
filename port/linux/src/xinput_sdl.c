@@ -50,6 +50,35 @@ drive the controller.
 extern unsigned char console_is_active(void);
 /* input_replay.c */
 void input_replay_filter(XINPUT_GAMEPAD *pad);
+/* d3d8_device.c */
+void halo_render_scale_step(int direction);
+
+/* debug.render_scale_dpad: while Back is held, the D-pad's left and right
+step the render scale down and up, and the game doesn't see the D-pad */
+static void render_scale_dpad(XINPUT_GAMEPAD *pad)
+{
+	static int enabled = -1;
+	static WORD previous;
+	WORD pressed;
+
+	if (enabled < 0)
+		enabled = config_boolean("debug.render_scale_dpad");
+	if (!enabled)
+		return;
+	if (!(pad->wButtons & XINPUT_GAMEPAD_BACK))
+	{
+		previous = 0;
+		return;
+	}
+	pressed = pad->wButtons & ~previous;
+	previous = pad->wButtons;
+	if (pressed & XINPUT_GAMEPAD_DPAD_LEFT)
+		halo_render_scale_step(-1);
+	if (pressed & XINPUT_GAMEPAD_DPAD_RIGHT)
+		halo_render_scale_step(1);
+	pad->wButtons &= (WORD)~(XINPUT_GAMEPAD_DPAD_UP | XINPUT_GAMEPAD_DPAD_DOWN | XINPUT_GAMEPAD_DPAD_LEFT |
+		XINPUT_GAMEPAD_DPAD_RIGHT);
+}
 
 /* ---------- device tables */
 
@@ -557,6 +586,7 @@ DWORD WINAPI XInputGetState(HANDLE device, PXINPUT_STATE state)
 			stick_aimed_ms = SDL_GetTicks();
 			pthread_mutex_unlock(&mouse_lock);
 		}
+		render_scale_dpad(&state->Gamepad);
 		input_replay_filter(&state->Gamepad);
 	}
 	else if (port < count)

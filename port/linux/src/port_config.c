@@ -229,6 +229,10 @@ static const struct config_setting config_settings[] =
 		"The Discord application internet play invites go through while the\n"
 		"Discord desktop client runs; empty for none." },
 
+	{ "debug.render_scale_dpad", _config_boolean, "false", "HALO_RENDER_SCALE_DPAD", _environment_value, _platform_ios,
+		"While Back is held, the D-pad's left and right step the render scale\n"
+		"(display.render_scale) down and up by 0.05 as the game runs, shown on\n"
+		"screen for two seconds; the game doesn't see the D-pad meanwhile." },
 	{ "debug.input_record", _config_string, "\"\"", "HALO_INPUT_RECORD", _environment_value, _platform_all,
 		"Record controller 1 while a map plays, to <name>.input in the data folder\n"
 		"(port/linux/src/input_replay.c); empty records nothing." },

@@ -546,8 +546,12 @@ static real fraction_for_display(real fraction)
 	return PIN(fraction, 0.0f, 1.0f);
 }
 
+/* d3d8_device.c: debug.render_scale_dpad's readout */
+void halo_render_scale_overlay(void);
+
 void render_interpolation_frame_begin(void)
 {
+	halo_render_scale_overlay();
 	interpolation_rendering = halo_interpolation_enabled();
 	interpolation_frame++;
 	interpolation_fraction = fraction_for_display(game_time_get_tick_fraction());

@@ -89,6 +89,48 @@ static long ui_offset;
 static int32_t screen_maximum_texture_size = 8192;
 #define UI_OFFSET ((int32_t)ui_offset)
 
+/* debug.render_scale_dpad: the render scale changed while the game runs
+(halo_render_scale_step), in place of display.render_scale; negative until
+first changed */
+static double render_scale_live = -1.0;
+
+/* source/render/render_debug.c: text the frame's debug pass draws */
+void render_debug_string(unsigned char immediate, const char *string);
+/* xbox_kernel.c */
+double halo_frame_trace_milliseconds(void);
+/* when the render scale last changed, for its readout */
+static double render_scale_changed_milliseconds = -1.0;
+
+/* the render scale on screen for two seconds after it changes; called as
+each frame begins (render_interpolation.c), so the frame's debug pass draws
+it (the console's lines show only while the console is open) */
+void halo_render_scale_overlay(void)
+{
+	char text[64];
+
+	if (render_scale_changed_milliseconds < 0.0 ||
+		halo_frame_trace_milliseconds() - render_scale_changed_milliseconds > 2000.0)
+		return;
+	snprintf(text, sizeof(text), "render scale %.2f", render_scale_live);
+	render_debug_string(0, text);
+}
+
+/* one step (0.05) up or down of the render scale, 0.25 to 1.0; the next
+frame's halo_screen_commit draws at it (xinput_sdl.c: hold Back and press the
+D-pad left or right) */
+void halo_render_scale_step(int direction)
+{
+	double scale = render_scale_live >= 0.0 ? render_scale_live : config_real("display.render_scale");
+
+	if (scale <= 0.0 || scale > 1.0)
+		scale = 1.0;
+	scale = floor(scale * 20.0 + 0.5) / 20.0 + (direction > 0 ? 0.05 : -0.05);
+	scale = scale < 0.25 ? 0.25 : scale > 1.0 ? 1.0 : scale;
+	render_scale_live = scale;
+	render_scale_changed_milliseconds = halo_frame_trace_milliseconds();
+	platform_log("render scale %.2f", scale);
+}
+
 static void screen_mode_choose(long *width, float scale[2])
 {
 #ifdef HALO_ILP32
@@ -119,9 +161,9 @@ static void screen_mode_choose(long *width, float scale[2])
 	{
 		/* display.render_scale: a fraction of the display's pixels each way
 		(display.upscaler scales the picture back up) */
-		double render_scale = config_real("display.render_scale");
+		double render_scale = render_scale_live >= 0.0 ? render_scale_live : config_real("display.render_scale");
 
-		if (render_scale > 0.25 && render_scale < 1.0)
+		if (render_scale >= 0.25 && render_scale < 1.0)
 		{
 			drawable_width = (int)lround(drawable_width * render_scale);
 			drawable_height = (int)lround(drawable_height * render_scale);
