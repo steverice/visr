@@ -6,6 +6,12 @@
 /* draws picture on the theater screen for the Compositor's open frame (or the
 next one) */
 void host_theater_present(id<MTLCommandQueue> queue, id<MTLTexture> picture);
+/* stereo on the screen (display.stereo = "screen"): each eye's picture on the
+screen for its view (view 0 the left eye), the HUD (nil: none) blended over
+each, for the frame host_stereo_frame opened. The screen's depth is the
+Compositor's, as in mono: the picture is on a flat surface in the room */
+void host_theater_present_eyes(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLTexture> right,
+	id<MTLTexture> hud);
 #endif
 
 #if defined(__OBJC__) && !defined(__swift__)
@@ -27,6 +33,11 @@ size_t host_theater_drawable_count(void);
 anchored) and whether ARKit placed it; either pointer may be NULL */
 cp_drawable_t host_theater_drawable(size_t index, simd_float4x4 *origin_from_device, int *anchored);
 void host_theater_frame_end(void);
+/* the screen's pose in the room for the open frame's drawable (placed first
+if a present hasn't placed it yet) and its half width and half height in
+meters, at the picture's shape (host_theater_picture_size); the screen's
+center is its origin, x right, y up and z toward the viewer */
+void host_theater_screen(size_t index, simd_float4x4 *origin_from_screen, simd_float2 *half_size);
 #endif
 
 /* reads display.theater_* from config.toml (host_config.c) */

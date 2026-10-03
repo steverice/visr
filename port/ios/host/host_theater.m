@@ -38,7 +38,7 @@ static ar_session_t session;
 static ar_world_tracking_provider_t world_tracking;
 static BOOL screen_placed;
 static simd_float4x4 origin_from_screen;
-static id<MTLRenderPipelineState> pipeline;
+static id<MTLRenderPipelineState> pipeline, hud_pipeline;
 static MTLPixelFormat pipeline_color, pipeline_depth;
 static id<MTLDepthStencilState> depth_state;
 static id<MTLSamplerState> sampler;
@@ -178,6 +178,19 @@ static NSString *const shader_source =
 	"	if (u.decode_srgb)\n"
 	"		color = select(pow((color + 0.055) / 1.055, 2.4), color / 12.92, color <= 0.04045);\n"
 	"	return float4(color, 1);\n"
+	"}\n"
+	/* stereo on the screen: the HUD over the eye's picture, both display-
+	encoded, as the game would have blended it into its back buffer. The HUD
+	layer clears to 0,0,0,0, so what the game draws into it is premultiplied
+	(host_stereo.m) */
+	"fragment float4 theater_hud_fragment(screen_vertex in [[stage_in]], texture2d<float> picture [[texture(0)]],\n"
+	"	texture2d<float> hud [[texture(1)]], sampler linear [[sampler(0)]], constant screen_uniforms &u [[buffer(0)]])\n"
+	"{\n"
+	"	float4 over = hud.sample(linear, in.coordinate);\n"
+	"	float3 color = saturate(over.rgb + picture.sample(linear, in.coordinate).rgb * (1 - over.a));\n"
+	"	if (u.decode_srgb)\n"
+	"		color = select(pow((color + 0.055) / 1.055, 2.4), color / 12.92, color <= 0.04045);\n"
+	"	return float4(color, 1);\n"
 	"}\n";
 
 struct screen_uniforms
@@ -206,9 +219,13 @@ static BOOL prepare(id<MTLDevice> device, MTLPixelFormat color, MTLPixelFormat d
 	if (depth == MTLPixelFormatDepth32Float_Stencil8)
 		descriptor.stencilAttachmentPixelFormat = depth;
 	pipeline = [device newRenderPipelineStateWithDescriptor:descriptor error:&error];
-	if (!pipeline)
+	descriptor.fragmentFunction = [library newFunctionWithName:@"theater_hud_fragment"];
+	if (pipeline)
+		hud_pipeline = [device newRenderPipelineStateWithDescriptor:descriptor error:&error];
+	if (!pipeline || !hud_pipeline)
 	{
 		host_logf(HOST_LOG_ERROR, "theater: the screen's pipeline failed: %s", error.description.UTF8String);
+		pipeline = hud_pipeline = nil;
 		return NO;
 	}
 	pipeline_color = color;
@@ -244,6 +261,24 @@ static void place_screen(simd_float4x4 origin_from_device)
 		{ position.x + forward.x * screen_distance, position.y, position.z + forward.z * screen_distance, 1.0f },
 	} };
 	screen_placed = YES;
+}
+
+/* the screen's pose for the open frame's drawable: placed in front of the
+device the first time, and every frame where nothing tracks the room */
+static simd_float4x4 screen_pose(size_t index)
+{
+	if (!screen_placed || (!open_anchored[index] && !world_tracking))
+		place_screen(open_origin_from_device[index]);
+	return origin_from_screen;
+}
+
+void host_theater_screen(size_t index, simd_float4x4 *pose, simd_float2 *half_size)
+{
+	int width, height;
+
+	host_theater_picture_size(&width, &height);
+	*pose = screen_pose(index);
+	*half_size = (simd_float2){ screen_width / 2.0f, screen_width / 2.0f * (float)height / (float)width };
 }
 
 int host_theater_frame_begin(int fresh)
@@ -348,12 +383,15 @@ void host_theater_frame_end(void)
 	frame_drop();
 }
 
-void host_theater_present(id<MTLCommandQueue> queue, id<MTLTexture> picture)
+/* the pictures on the screen for the open frame (or the next one): view 0's
+the left one, the others the right; the HUD, if any, over each */
+static void present_pictures(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLTexture> right,
+	id<MTLTexture> hud)
 {
 	if (@available(visionOS 26.0, *))
 	{
-		/* the frame head-tracked stereo opened at the game's frame begin, when
-		this frame presents mono after all (a menu, a load), or the next one */
+		/* the frame stereo opened at the game's frame begin (in mono, when
+		this frame presents mono after all: a menu, a load), or the next one */
 		if (!host_theater_frame_begin(0) || !host_theater_frame_ready())
 			return;
 		size_t count = open_count;
@@ -361,10 +399,10 @@ void host_theater_present(id<MTLCommandQueue> queue, id<MTLTexture> picture)
 		{
 			cp_drawable_t drawable = open_drawables[index];
 			simd_float4x4 origin_from_device = open_origin_from_device[index];
-			BOOL anchored = open_anchored[index];
 
-			if (!screen_placed || (!anchored && !world_tracking))
-				place_screen(origin_from_device);
+			/* placed now unless stereo on the screen placed it at the frame's
+			begin, to put the eyes' frusta through it */
+			screen_pose(index);
 			id<MTLTexture> first = cp_drawable_get_color_texture(drawable, 0);
 			if (!prepare(queue.device, first.pixelFormat, cp_drawable_get_depth_texture(drawable, 0).pixelFormat))
 			{
@@ -382,6 +420,7 @@ void host_theater_present(id<MTLCommandQueue> queue, id<MTLTexture> picture)
 				id<MTLTexture> color = cp_drawable_get_color_texture(drawable, texture);
 				id<MTLTexture> depth = cp_drawable_get_depth_texture(drawable, texture);
 				MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
+				id<MTLTexture> picture = view_index == 0 ? left : right;
 				struct screen_uniforms uniforms;
 				simd_float4x4 origin_from_view = simd_mul(origin_from_device, cp_view_get_transform(view));
 				simd_float4x4 projection = cp_drawable_compute_projection(drawable,
@@ -414,11 +453,13 @@ void host_theater_present(id<MTLCommandQueue> queue, id<MTLTexture> picture)
 					color.pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB;
 				id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
 				[encoder setViewport:cp_view_texture_map_get_viewport(map)];
-				[encoder setRenderPipelineState:pipeline];
+				[encoder setRenderPipelineState:hud ? hud_pipeline : pipeline];
 				[encoder setDepthStencilState:depth_state];
 				[encoder setVertexBytes:&uniforms length:sizeof(uniforms) atIndex:0];
 				[encoder setFragmentBytes:&uniforms length:sizeof(uniforms) atIndex:0];
 				[encoder setFragmentTexture:picture atIndex:0];
+				if (hud)
+					[encoder setFragmentTexture:hud atIndex:1];
 				[encoder setFragmentSamplerState:sampler atIndex:0];
 				[encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
 				[encoder endEncoding];
@@ -427,7 +468,23 @@ void host_theater_present(id<MTLCommandQueue> queue, id<MTLTexture> picture)
 			[commands commit];
 		}
 		host_theater_frame_end();
-		if (theater_frames++ == 0)
+		if (left == right && theater_frames++ == 0)
 			host_logf(HOST_LOG_INFO, "theater: first frame on the screen (%zu drawable%s)", count, count == 1 ? "" : "s");
 	}
+}
+
+void host_theater_present(id<MTLCommandQueue> queue, id<MTLTexture> picture)
+{
+	present_pictures(queue, picture, picture, nil);
+}
+
+void host_theater_present_eyes(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLTexture> right,
+	id<MTLTexture> hud)
+{
+	static unsigned long presents;
+
+	if (presents++ == 0)
+		host_logf(HOST_LOG_INFO, "theater: first stereo frame on the screen: eyes %lux%lu, %s",
+			(unsigned long)left.width, (unsigned long)left.height, hud ? "a HUD" : "no HUD");
+	present_pictures(queue, left, right, hud);
 }
