@@ -137,6 +137,14 @@ static const struct config_setting config_settings[] =
 		"Apple Vision Pro: \"off\" (flat), \"head\" (in stereo, the head turns the view),\n"
 		"\"screen\" (in stereo on the theater screen), or \"side_by_side\" (a debug view\n"
 		"of both eyes in the window)." },
+	{ "display.film_depth_share", _config_real, "0.25", "HALO_FILM_DEPTH_SHARE", _environment_value, _platform_ios,
+		"With display.stereo: how deep a cutscene (a 3D film on the screen) looks:\n"
+		"how far behind the screen the far distance sits, as a share of your eye\n"
+		"separation (0.05 to 0.9; more is deeper). Read at start." },
+	{ "display.film_convergence", _config_real, "1.75", "HALO_FILM_CONVERGENCE", _environment_value, _platform_ios,
+		"With display.stereo: in a cutscene, what lies this many meters ahead of\n"
+		"the camera sits on the screen's surface; nearer comes out in front of it\n"
+		"(0.3 to 10; less pushes faces back behind the screen). Read at start." },
 	{ "input.turn", _config_string, "\"snap\"", "HALO_TURN", _environment_value, _platform_ios,
 		"With display.stereo = \"head\": how the right stick turns the view: \"snap\"\n"
 		"(default; a flick turns input.snap_angle at once), \"smooth\" (steadily, at\n"

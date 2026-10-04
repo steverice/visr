@@ -97,6 +97,14 @@ fraction (render.c sets it before the eyes; zero until then), which the
 host's room tint takes as well, so the two move in step */
 void halo_stereo_set_fade(const float rgb_intensity[4]);
 void halo_stereo_fade(float rgb_intensity[4]);
+/* The film's and the 3D TV's shared mapping (stereo.c has the math): from
+the depth share (infinity's parallax as a share of the viewer's eye
+separation), the convergence (meters ahead of the camera on the screen's
+surface), the viewer's eye separation and the screen's half width (one unit
+for both), the picture's vertical half tangent and an optional lean (world
+units, right and up), each eye's offset and frustum */
+void halo_stereo_tv_eyes(float depth_share, float convergence_meters, float viewer_separation, float half_width,
+	float vertical_tangent, const float lean[2], struct halo_stereo_eye eyes[2]);
 /* port/linux/game/cinematic_screen.c: 1 while the letterbox is in; while
 the camera is scripted (the script's camera_control); while it's third
 person */

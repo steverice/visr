@@ -15,10 +15,13 @@ scripted camera and no letterbox (the script's camera_control), and a
 third-person camera (third_person_on_screen): a camera the head doesn't
 steer is easier to watch on a screen. Only the letterbox narrows the view to
 its inside (main.c) and brings bars in for titles (cinematics.c); the others
-keep the game's 16:9 framing. The film is not the window's true 1:1:
-the cinematic camera's own field of view, framed on the letterbox's inside
-(main.c's set_window_camera_values), fills the screen, and the head neither
-steers it nor moves its eyes (film_frusta below has the mapping). HEAD mode
+keep the game's 16:9 framing. The film is not the window's true 1:1: the cinematic
+camera's own field of view, framed on the letterbox's inside (main.c's
+set_window_camera_values), fills the screen, and the head neither steers it
+nor moves its eyes. Its depth is the mapping the film shares with SCREEN
+gameplay (halo_stereo_tv_eyes): how far behind the screen infinity sits and
+what distance lies on the screen's surface, display.film_depth_share and
+display.film_convergence. HEAD mode
 asks the host for SCREEN eyes meanwhile, so the frame is SCREEN for
 everyone downstream: the host draws it on the screen, the head's turn
 stays out of the look and the camera, and the render's SCREEN plane shift
@@ -53,9 +56,15 @@ void host_stereo_frame(struct halo_stereo_frame *frame);
 
 /* one world unit in meters */
 #define METERS_PER_UNIT 3.048f
-/* the film's eyes are this share of the viewer's apart: the screen's own
-distance already reads as depth (start small; tune on the device) */
-#define FILM_SEPARATION_SHARE 0.25f
+/* the ranges of the film's mapping (halo_stereo_tv_eyes; its defaults,
+0.25 and 1.75 m, are port_config.c's): infinity this share of the viewer's
+eye separation behind the screen (display.film_depth_share), never wider
+than the eyes, and this many meters ahead of the camera on the screen's
+surface (display.film_convergence) */
+#define DEPTH_SHARE_MIN 0.05f
+#define DEPTH_SHARE_MAX 0.9f
+#define CONVERGENCE_MIN 0.3f
+#define CONVERGENCE_MAX 10.0f
 /* the eyes' separation when the views don't give one (the simulator has
 one view), in meters */
 #define FILM_DEFAULT_SEPARATION 0.064f
@@ -65,7 +74,9 @@ one view), in meters */
 side): the theater's default, 60 degrees across at 4 m */
 #define FILM_DEFAULT_HALF_WIDTH 2.309f
 /* the default 70-degree camera's vertical half tangent in the film:
-0.75 * 0.75 * 0.85 * tan(35 degrees) */
+0.75 * 0.75 * 0.85 * tan(35 degrees). A placeholder for the frame's begin
+only: render.c's eye loop gives the camera's own tangent
+(halo_stereo_film_frusta) before anything reads the eyes */
 #define FILM_DEFAULT_VERTICAL_TANGENT 0.335f
 
 static struct halo_stereo_frame stereo_frame;
@@ -117,10 +128,13 @@ before the next */
 
 static float z_near_world, z_far_world;
 
-/* this frame (and the last) is the 3D film; the screen's half width in
-world units */
+/* this frame (and the last) is the 3D film; the viewer's eye separation
+and the screen's half width, in world units */
 static int film_frame, film_last;
-static float film_half_width;
+static float film_viewer_separation, film_half_width;
+/* the film's mapping, read once (display.film_depth_share,
+display.film_convergence in meters); negative until read */
+static float film_depth_share = -1.0f, film_convergence;
 /* the script fade the eyes draw and the room takes this frame
 (halo_stereo_set_fade) */
 static float frame_fade[4];
@@ -148,7 +162,7 @@ static float clamped_setting(const char *name, float value, float minimum, float
 	if (clamped != value || value != value) {
 		if (value != value)
 			clamped = minimum;
-		platform_log("stereo: %s %.1f is outside %.0f to %.0f %s; using %.1f", name, value, minimum, maximum,
+		platform_log("stereo: %s %g is outside %g to %g %s; using %g", name, value, minimum, maximum,
 			unit, clamped);
 	}
 	return clamped;
@@ -179,29 +193,34 @@ static void turn_settings(void)
 	comfort_vignette = config_boolean("input.comfort_vignette") != 0;
 }
 
+/* reads the film's mapping settings, once */
+static void film_settings(void)
+{
+	if (film_depth_share >= 0.0f)
+		return;
+	film_depth_share = clamped_setting("display.film_depth_share", (float)config_real("display.film_depth_share"),
+		DEPTH_SHARE_MIN, DEPTH_SHARE_MAX, "of the eye separation");
+	film_convergence = clamped_setting("display.film_convergence", (float)config_real("display.film_convergence"),
+		CONVERGENCE_MIN, CONVERGENCE_MAX, "meters");
+}
+
 /* the film's eyes for this frame, from the viewer's separation and the
-screen's half width (world units): level, at the camera, FILM_SEPARATION_SHARE
-of the viewer's apart; their frusta come from the camera at the render
+screen's half width (world units): level, at the camera, by the film's
+mapping; the camera's own tangent sets them at the render
 (halo_stereo_film_frusta), the default camera's until then */
 static void film_begin(float viewer_separation, float half_width)
 {
-	float film_separation = FILM_SEPARATION_SHARE * viewer_separation;
-	int eye;
-
+	film_settings();
+	film_viewer_separation = viewer_separation;
 	film_half_width = half_width > 0.0f ? half_width : FILM_DEFAULT_HALF_WIDTH / METERS_PER_UNIT;
-	for (eye = 0; eye < 2; eye++) {
-		struct halo_stereo_eye *e = &stereo_frame.eyes[eye];
-
-		e->offset[0] = (eye == 0 ? -0.5f : 0.5f) * film_separation;
-		e->offset[1] = 0.0f;
-		e->offset[2] = 0.0f;
-	}
 	film_frame = 1;
 	film_frusta(FILM_DEFAULT_VERTICAL_TANGENT);
 	if (!film_last || film_reason != film_reason_logged)
-		platform_log("stereo: %s, as a 3D film on the screen: eyes %.1f mm apart (of the viewer's %.1f mm), "
-			"the screen %.2f m wide", film_reasons[film_reason], film_separation * METERS_PER_UNIT * 1000.0f,
-			viewer_separation * METERS_PER_UNIT * 1000.0f, 2.0f * film_half_width * METERS_PER_UNIT);
+		platform_log("stereo: %s, as a 3D film on the screen: infinity %.2f of the viewer's %.1f mm behind the "
+			"screen, %.2f m ahead on its surface (eyes %.1f mm apart at the default camera), the screen %.2f m wide",
+			film_reasons[film_reason], film_depth_share, viewer_separation * METERS_PER_UNIT * 1000.0f,
+			film_convergence, (stereo_frame.eyes[1].offset[0] - stereo_frame.eyes[0].offset[0]) * METERS_PER_UNIT *
+			1000.0f, 2.0f * film_half_width * METERS_PER_UNIT);
 	film_reason_logged = film_reason;
 }
 
@@ -339,35 +358,51 @@ void halo_stereo_fade(float rgb_intensity[4])
 	memcpy(rgb_intensity, frame_fade, sizeof(frame_fade));
 }
 
-/* The 3D film's frusta. The cinematic camera is the center of a pair of
-eyes s apart in the world (FILM_SEPARATION_SHARE of the viewer's), level
-with each other whatever the head does, and converged at the distance C
-where the camera's view is as wide as the screen at the world's scale:
-C = w / T, for the screen's half width w (world units) and the film's
-horizontal half tangent T (16:9 at the camera's vertical tangent, which
-main.c narrows to the letterbox's inside during a cutscene). An eye x to the side keeps its
-frustum's edges on the center frustum's at that distance:
-	left = T (1 + x / w)   right = T (1 - x / w)   up = down = vertical
-So the film fills the screen exactly as the cinematic camera frames it, what
-is C ahead of the camera lies on the screen's surface at its true size, and
-on the screen the parallax of something z ahead is s * 3.048 m (1 - C / z):
-toward a quarter of the viewer's separation behind the screen at infinity,
-and in front of it nearer than C (at the default screen, 1.3 units). The
-eyes sit at the camera (no offset back), so the render keeps the camera's
-near and far planes. */
-static void film_frusta(float vertical_tangent)
+/* The 3D film's and the 3D TV's mapping (the stereo spec's "One mapping
+for the film and the 3D TV"). The camera is the center of two eyes s apart
+along its right vector, level whatever the head does, each with a frustum
+skewed so the picture's rectangle C ahead of the camera (C_w world units)
+is the same for both: that distance lies on the screen's surface.
+	s     = sigma e T C_w / w
+	left  = T + x / C_w      right = T - x / C_w
+	up    = V - y / C_w      down  = V + y / C_w
+for the eye at x = -+s/2 (plus the lean) and y (the lean), the picture's
+half tangents V and T = 16/9 V, the viewer's eye separation e and the
+screen's half width w (any one unit for both). On the screen, something z
+ahead has a parallax of sigma e (1 - C_w / z): infinity sigma e behind the
+screen, at any field of view (s narrows with T), nearer than C in front.
+The eyes sit at the camera (no offset back), so the render keeps the
+camera's near and far planes. */
+void halo_stereo_tv_eyes(float depth_share, float convergence_meters, float viewer_separation, float half_width,
+	float vertical_tangent, const float lean[2], struct halo_stereo_eye eyes[2])
 {
 	float horizontal_tangent = vertical_tangent * FILM_ASPECT;
+	float convergence = convergence_meters / METERS_PER_UNIT;
+	float separation = half_width > 0.0f ?
+		depth_share * viewer_separation * horizontal_tangent * convergence / half_width : 0.0f;
 	int eye;
 
 	for (eye = 0; eye < 2; eye++) {
-		struct halo_stereo_eye *e = &stereo_frame.eyes[eye];
-		float share = e->offset[0] / film_half_width;
+		struct halo_stereo_eye *e = &eyes[eye];
+		float x = (eye == 0 ? -0.5f : 0.5f) * separation + (lean ? lean[0] : 0.0f);
+		float y = lean ? lean[1] : 0.0f;
 
-		e->left = horizontal_tangent * (1.0f + share);
-		e->right = horizontal_tangent * (1.0f - share);
-		e->up = e->down = vertical_tangent;
+		e->offset[0] = x;
+		e->offset[1] = y;
+		e->offset[2] = 0.0f;
+		e->left = horizontal_tangent + x / convergence;
+		e->right = horizontal_tangent - x / convergence;
+		e->up = vertical_tangent - y / convergence;
+		e->down = vertical_tangent + y / convergence;
 	}
+}
+
+/* the film's eyes at a camera's vertical tangent: the film's mapping, no
+lean */
+static void film_frusta(float vertical_tangent)
+{
+	halo_stereo_tv_eyes(film_depth_share, film_convergence, film_viewer_separation, film_half_width,
+		vertical_tangent, NULL, stereo_frame.eyes);
 }
 
 void halo_stereo_film_frusta(float vertical_tangent)

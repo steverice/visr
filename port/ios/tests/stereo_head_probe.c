@@ -9,7 +9,11 @@ in roll while the head pans is the bug from headset session 1.
 And the right stick's turn (input.turn): snaps by default, smooth turning at
 input.smooth_turn_speed whatever the frame rate, none at all for "off", and
 the comfort vignette's easing. stereo.c is included, not linked, so each
-check can read the settings afresh. */
+check can read the settings afresh.
+
+And the film's (a cutscene on the screen): the mapping it shares with the
+3D TV (halo_stereo_tv_eyes) puts infinity a share of the eye separation
+behind the screen and the convergence distance on its surface. */
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -28,6 +32,8 @@ static double setting_snap_angle = 30.0, setting_smooth_turn_speed = 120.0;
 static int setting_comfort_vignette;
 static int unrecognized_logged;
 static char last_log[256];
+/* the film's settings */
+static double setting_film_depth_share = 0.25, setting_film_convergence = 1.75;
 
 /* stereo.c's imports */
 const char *config_string(const char *name)
@@ -42,6 +48,10 @@ double config_real(const char *name)
 {
 	if (!strcmp(name, "input.smooth_turn_speed"))
 		return setting_smooth_turn_speed;
+	if (!strcmp(name, "display.film_depth_share"))
+		return setting_film_depth_share;
+	if (!strcmp(name, "display.film_convergence"))
+		return setting_film_convergence;
 	return setting_snap_angle;
 }
 int config_boolean(const char *name) { (void)name; return setting_comfort_vignette; }
@@ -453,6 +463,68 @@ static void pole_crossing(void)
 	}
 }
 
+/* where something at (x, y, z) in the camera's frame (right, up, ahead;
+world units) lands on a screen of half width w, as an eye of the mapping
+sees it: its tangents from the eye, placed in the eye's frustum, which spans
+the screen */
+static void on_screen(const struct halo_stereo_eye *e, float w, float aspect, const float point[3], float at[2])
+{
+	float tx = (point[0] - e->offset[0]) / point[2], ty = (point[1] - e->offset[1]) / point[2];
+
+	at[0] = -w + 2.0f * w * (tx + e->left) / (e->left + e->right);
+	at[1] = -w / aspect + 2.0f * (w / aspect) * (ty + e->down) / (e->up + e->down);
+}
+
+static void film_mapping(void)
+{
+	const float share = 0.25f, convergence = 1.75f, separation = 0.064f / 3.048f, w = 2.309f / 3.048f;
+	const float vertical = 0.335f, aspect = 16.0f / 9.0f, horizontal = vertical * aspect;
+	const float c = convergence / 3.048f, lean[2] = { 0.01f, -0.02f };
+	struct halo_stereo_eye eyes[2];
+	float worst = 0.0f;
+	int k;
+
+	printf("the film's mapping:\n");
+	halo_stereo_tv_eyes(share, convergence, separation, w, vertical, NULL, eyes);
+	check(fabsf(eyes[0].left - eyes[1].right) < 1e-6f && fabsf(eyes[0].right - eyes[1].left) < 1e-6f &&
+		eyes[0].up == eyes[0].down && fabsf(eyes[0].offset[0] + eyes[1].offset[0]) < 1e-7f,
+		"the eyes mirror each other");
+	/* parallax (right eye's place minus the left's) against share e (1 - C / z), at
+	any field of view, with and without a lean */
+	for (k = 0; k < 2; k++) {
+		const float *with = k ? lean : NULL;
+		float distances[] = { c * 0.5f, c, c * 2.0f, c * 8.0f, 1e5f }, v;
+		int d;
+
+		for (v = 0.2f; v < 0.8f; v += 0.29f) {
+			halo_stereo_tv_eyes(share, convergence, separation, w, v, with, eyes);
+			for (d = 0; d < 5; d++) {
+				float z = distances[d], point[3] = { 0.3f * z * v, -0.2f * z * v, z }, left[2], right[2];
+				float expected = share * separation * (1.0f - c / z);
+
+				on_screen(&eyes[0], w, aspect, point, left);
+				on_screen(&eyes[1], w, aspect, point, right);
+				worst = fmaxf(worst, fabsf((right[0] - left[0]) - expected) / (share * separation));
+				worst = fmaxf(worst, fabsf(right[1] - left[1]) / (share * separation));
+			}
+		}
+	}
+	printf("  worst parallax error %.2e of infinity's\n", worst);
+	check(worst < 1e-3f, "infinity share * e behind the screen, C on it, nearer in front, level");
+	/* at the convergence where the camera's view is as wide as the screen, the
+	eyes are share * e apart */
+	halo_stereo_tv_eyes(share, w / horizontal * 3.048f, separation, w, vertical, NULL, eyes);
+	check(fabsf((eyes[1].offset[0] - eyes[0].offset[0]) - share * separation) < 1e-6f,
+		"s = share * e at C = w / T");
+	/* a lean right and down moves both eyes so, and skews their frusta the
+	other way: the picture's rectangle at C stays put */
+	halo_stereo_tv_eyes(share, convergence, separation, w, vertical, lean, eyes);
+	check(eyes[0].offset[0] + eyes[1].offset[0] > 0.0f && eyes[0].offset[1] < 0.0f &&
+		eyes[0].left + eyes[1].left > eyes[0].right + eyes[1].right && eyes[0].up > eyes[0].down &&
+		fabsf(eyes[0].up - (vertical - lean[1] / c)) < 1e-6f &&
+		fabsf(eyes[1].left - (horizontal + eyes[1].offset[0] / c)) < 1e-6f, "the lean's signs");
+}
+
 int main(void)
 {
 	pole_crossing();
@@ -466,6 +538,7 @@ int main(void)
 	turning();
 	vignette_easing();
 	vignette_binocular();
+	film_mapping();
 	if (failures)
 	{
 		printf("stereo head probe: %d failed\n", failures);
