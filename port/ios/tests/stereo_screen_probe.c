@@ -459,9 +459,34 @@ static void zoom_inset(void)
 	frames(3 * FILM_HOLD_FRAMES);
 	check(!halo_stereo_inset_begin(0) && !halo_stereo_inset(), "HEAD mode unzoomed: none");
 	check(halo_stereo_inset_begin(1) && halo_stereo_inset(), "HEAD mode's full view, zoomed: the inset");
-	check(strstr(inset_log, "50% of the eyes' height, its central 480 lines on a quad 0.60 m wide, 1.50 m ahead") != NULL,
+	check(strstr(inset_log, "50% of the eyes' height, its central 480 lines on a quad 0.80 m wide, 2.00 m ahead") != NULL,
 		"its log line");
 	printf("    %s\n", inset_log);
+	/* magnified by the zoom's own figure: at the view's center, the quad's
+	tangent over the inset camera's is the scale of its picture against
+	the world beside it */
+	{
+		float quad_half = HALO_STEREO_INSET_WIDTH_METERS / 2.0f / HALO_STEREO_INSET_DISTANCE_METERS;
+		float levels[3] = { 1.0f, 2.0f, 8.0f };
+		int level;
+
+		for (level = 0; level < 3; level++) {
+			float fov = halo_stereo_inset_field_of_view(levels[level]);
+			float scale = quad_half / tanf(fov / 2.0f);
+			char what[160];
+
+			snprintf(what, sizeof(what), "at %.0fx the inset's camera spans %.2f degrees and its picture is %.4f times "
+				"the world's angular scale", levels[level], fov * 180.0f / 3.14159265f, scale);
+			check(fabsf(scale - levels[level]) < 1e-4f * levels[level], what);
+		}
+		check(halo_stereo_inset_field_of_view(0.5f) == halo_stereo_inset_field_of_view(1.0f),
+			"a magnification under 1 (none) shows the quad's own angle");
+	}
+	/* not when the presenter wouldn't show it */
+	halo_stereo_set_ui_shown(1);
+	check(!halo_stereo_inset_begin(1), "under the last frame's menu (the UI quad) the pass doesn't run");
+	halo_stereo_set_ui_shown(0);
+	check(halo_stereo_inset_begin(1), "and runs again once the menu's gone");
 	halo_stereo_layer(0);
 	check(halo_stereo_eye_unzoomed() && !halo_stereo_repeat_pass(),
 		"eye 0 leaves out the zoom's screen effects and advances the frame's time");
@@ -502,6 +527,16 @@ static void zoom_inset(void)
 	game_third_person = 1;
 	frames(2);
 	check(halo_stereo_inset_begin(1), "a head-tracked third-person seat, zoomed: the inset");
+	{
+		float saved[3];
+
+		memcpy(saved, reticle_direction, sizeof(saved));
+		reticle_direction[0] = 0.3f;
+		reticle_direction[1] = 0.0f;
+		reticle_direction[2] = 0.95f;
+		check(!halo_stereo_inset_begin(1), "but not while the seat's aim points behind the eyes");
+		memcpy(reticle_direction, saved, sizeof(saved));
+	}
 	forward[0] = 1.0f;
 	forward[1] = forward[2] = 0.0f;
 	up[0] = up[1] = 0.0f;
@@ -519,6 +554,7 @@ static void zoom_inset(void)
 	host_eyes = 0;
 	frames(1);
 	check(!halo_stereo_inset_begin(1), "nor does a frame without the Compositor's eyes");
+	check(inset_logged < 0, "which re-arms the first zoom's log line (the space reopening, a load)");
 	host_eyes = 1;
 	stereo_mode = HALO_STEREO_SCREEN;
 	frames(3 * FILM_HOLD_FRAMES);

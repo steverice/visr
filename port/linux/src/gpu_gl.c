@@ -2007,35 +2007,9 @@ static uint32_t gpu_gl_present_stereo(const struct gpu_stereo_present *present)
 	glClear(GL_COLOR_BUFFER_BIT);
 	for (eye = 0; eye < 2; eye++)
 		present_half(present->eye_color[eye], eye * half_width, half_width, window_height, boxes[eye]);
-	/* nothing drew the HUD this frame: there is no picture to composite */
-	if (present->hud && overlay_prepare())
-	{
-		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, default_framebuffer());
-		glDisable(GL_DEPTH_TEST);
-		glDisable(GL_CULL_FACE);
-		glDisable(GL_STENCIL_TEST);
-		glEnable(GL_BLEND);
-		/* premultiplied color over the picture by the layer's alpha, the
-		picture's transmittance (d3d8_device.c, hud_layer_blend) */
-		glBlendFuncSeparate(GL_ONE, GL_SRC_ALPHA, GL_ZERO, GL_ONE);
-		glUseProgram(overlay.program);
-		glUniform4f(overlay.source, 0.0f, 0.0f, 1.0f, 1.0f);
-		glBindVertexArray(overlay.vertex_array);
-		glActiveTexture(GL_TEXTURE0);
-		glBindTexture(GL_TEXTURE_2D, present->hud);
-		glBindSampler(0, overlay.sampler);
-		for (eye = 0; eye < 2; eye++)
-		{
-			glViewport(boxes[eye][0], boxes[eye][1], boxes[eye][2], boxes[eye][3]);
-			glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-		}
-		glBindSampler(0, 0);
-		glBindVertexArray(streams.vertex_array);
-		glDisable(GL_BLEND);
-	}
-	/* the zoom's inset (halo_stereo.h): its central square, opaque, over the
-	HUD where the HEAD presenter's quad would be, in each eye's fixed
-	frustum, with the parallax of its distance */
+	/* the zoom's inset (halo_stereo.h): its central square, opaque, where the
+	HEAD presenter's quad would be, in each eye's fixed frustum, with the
+	parallax of its distance, under the HUD as there */
 	if (present->inset && overlay_prepare())
 	{
 		float layout_width = (present->hud_aspect > 0.0f ? present->hud_aspect : 4.0f / 3.0f) * 480.0f;
@@ -2070,6 +2044,32 @@ static uint32_t gpu_gl_present_stereo(const struct gpu_stereo_present *present)
 		}
 		glBindSampler(0, 0);
 		glBindVertexArray(streams.vertex_array);
+	}
+	/* nothing drew the HUD this frame: there is no picture to composite */
+	if (present->hud && overlay_prepare())
+	{
+		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, default_framebuffer());
+		glDisable(GL_DEPTH_TEST);
+		glDisable(GL_CULL_FACE);
+		glDisable(GL_STENCIL_TEST);
+		glEnable(GL_BLEND);
+		/* premultiplied color over the picture by the layer's alpha, the
+		picture's transmittance (d3d8_device.c, hud_layer_blend) */
+		glBlendFuncSeparate(GL_ONE, GL_SRC_ALPHA, GL_ZERO, GL_ONE);
+		glUseProgram(overlay.program);
+		glUniform4f(overlay.source, 0.0f, 0.0f, 1.0f, 1.0f);
+		glBindVertexArray(overlay.vertex_array);
+		glActiveTexture(GL_TEXTURE0);
+		glBindTexture(GL_TEXTURE_2D, present->hud);
+		glBindSampler(0, overlay.sampler);
+		for (eye = 0; eye < 2; eye++)
+		{
+			glViewport(boxes[eye][0], boxes[eye][1], boxes[eye][2], boxes[eye][3]);
+			glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+		}
+		glBindSampler(0, 0);
+		glBindVertexArray(streams.vertex_array);
+		glDisable(GL_BLEND);
 	}
 	platform_video_swap();
 	/* the blits and the overlay bypassed the cached state */

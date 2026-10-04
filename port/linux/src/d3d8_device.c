@@ -701,6 +701,17 @@ static struct render_target_entry *render_target_get_layer(const D3DSurface *sur
 		texture.depth = 1;
 		texture.levels = 1;
 		entry->target.texture = gpu_texture_create(&texture);
+		/* the zoom's inset: what it shades against the square the presenter
+		shows (Task 9's cost) */
+		if (layer == HALO_STEREO_LAYER_INSET && !depth)
+		{
+			float side = (float)entry->target.gl_height;
+
+			platform_log("stereo: the inset's target %lux%lu shades %.2f times the %.0f-pixel square it shows",
+				entry->target.gl_width, entry->target.gl_height,
+				(float)entry->target.gl_width / (side < (float)entry->target.gl_width ? side : (float)entry->target.gl_width),
+				side);
+		}
 	}
 	entry->next = render_targets;
 	render_targets = entry;
@@ -4106,6 +4117,8 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 			frozen film; where the crosshair points; and the HUD pass's
 			projection, for the catch-all quad */
 			present.hud_ui = hud && hud_layer_ui && !halo_stereo_film_letterbox();
+			/* the next frame's inset waits while a menu holds the layer */
+			halo_stereo_set_ui_shown(present.hud_ui);
 			halo_stereo_reticle(present.reticle);
 			halo_stereo_hud_tangents(present.hud_tangents);
 			render_interpolation_next_frame_due(gpu_present_stereo(&present));

@@ -19,6 +19,8 @@ picture.
 #include "camera/director.h"
 #include "cutscene/cinematics.h"
 #include "game/players.h"
+#include "items/weapons.h"
+#include "units/units.h"
 #include "effects/player_effects.h"
 #include "game/game.h"
 #include "main/console.h"
@@ -95,4 +97,27 @@ int halo_screen_fade(float tick_fraction, float rgb_intensity[4])
 	rgb_intensity[2] = color.blue;
 	rgb_intensity[3] = PIN(intensity, 0.0f, 1.0f);
 	return 1;
+}
+
+/* The zoom's magnification for the local player's inset (render.c), as the
+HUD reads it for the aim assist's range (hud.c): the current weapon of the
+unit that aims (a gunner's seat's too) at the player's zoom level; 1 when
+unzoomed or unarmed. The game's own zoomed camera divides the field of view
+by the same figure (weapon_get_field_of_view). */
+float halo_zoom_magnification(short local_player_index)
+{
+	long player_index = local_player_get_player_index(local_player_index);
+	short zoom_level = player_control_get_zoom_level(local_player_index);
+	long unit_index;
+	long weapon_index;
+
+	if (player_index == NONE || zoom_level == NONE)
+		return 1.0f;
+	unit_index = unit_get_aiming_unit_index(player_get(player_index)->unit_index);
+	if (unit_index == NONE)
+		return 1.0f;
+	weapon_index = unit_inventory_get_weapon(unit_index, unit_get(unit_index)->unit.current_weapon_index);
+	if (weapon_index == NONE)
+		return 1.0f;
+	return weapon_get_zoom_magnification(weapon_index, zoom_level);
 }

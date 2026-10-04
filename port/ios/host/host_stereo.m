@@ -604,7 +604,7 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 		float layout_width = (hud_aspect > 0.0f ? hud_aspect : 4.0f / 3.0f) * HOST_STEREO_HUD_LINES;
 		struct host_stereo_hud_quad quads[HOST_STEREO_HUD_MAXIMUM_QUADS];
 		int quad_count = hud ? host_stereo_hud_layout(layout_width, hud_ui, reticle, hud_tangents, quads) : 0;
-		/* the zoom's inset, over the HUD, along the reticle's direction; not
+		/* the zoom's inset, under the HUD, along the reticle's direction; not
 		while a menu holds the HUD layer, whose UI quad it would cover */
 		struct host_stereo_hud_quad inset_quad;
 		int inset_shown = inset && !hud_ui && host_stereo_hud_inset(layout_width, NULL, reticle, &inset_quad);
@@ -716,25 +716,19 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 				[encoder setFragmentSamplerState:nearest_sampler atIndex:1];
 				[encoder setFragmentBytes:&eye_uniforms length:sizeof(eye_uniforms) atIndex:0];
 				[encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
-				/* the HUD's pieces at the shape the game lays it out in (its
-				texture is the eyes' size, whose pixels needn't be square) */
-				if (quad_count > 0)
+				/* the zoom's inset, on the HUD's plane, then the HUD's pieces at
+				the shape the game lays it out in (its texture is the eyes' size,
+				whose pixels needn't be square), which stay readable over it */
+				if (inset_shown || quad_count > 0)
 				{
 					simd_float4x4 projection = cp_drawable_compute_projection(drawable,
 						cp_axis_direction_convention_right_up_back, view_index);
+					simd_float4x4 clip_from_device = simd_mul(projection, simd_inverse(cp_view_get_transform(view)));
 
-					hud_draw(encoder, hud, quads, quad_count,
-						simd_mul(projection, simd_inverse(cp_view_get_transform(view))), level, decode_srgb,
-						brightness, 0);
-				}
-				if (inset_shown)
-				{
-					simd_float4x4 projection = cp_drawable_compute_projection(drawable,
-						cp_axis_direction_convention_right_up_back, view_index);
-
-					hud_draw(encoder, inset, &inset_quad, 1,
-						simd_mul(projection, simd_inverse(cp_view_get_transform(view))), level, decode_srgb,
-						brightness, 1);
+					if (inset_shown)
+						hud_draw(encoder, inset, &inset_quad, 1, clip_from_device, level, decode_srgb, brightness, 1);
+					if (quad_count > 0)
+						hud_draw(encoder, hud, quads, quad_count, clip_from_device, level, decode_srgb, brightness, 0);
 				}
 				[encoder endEncoding];
 			}

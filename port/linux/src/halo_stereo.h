@@ -71,20 +71,38 @@ view's HUD elements (halo_stereo_inset_overlay) and the frame's flash. The
 presenter shows the inset's central square, HALO_STEREO_INSET_LINES layout
 lines on a side, on a quad HALO_STEREO_INSET_WIDTH_METERS wide and
 HALO_STEREO_INSET_DISTANCE_METERS ahead along the reticle's direction
-(halo_stereo_reticle): head-locked on foot, over the HUD. Not on the screen
-(SCREEN mode, the film): there the game's own zoom shows on the screen, as
-in mono. */
+(halo_stereo_reticle): head-locked on foot, on the HUD's plane and under the
+HUD's pieces, which stay readable over it. The zoomed camera's vertical
+field of view is the quad's angle over the zoom's magnification
+(halo_stereo_inset_field_of_view), so the picture is that many times the
+world around it. Not on the screen (SCREEN mode, the film): there the
+game's own zoom shows on the screen, as in mono. */
 /* the debug side-by-side view's eyes (stereo.c): each eye's half tangents,
 and its offset from the camera in world units */
 #define HALO_STEREO_SIDE_BY_SIDE_TANGENT 0.8f
 #define HALO_STEREO_SIDE_BY_SIDE_OFFSET 0.0105f
-#define HALO_STEREO_INSET_DISTANCE_METERS 1.5f
-#define HALO_STEREO_INSET_WIDTH_METERS 0.6f
+#define HALO_STEREO_INSET_DISTANCE_METERS 2.0f
+#define HALO_STEREO_INSET_WIDTH_METERS 0.8f
 #define HALO_STEREO_INSET_HEIGHT_SHARE 0.5f
 #define HALO_STEREO_INSET_LINES 480.0f
-/* render.c's eye loop, before the eyes: whether the local player is zoomed
-this frame; returns 1 if the frame renders the inset */
+/* render.c's eye loop, before the eyes and after halo_stereo_head_orient:
+whether the local player is zoomed this frame; returns 1 if the frame
+renders the inset. Not while the last frame's HUD layer held a menu
+(halo_stereo_set_ui_shown), nor while a seat's aim (halo_stereo_reticle)
+points behind the eyes: the presenter wouldn't show it */
 int halo_stereo_inset_begin(int zoomed);
+/* d3d8_device.c, as it presents a stereo frame: whether the HUD layer went
+whole on the UI's quad (a menu, the console, a progress bar) */
+void halo_stereo_set_ui_shown(int shown);
+/* the inset's vertical field of view in radians for the zoom's
+magnification (the game's weapon_get_zoom_magnification): the quad's
+angle with its tangent divided by the magnification, so things in it are
+that many times their size beside it */
+float halo_stereo_inset_field_of_view(float magnification);
+/* port/linux/game/cinematic_screen.c: the local player's zoom
+magnification, from the weapon of the unit that aims (a seat's gun too); 1
+unzoomed */
+float halo_zoom_magnification(short local_player_index);
 /* 1 while this frame renders the inset (from halo_stereo_inset_begin to
 the frame's end) */
 int halo_stereo_inset(void);

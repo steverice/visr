@@ -514,21 +514,37 @@ static void render_player_frame_stereo(
 	stereo = halo_stereo_frame();
 	/* the zoom's inset (halo_stereo.h): while zoomed in HEAD mode's full
 	view the eyes keep the headset's view, and a third pass renders the
-	zoomed camera mono, as mono renders it, into the inset layer. Its
-	cameras are the game's before the head turns them below
-	(halo_stereo_inset_orient turns them on foot) */
-	inset = halo_stereo_inset_begin(player_control_get_zoom_level(window->local_player_index) != NONE);
-	pass_count = inset ? 3 : 2;
+	zoomed camera mono into the inset layer. Its cameras are the game's
+	before the head turns them below (halo_stereo_inset_orient turns them on
+	foot), with the field of view that magnifies the inset's quad by the
+	zoom's own figure over the world beside it */
 	inset_camera = *camera;
 	inset_rasterizer_camera = window->rasterizer_camera;
 	halo_stereo_inset_orient(&inset_camera.forward.i, &inset_camera.up.i);
 	halo_stereo_inset_orient(&inset_rasterizer_camera.forward.i, &inset_rasterizer_camera.up.i);
+	{
+		/* the game's field of view spans its window's height (the HUD's safe
+		frame), the inset's square the whole screen's: the frustum's bounds
+		are in units of the window's half height */
+		real_rectangle2d screen_bounds;
+		real inset_tangent = tangent(
+			halo_stereo_inset_field_of_view(halo_zoom_magnification(window->local_player_index)) * 0.5f);
+
+		render_camera_build_frustum_bounds(&inset_camera, &screen_bounds);
+		if (screen_bounds.y1 > 0.0f)
+			inset_tangent /= screen_bounds.y1;
+		inset_camera.vertical_field_of_view = inset_rasterizer_camera.vertical_field_of_view =
+			2.0f * arctangent(inset_tangent, 1.0f);
+	}
 	/* head-tracked stereo: the cameras turn by the head's turn the look takes
 	in next frame, and tilt by its roll (the render's alone; the aim has no
 	roll), so the picture matches the pose the presenter hands the
 	Compositor. Both cameras, so culling and the HUD's projections match */
 	halo_stereo_head_orient(&camera->forward.i, &camera->up.i);
 	halo_stereo_head_orient(&window->rasterizer_camera.forward.i, &window->rasterizer_camera.up.i);
+	/* (after the head's turn, which sets where a seat's reticle points) */
+	inset = halo_stereo_inset_begin(player_control_get_zoom_level(window->local_player_index) != NONE);
+	pass_count = inset ? 3 : 2;
 	/* the presenter's depth range (d3d8_device.c): the eyes' planes */
 	halo_stereo_set_depth_range(window->rasterizer_camera.z_near, window->rasterizer_camera.z_far);
 	aspect = (real)(window->rasterizer_camera.viewport_bounds.x1 - window->rasterizer_camera.viewport_bounds.x0) /

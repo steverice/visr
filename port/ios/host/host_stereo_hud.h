@@ -91,8 +91,10 @@ HALO_STEREO_INSET_WIDTH_METERS wide, facing the eyes, by the reticle's
 rule (host_stereo_hud_reticle) at HALO_STEREO_INSET_DISTANCE_METERS:
 straight ahead and head-locked on foot, along a head-tracked seat's aim,
 none when that's not ahead, or centered at position (Task 11: the scope on
-the gun). It's drawn over the HUD, so it covers the reticle's quad, whose
-crosshairs the game draws into the inset meanwhile */
+the gun). At the HUD's distance, it's drawn before the HUD's pieces, so the
+counters, meters and tracker stay readable over it with no clash of depth;
+the game draws the crosshairs into the inset meanwhile, so the reticle's
+quad is empty */
 int host_stereo_hud_inset(float layout_width, const float position[3], const float direction[3],
 	struct host_stereo_hud_quad *quad);
 

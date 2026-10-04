@@ -256,6 +256,8 @@ static int film_hold;
 logged (-1: none yet); the HUD's draws routed into it
 (halo_stereo_inset_overlay) */
 static int inset_frame, inset_logged = -1, inset_overlay_on;
+/* the last stereo frame's HUD layer went whole on the UI's quad */
+static int ui_shown_last;
 
 /* a setting clamped to its range, logged once if it wasn't in it */
 static float clamped_setting(const char *name, float value, float minimum, float maximum, const char *unit)
@@ -703,6 +705,12 @@ void halo_stereo_frame_begin(void)
 		head_pitch_now = stereo_frame.head_pitch;
 	} else
 		third_person_head = 0;
+	/* without eyes (the space closed, a load) the next zoom logs again, and
+	no menu holds the inset back */
+	if (stereo_frame.eye_count != 2) {
+		inset_logged = -1;
+		ui_shown_last = 0;
+	}
 	on_screen = film_frame || gameplay_frame;
 	mapping_on_screen_last = on_screen;
 	if (!on_screen)
@@ -860,7 +868,9 @@ int halo_stereo_inset_begin(int zoomed)
 	int mode = stereo_frame.mode;
 
 	inset_frame = zoomed && stereo_frame.eye_count == 2 && !halo_stereo_film() && !halo_stereo_screen_gameplay() &&
-		(mode == HALO_STEREO_HEAD || mode == HALO_STEREO_SIDE_BY_SIDE);
+		(mode == HALO_STEREO_HEAD || mode == HALO_STEREO_SIDE_BY_SIDE) && !ui_shown_last &&
+		/* the presenter's rule for an aim off the view (host_stereo_hud.c) */
+		reticle_direction[2] <= -0.1f;
 	/* the first time, and each change under debug.gpu_stats */
 	if (inset_frame != inset_logged && (inset_logged < 0 ? inset_frame : stereo_stats))
 		platform_log(inset_frame ? "stereo: zoomed: the zoomed view on the inset, %.0f%% of the eyes' height, its "
@@ -870,6 +880,20 @@ int halo_stereo_inset_begin(int zoomed)
 	if (inset_frame || inset_logged >= 0)
 		inset_logged = inset_frame;
 	return inset_frame;
+}
+
+void halo_stereo_set_ui_shown(int shown)
+{
+	ui_shown_last = shown != 0;
+}
+
+float halo_stereo_inset_field_of_view(float magnification)
+{
+	float half_tangent = HALO_STEREO_INSET_WIDTH_METERS / 2.0f / HALO_STEREO_INSET_DISTANCE_METERS;
+
+	if (!(magnification >= 1.0f))
+		magnification = 1.0f;
+	return 2.0f * atanf(half_tangent / magnification);
 }
 
 int halo_stereo_inset(void)
