@@ -128,7 +128,23 @@ static BOOL close_extra_window_scenes(void) {
 /* the game's event poll (host_sdl.c), on the main thread outside any SDL
 call: after a later main call, the event pump comes back on, and the extra
 scene closes once the game's window exists */
+/* polls left to watch the game's window after an extra scene closed */
+static int extra_scene_watch;
+
 void host_extra_scene_poll(void) {
+    /* SDL's delegate for the closed scene tells the whole app it went to the
+       background (SDL_uikitappdelegate.m: SDL_OnApplicationDidEnterBackground),
+       which minimizes the game's window though its own scene stays active, and
+       no restore follows: restore it */
+    if(extra_scene_watch>0){
+        SDL_Window *window=host_sdl_window();
+        extra_scene_watch--;
+        if(window&&(SDL_GetWindowFlags(window)&SDL_WINDOW_MINIMIZED)){
+            SDL_RestoreWindow(window);
+            host_logf(HOST_LOG_INFO,"the game's window is restored after the extra scene's close minimized it");
+            extra_scene_watch=0;
+        }
+    }
     if(!extra_scene_pending)return;
     if(extra_scene_pending==1){
         char directory[1024];
@@ -145,7 +161,10 @@ void host_extra_scene_poll(void) {
         dispatch_async(dispatch_get_main_queue(),^{host_logf(HOST_LOG_INFO,"the main queue runs again");});
         extra_scene_pending=2;
     }
-    if(close_extra_window_scenes())extra_scene_pending=0;
+    if(close_extra_window_scenes()){
+        extra_scene_pending=0;
+        extra_scene_watch=600;
+    }
 }
 
 /* debug.test_extra_scene (the simulator): asks for a second window scene of
