@@ -538,7 +538,10 @@ whether they stand); "walklook:<seed>" holds the right stick fully down
 throughout (head-tracked stereo's first-person body, looking at the feet),
 standing still for its first WALKLOOK_STAND_POLLS polls and then walking,
 strafing, firing and jumping as "bot:" with the same seed, without its turn
-or grenades */
+or grenades; "zoom:<start>,<swaps>,<clicks>" stands still and, from poll
+<start> on, presses Y <swaps> times (the next weapon) and then clicks the
+right stick <clicks> times (each a zoom level), and holds still after: the
+zoom's checks on the Mac and in the simulator */
 static int test_input_holding_action;
 static Uint64 test_input_holding_action_since;
 
@@ -556,6 +559,13 @@ void test_input_hold_action(int hold)
 before it walks */
 #define WALKLOOK_STAND_POLLS 150
 
+/* "zoom:": a press lasts this many polls, and the next waits this many
+after it; a weapon swap's animation is given ZOOM_SWAP_POLLS before the
+next press */
+#define ZOOM_PRESS_POLLS 4
+#define ZOOM_GAP_POLLS 20
+#define ZOOM_SWAP_POLLS 90
+
 static void test_input_gamepad(XINPUT_GAMEPAD *pad)
 {
 	static int checked;
@@ -563,6 +573,9 @@ static void test_input_gamepad(XINPUT_GAMEPAD *pad)
 	static int looking;
 	static int walklooking;
 	static unsigned long walklook_polls;
+	static int zooming;
+	static long zoom_start, zoom_swaps, zoom_clicks;
+	static unsigned long zoom_polls;
 	double t;
 
 	if (!checked)
@@ -584,6 +597,33 @@ static void test_input_gamepad(XINPUT_GAMEPAD *pad)
 			seed = atoi(setting + 9);
 			walklooking = 1;
 		}
+		else if (!strncmp(setting, "zoom:", 5))
+		{
+			zooming = 1;
+			if (sscanf(setting + 5, "%ld,%ld,%ld", &zoom_start, &zoom_swaps, &zoom_clicks) != 3)
+				zoom_start = zoom_swaps = zoom_clicks = 0;
+		}
+	}
+	if (zooming)
+	{
+		/* counted by polls, as "walklook:"; the swaps' presses, then the
+		clicks', each ZOOM_PRESS_POLLS long */
+		long since = (long)zoom_polls++ - zoom_start;
+		long swaps_end = zoom_swaps * ZOOM_SWAP_POLLS;
+
+		if (since < 0)
+			return;
+		if (since < swaps_end)
+		{
+			if (since % ZOOM_SWAP_POLLS < ZOOM_PRESS_POLLS)
+				pad->bAnalogButtons[XINPUT_GAMEPAD_Y] = 255;
+		}
+		else if (since - swaps_end < zoom_clicks * (ZOOM_PRESS_POLLS + ZOOM_GAP_POLLS))
+		{
+			if ((since - swaps_end) % (ZOOM_PRESS_POLLS + ZOOM_GAP_POLLS) < ZOOM_PRESS_POLLS)
+				pad->wButtons |= XINPUT_GAMEPAD_RIGHT_THUMB;
+		}
+		return;
 	}
 	if (seed < 0)
 		return;
