@@ -71,9 +71,10 @@ static int stereo_mode = -1; /* read once, on the first frame */
 
 static const char *const mode_names[] = {"off", "head", "screen", "side_by_side"};
 
-/* HEAD mode's look: the head's turn the look hasn't taken in yet, and the
-stick's snaps (input.turn = "snap") */
-static float head_pending_yaw, head_pending_pitch;
+/* HEAD mode's look: the head's yaw the look hasn't taken in yet, the head's
+pitch (the look's pitch follows it), and the stick's snaps (input.turn = "snap") */
+static float head_pending_yaw, head_pitch_now;
+static int head_pitch_known;
 static int snap_turn = -1;
 static float snap_radians, snap_pending;
 static int snap_armed = 1;
@@ -230,11 +231,13 @@ void halo_stereo_frame_begin(void)
 				separation = FILM_DEFAULT_SEPARATION / METERS_PER_UNIT;
 			film_begin(separation, eyes[0].offset[2] * (eyes[0].left + eyes[0].right) * 0.5f);
 		}
-		/* HEAD mode: the look takes this frame's turn in next frame
-		(player_control runs before the render); a turn it never took is
-		dropped. SCREEN mode, and the film, have none */
+		/* HEAD mode: the look takes this frame's yaw in next frame
+		(player_control runs before the render), and a turn it never took is
+		dropped; the look's pitch follows the head's. SCREEN mode, and the
+		film, have neither */
 		head_pending_yaw = stereo_frame.mode == HALO_STEREO_HEAD ? stereo_frame.head_yaw : 0.0f;
-		head_pending_pitch = stereo_frame.mode == HALO_STEREO_HEAD ? stereo_frame.head_pitch : 0.0f;
+		head_pitch_known = stereo_frame.mode == HALO_STEREO_HEAD;
+		head_pitch_now = stereo_frame.head_pitch;
 	}
 }
 
@@ -328,16 +331,24 @@ void halo_stereo_stick_look(short gamepad_index, float *yaw, float *pitch)
 	*yaw = 0.0f;
 }
 
-int halo_stereo_head_look(short gamepad_index, float *yaw, float *pitch)
+/* the head's pitch inside the game's limit */
+static float head_pitch_limited(void)
+{
+	return fmaxf(-PITCH_LIMIT, fminf(PITCH_LIMIT, head_pitch_now));
+}
+
+int halo_stereo_head_look(short gamepad_index, float current_pitch, float *yaw, float *pitch)
 {
 	*yaw = 0.0f;
 	*pitch = 0.0f;
 	if (!head_tracking(gamepad_index))
 		return 0;
 	*yaw = head_pending_yaw + snap_pending;
-	*pitch = head_pending_pitch;
+	/* the look's pitch is the head's, whatever moved it meanwhile (the game
+	levels it as the player walks, a script sets it) */
+	if (head_pitch_known)
+		*pitch = head_pitch_limited() - current_pitch;
 	head_pending_yaw = 0.0f;
-	head_pending_pitch = 0.0f;
 	snap_pending = 0.0f;
 	return *yaw != 0.0f || *pitch != 0.0f;
 }
@@ -371,28 +382,22 @@ static void normalize(float v[3])
 
 void halo_stereo_head_orient(float forward[3], float up[3])
 {
-	static const float world_up[3] = {0.0f, 0.0f, 1.0f};
-	float right[3];
-	float pitch, turn;
+	float yaw, pitch;
 
 	if (stereo_frame.mode != HALO_STEREO_HEAD || stereo_frame.eye_count != 2)
 		return;
-	/* yaw about the world's up, left positive, as the game's yaw */
-	rotate(forward, world_up, stereo_frame.head_yaw);
-	rotate(up, world_up, stereo_frame.head_yaw);
-	/* pitch about the camera's right, up positive, inside the game's limit */
-	pitch = asinf(fmaxf(-1.0f, fminf(1.0f, forward[2])));
-	turn = stereo_frame.head_pitch;
-	if (pitch + turn > PITCH_LIMIT)
-		turn = fmaxf(0.0f, PITCH_LIMIT - pitch);
-	if (pitch + turn < -PITCH_LIMIT)
-		turn = fminf(0.0f, -PITCH_LIMIT - pitch);
-	right[0] = forward[1] * up[2] - forward[2] * up[1];
-	right[1] = forward[2] * up[0] - forward[0] * up[2];
-	right[2] = forward[0] * up[1] - forward[1] * up[0];
-	normalize(right);
-	rotate(forward, right, turn);
-	rotate(up, right, turn);
+	/* the camera's yaw (the look's, which has the head's turns up to the last
+	frame) turned about the world's up by this frame's, left positive as the
+	game's yaw; then the head's own pitch, inside the game's limit, so the
+	camera is level when the head is, whatever the look's pitch was */
+	yaw = atan2f(forward[1], forward[0]) + stereo_frame.head_yaw;
+	pitch = head_pitch_limited();
+	forward[0] = cosf(pitch) * cosf(yaw);
+	forward[1] = cosf(pitch) * sinf(yaw);
+	forward[2] = sinf(pitch);
+	up[0] = -sinf(pitch) * cosf(yaw);
+	up[1] = -sinf(pitch) * sinf(yaw);
+	up[2] = cosf(pitch);
 	/* the roll tilts up about forward; left ear down tilts it to the left,
 	which is a turn the other way about forward */
 	rotate(up, forward, -stereo_frame.head_roll);

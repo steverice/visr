@@ -88,7 +88,7 @@ add_executable(VISR MACOSX_BUNDLE
     host/host_main.m host/host_memory.c host/host_loader.c host/host_syscall.c host/guest_call.S
     host/host_thread.c host/host_sdl.c host/host_gpu.c host/host_gpu_dispatch.c host/gpu_metal.m host/host_frame_counter.m host/host_lifecycle.m
     host/host_join_link.c host/host_config.c
-    host/host_stereo.m
+    host/host_stereo.m host/host_stereo_head.c
     "${ROOT}/port/linux/src/posix_files.c" host/posix_net.c
     "${ROOT}/build/ios/host/bridges.c" "${ROOT}/build/ios/embedded/guest_image.S")
 target_include_directories(VISR PRIVATE host "${ROOT}/port/runtime" "${ROOT}/port/runtime/include"

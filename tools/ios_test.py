@@ -91,6 +91,11 @@ run(BUILD/'config-reload-probe')
 run('xcrun', 'clang', '-O2', '-fobjc-arc', '-Iport/ios/host', 'port/ios/tests/texture_refine_probe.m',
     'port/ios/host/texture_refine.m', '-framework', 'Foundation', '-framework', 'Metal', '-o', BUILD/'texture-refine-probe')
 run(BUILD/'texture-refine-probe')
+# head-tracked stereo's look: the world holds still in the room while the head pans
+run('xcrun', 'clang', '-O2', '-fsanitize=address,undefined', '-DHALO_IOS=1', '-Iport/linux/src', '-Iport/ios/host',
+    'port/ios/tests/stereo_head_probe.c', 'port/linux/game/stereo.c', 'port/ios/host/host_stereo_head.c',
+    '-o', BUILD/'stereo-head-probe')
+run(BUILD/'stereo-head-probe')
 
 # Parse untrusted XISO metadata and exercise extraction/cancellation under sanitizers.
 run('python3', 'tools/ios_xiso_test.py')

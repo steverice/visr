@@ -36,10 +36,10 @@ struct halo_stereo_frame
 {
 	int32_t eye_count;                 /* 0: mono this frame; 2: stereo */
 	int32_t mode;                      /* enum halo_stereo_mode */
-	/* HEAD mode, radians: the head's yaw (about the room's up, left positive)
-	and pitch (up positive) since the last frame, and its roll now (left ear
-	down positive). The yaw and pitch add to the player's look; the roll only
-	tilts the eye cameras, since the game's look has none. */
+	/* HEAD mode, radians: the head's yaw since the last frame (about the
+	room's up, left positive), and its pitch (up positive) and roll (left ear
+	down positive) now. The yaw adds to the player's look, the pitch sets it;
+	the roll only tilts the eye cameras, since the game's look has none. */
 	float head_yaw, head_pitch, head_roll;
 	struct halo_stereo_eye eyes[2];
 	int32_t eye_width, eye_height;     /* pixels per eye picture */
@@ -51,14 +51,15 @@ void halo_stereo_layer(int layer);                     /* -1 mono, 0/1 an eye, 2
 int halo_stereo_current_layer(void);
 
 /* HEAD mode's look (source/game/player_control.c): the stick turns yaw only,
-smoothly or in input.snap_angle steps, and never pitch; and the head's turn
-since the look last took it in, with any snap, unscaled by the zoom. Both do
-nothing unless the head drives the view. */
+smoothly or in input.snap_angle steps, and never pitch; and the head's yaw
+since the look last took it in, with any snap, unscaled by the zoom, and the
+pitch that brings the look's (current_pitch) to the head's. Both do nothing
+unless the head drives the view. */
 void halo_stereo_stick_look(short gamepad_index, float *yaw, float *pitch);
-int halo_stereo_head_look(short gamepad_index, float *yaw, float *pitch);
+int halo_stereo_head_look(short gamepad_index, float current_pitch, float *yaw, float *pitch);
 /* HEAD mode's render (source/render/render.c): turns a camera by the head's
-turn the look hasn't taken in yet (it does next frame) and tilts it by the
-head's roll, so the picture matches the head's pose this frame */
+yaw the look hasn't taken in yet (it does next frame) and gives it the head's
+pitch and roll, so the camera's orientation is the head's this frame */
 void halo_stereo_head_orient(float forward[3], float up[3]);
 /* the eye cameras' near and far planes in world units, for the presenter's
 depth (d3d8_device.c), set by the eye loop each stereo frame */

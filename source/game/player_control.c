@@ -1318,11 +1318,12 @@ static void get_local_player_input_blob(
 					{
 						/* port: head-tracked stereo (port/linux/game/stereo.c): the
 						head's turn adds to the look as the mouse's does, but unscaled
-						by the zoom, so the world holds still as the head moves */
+						by the zoom, so the world holds still as the head moves; its
+						pitch brings the look's to the head's own */
 						real head_yaw;
 						real head_pitch;
 
-						if (halo_stereo_head_look(gamepad_index, &head_yaw, &head_pitch))
+						if (halo_stereo_head_look(gamepad_index, control->desired_angles.pitch, &head_yaw, &head_pitch))
 						{
 							input->facing_delta.yaw += head_yaw;
 							input->facing_delta.pitch += head_pitch;

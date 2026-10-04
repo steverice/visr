@@ -29,6 +29,7 @@ Elsewhere host_stereo_frame leaves the frame mono. */
 #import <Metal/Metal.h>
 #include <simd/simd.h>
 #include "host_theater.h"
+#include "host_stereo_head.h"
 
 /* one world unit in meters */
 #define METERS_PER_UNIT 3.048f
@@ -45,9 +46,8 @@ seen nearly edge-on (where the picture then stops following the eye) */
 
 /* the eyes' picture size, while the head drives the view */
 static int picture_width, picture_height;
-/* the head's last yaw, pitch and roll, while ARKit places it */
-static BOOL head_known;
-static float head_yaw, head_pitch, head_roll;
+/* the head's last pose, while ARKit places it */
+static struct host_stereo_head head;
 static unsigned long stereo_frames;
 
 static id<MTLRenderPipelineState> eye_pipeline, hud_pipeline;
@@ -204,39 +204,15 @@ static simd_float2 stereo_depth_range(float near_meters, float far_meters, float
 	return (simd_float2){ far_meters, near };
 }
 
-/* angle wrapped into -pi..pi */
-static float wrapped(float angle)
-{
-	while (angle > (float)M_PI)
-		angle -= 2.0f * (float)M_PI;
-	while (angle < -(float)M_PI)
-		angle += 2.0f * (float)M_PI;
-	return angle;
-}
-
 /* the head's turn since the last frame and its roll now, from the device's
-pose in the room (ARKit's axes: x right, y up, z back) */
+pose in the room (host_stereo_head.c) */
 static void head_turn(struct halo_stereo_frame *frame, simd_float4x4 origin_from_device)
 {
-	simd_float3 right = origin_from_device.columns[0].xyz;
-	simd_float3 up = origin_from_device.columns[1].xyz;
-	simd_float3 forward = -origin_from_device.columns[2].xyz;
-	/* yaw about the room's up, left positive, as the game's yaw; pitch up
-	positive; roll left ear down positive */
-	float yaw = atan2f(-forward.x, -forward.z);
-	float pitch = asinf(simd_clamp(forward.y, -1.0f, 1.0f));
-	float roll = atan2f(right.y, up.y);
+	float right[3] = { origin_from_device.columns[0].x, origin_from_device.columns[0].y, origin_from_device.columns[0].z };
+	float up[3] = { origin_from_device.columns[1].x, origin_from_device.columns[1].y, origin_from_device.columns[1].z };
+	float back[3] = { origin_from_device.columns[2].x, origin_from_device.columns[2].y, origin_from_device.columns[2].z };
 
-	if (head_known)
-	{
-		frame->head_yaw = wrapped(yaw - head_yaw);
-		frame->head_pitch = pitch - head_pitch;
-	}
-	frame->head_roll = roll;
-	head_yaw = yaw;
-	head_pitch = pitch;
-	head_roll = roll;
-	head_known = YES;
+	host_stereo_head_turn(&head, right, up, back, frame);
 }
 
 /* Stereo on the screen: the eyes from where the viewer's eyes are in the
@@ -318,7 +294,7 @@ static void stereo_frame(struct halo_stereo_frame *frame) API_AVAILABLE(visionos
 
 	if ((frame->mode != HALO_STEREO_HEAD && frame->mode != HALO_STEREO_SCREEN) || !host_theater_frame_begin(1))
 	{
-		head_known = NO;
+		head.known = 0;
 		picture_width = picture_height = 0;
 		return;
 	}
@@ -327,7 +303,7 @@ static void stereo_frame(struct halo_stereo_frame *frame) API_AVAILABLE(visionos
 	renders at the screen's picture size (host_theater_picture_size) */
 	if (frame->mode == HALO_STEREO_SCREEN)
 	{
-		head_known = NO;
+		head.known = 0;
 		picture_width = picture_height = 0;
 		screen_eyes(frame, drawable, origin_from_device);
 		return;
@@ -381,7 +357,7 @@ static void stereo_frame(struct halo_stereo_frame *frame) API_AVAILABLE(visionos
 	if (anchored)
 		head_turn(frame, origin_from_device);
 	else
-		frame->head_roll = head_known ? head_roll : 0.0f;
+		host_stereo_head_hold(&head, frame);
 	frame->eye_count = 2;
 	if (stereo_frames++ == 0)
 		host_logf(HOST_LOG_INFO, "stereo: the head drives the view; %zu view%s of %dx%d, %s", views,
