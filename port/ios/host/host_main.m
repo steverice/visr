@@ -71,8 +71,42 @@ static uint32_t copy_string(const char *text) {
     char *p=host_low_map(strlen(text)+1,PROT_READ|PROT_WRITE);
     if(!p)host_fatal("out of guest memory");strcpy(p,text);return guest_pointer(p);
 }
+/* SDL's scene delegate (SDL_uikitappdelegate.m) calls main for every window
+scene that connects: a second one (visionOS can connect or restore another
+window scene of the app) fires its start timer whenever the running guest
+pumps the run loop (SDL_PollEvent), and would start a second guest inside the
+first, nested on the main thread, until the system kills the hung app. Only
+the first call runs the game; a later one closes its scene and returns. */
+static void close_extra_window_scenes(void) {
+#if !TARGET_OS_TV
+    NSMutableArray<UIWindowScene *> *extra=[NSMutableArray array];
+    BOOL found=NO;
+    for(UIScene *scene in UIApplication.sharedApplication.connectedScenes){
+        /* SDL's window scenes only, never theater mode's immersive space */
+        if(![scene isKindOfClass:UIWindowScene.class] ||
+            ![NSStringFromClass([(NSObject *)scene.delegate class]) isEqualToString:@"SDLUIKitSceneDelegate"])continue;
+        BOOL game=NO;
+        for(UIWindow *window in ((UIWindowScene *)scene).windows)
+            if([NSStringFromClass(window.class) isEqualToString:@"SDL_uikitwindow"])game=YES;
+        if(game)found=YES;
+        else [extra addObject:(UIWindowScene *)scene];
+    }
+    /* not before the game's own window exists: it could be any of them */
+    if(!found)return;
+    for(UIWindowScene *scene in extra){
+        host_logf(HOST_LOG_INFO,"closing an extra window scene (%s)",scene.session.role.UTF8String);
+        [UIApplication.sharedApplication requestSceneSessionDestruction:scene.session options:nil errorHandler:nil];
+    }
+#endif
+}
 int main(int argc,char **argv) {
     (void)argc;(void)argv;
+    static int entered;
+    if(entered++){
+        host_logf(HOST_LOG_WARN,"another window scene connected and asked to start the game while it runs (start %d); ignored",entered);
+        dispatch_async(dispatch_get_main_queue(),^{close_extra_window_scenes();});
+        return 0;
+    }
     @autoreleasepool {
 #if TARGET_OS_TV
         /* tvOS apps may only write to Caches (purgeable). */
