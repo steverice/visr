@@ -137,10 +137,18 @@ static const struct config_setting config_settings[] =
 		"Apple Vision Pro: \"off\" (flat), \"head\" (in stereo, the head turns the view),\n"
 		"\"screen\" (in stereo on the theater screen), or \"side_by_side\" (a debug view\n"
 		"of both eyes in the window)." },
-	{ "input.turn", _config_string, "\"smooth\"", "HALO_TURN", _environment_value, _platform_ios,
-		"With display.stereo = \"head\": the right stick turns smoothly, or \"snap\"s." },
+	{ "input.turn", _config_string, "\"snap\"", "HALO_TURN", _environment_value, _platform_ios,
+		"With display.stereo = \"head\": how the right stick turns the view: \"snap\"\n"
+		"(default; a flick turns input.snap_angle at once), \"smooth\" (steadily, at\n"
+		"input.smooth_turn_speed), or \"off\" (it doesn't; turn your body)." },
 	{ "input.snap_angle", _config_real, "30.0", "HALO_SNAP_ANGLE", _environment_value, _platform_ios,
-		"With input.turn = \"snap\": degrees per snap." },
+		"With input.turn = \"snap\": degrees per snap (5 to 180)." },
+	{ "input.smooth_turn_speed", _config_real, "120.0", "HALO_SMOOTH_TURN_SPEED", _environment_value, _platform_ios,
+		"With input.turn = \"smooth\": degrees per second with the stick all the way\n"
+		"over (10 to 720; 120 is the game's own speed before it speeds up)." },
+	{ "input.comfort_vignette", _config_boolean, "false", "HALO_COMFORT_VIGNETTE", _environment_value, _platform_ios,
+		"With input.turn = \"smooth\": darken the edges of the view while the stick\n"
+		"turns it, for comfort." },
 	{ "display.theater_width", _config_real, "60.0", "HALO_THEATER_WIDTH", _environment_value, _platform_ios,
 		"With display.immersive: how much of the view the screen spans, in degrees\n"
 		"across (the headset's view is about 100; 60 is the front of a cinema).\n"

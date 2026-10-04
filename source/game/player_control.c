@@ -1148,8 +1148,16 @@ static void get_local_player_input_blob(
 				clamped_yaw = PIN(input_state->yaw * look_scale, -1.f, 1.f);
 				clamped_pitch = PIN(input_state->pitch * look_scale, -1.f, 1.f);
 				/* port: head-tracked stereo (port/linux/game/stereo.c): the head
-				pitches the view, the stick only turns it, smoothly or in snaps */
-				halo_stereo_stick_look(gamepad_index, &clamped_yaw, &clamped_pitch);
+				pitches the view, the stick only turns it, in snaps, smoothly (at
+				its own speed, on the game's response curve) or not at all */
+				halo_stereo_stick_look(gamepad_index,
+					constants->look_function.count > 1 ?
+						evaluate_piecewise_linear_function(
+							constants->look_function.count,
+							constants->look_function.address,
+							clamped_yaw) :
+						clamped_yaw,
+					time_delta_sec, &clamped_yaw, &clamped_pitch);
 
 				if (player_control_camera_control_is_active())
 				{

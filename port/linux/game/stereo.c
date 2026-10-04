@@ -33,6 +33,7 @@ leaves the film's eyes, which sit at the camera, at the camera's planes.
 /* port/linux/src/port_config.c */
 const char *config_string(const char *name);
 double config_real(const char *name);
+int config_boolean(const char *name);
 
 /* port/linux/src/sdl_platform.c (the host's port/ios/host/host_gpu.c on iOS);
    d3d8_device.c declares it the same way */
@@ -74,12 +75,33 @@ static int stereo_mode = -1; /* read once, on the first frame */
 static const char *const mode_names[] = {"off", "head", "screen", "side_by_side"};
 
 /* HEAD mode's look: the head's yaw the look hasn't taken in yet, the head's
-pitch (the look's pitch follows it), and the stick's snaps (input.turn = "snap") */
+pitch (the look's pitch follows it), and the stick's turn: its snaps
+(input.turn = "snap"), or this frame's share of a smooth turn ("smooth") */
 static float head_pending_yaw, head_pitch_now;
 static int head_pitch_known;
-static int snap_turn = -1;
-static float snap_radians, snap_pending;
+static float snap_pending, smooth_yaw;
 static int snap_armed = 1;
+
+/* how the right stick turns the look in HEAD mode (input.turn), read once */
+enum turn_mode { TURN_SNAP, TURN_SMOOTH, TURN_OFF };
+static const char *const turn_names[] = {"snap", "smooth", "off"};
+static int turn_mode = -1;
+static float snap_degrees, smooth_degrees_per_second;
+static int comfort_vignette;
+/* input.snap_angle's and input.smooth_turn_speed's ranges, in degrees and
+degrees per second */
+#define SNAP_ANGLE_MIN 5.0f
+#define SNAP_ANGLE_MAX 180.0f
+#define SMOOTH_SPEED_MIN 10.0f
+#define SMOOTH_SPEED_MAX 720.0f
+/* the comfort vignette's strength now (0 to 1), and whether the stick was
+read since the last frame began (no read, no turn: no vignette) */
+static float vignette_strength;
+static int vignette_stick_read;
+/* the comfort vignette eases in to full over this long, and out from full
+over this long, in seconds */
+#define VIGNETTE_EASE_IN 0.1f
+#define VIGNETTE_EASE_OUT 0.2f
 /* the stick past this turns one snap; it must come back inside the release
 before the next */
 #define SNAP_FLICK 0.7f
@@ -108,6 +130,45 @@ which would otherwise flip the view to the full view and back */
 static int film_hold;
 
 static void film_frusta(float vertical_tangent);
+
+/* a setting clamped to its range, logged once if it wasn't in it */
+static float clamped_setting(const char *name, float value, float minimum, float maximum, const char *unit)
+{
+	float clamped = fmaxf(minimum, fminf(maximum, value));
+
+	if (clamped != value || value != value) {
+		if (value != value)
+			clamped = minimum;
+		platform_log("stereo: %s %.1f is outside %.0f to %.0f %s; using %.1f", name, value, minimum, maximum,
+			unit, clamped);
+	}
+	return clamped;
+}
+
+/* reads input.turn and its companions, once */
+static void turn_settings(void)
+{
+	const char *turn;
+	int mode;
+
+	if (turn_mode >= 0)
+		return;
+	turn = config_string("input.turn");
+	turn_mode = TURN_SNAP;
+	for (mode = 0; mode < 3; mode++) {
+		if (turn && strcmp(turn, turn_names[mode]) == 0)
+			break;
+	}
+	if (mode < 3)
+		turn_mode = mode;
+	else
+		platform_log("stereo: input.turn \"%s\" is not recognized; using snap", turn ? turn : "(none)");
+	snap_degrees = clamped_setting("input.snap_angle", (float)config_real("input.snap_angle"), SNAP_ANGLE_MIN,
+		SNAP_ANGLE_MAX, "degrees");
+	smooth_degrees_per_second = clamped_setting("input.smooth_turn_speed",
+		(float)config_real("input.smooth_turn_speed"), SMOOTH_SPEED_MIN, SMOOTH_SPEED_MAX, "degrees per second");
+	comfort_vignette = config_boolean("input.comfort_vignette") != 0;
+}
 
 /* the film's eyes for this frame, from the viewer's separation and the
 screen's half width (world units): level, at the camera, FILM_SEPARATION_SHARE
@@ -155,15 +216,22 @@ void halo_stereo_frame_begin(void)
 
 	if (stereo_mode < 0) {
 		const char *name = config_string("display.stereo");
-		const char *turn = config_string("input.turn");
 		int recognized;
 
 		stereo_mode = mode_from_name(name, &recognized);
-		platform_log("stereo: display.stereo %s, input.turn %s, input.snap_angle %.1f",
-			mode_names[stereo_mode], turn ? turn : "(none)", config_real("input.snap_angle"));
+		turn_settings();
+		/* the settings in effect (input.* act only in HEAD mode) */
+		platform_log("stereo: display.stereo %s, input.turn %s, input.snap_angle %.1f, "
+			"input.smooth_turn_speed %.1f, input.comfort_vignette %s", mode_names[stereo_mode],
+			turn_names[turn_mode], snap_degrees, smooth_degrees_per_second, comfort_vignette ? "true" : "false");
 		if (!recognized)
 			platform_log("stereo: display.stereo \"%s\" is not recognized; using off", name ? name : "(none)");
 	}
+	/* the stick wasn't read since the last frame (no gamepad): no turn, no
+	vignette */
+	if (!vignette_stick_read)
+		vignette_strength = 0.0f;
+	vignette_stick_read = 0;
 
 	memset(&stereo_frame, 0, sizeof(stereo_frame));
 	stereo_frame.mode = stereo_mode;
@@ -310,30 +378,58 @@ static int head_tracking(short gamepad_index)
 	return gamepad_index == 0 && stereo_frame.mode == HALO_STEREO_HEAD && stereo_frame.eye_count == 2;
 }
 
-void halo_stereo_stick_look(short gamepad_index, float *yaw, float *pitch)
+float halo_stereo_vignette_ease(float strength, float turn_fraction, float time_delta)
 {
-	float magnitude;
+	float target = fmaxf(0.0f, fminf(1.0f, turn_fraction));
 
-	if (!head_tracking(gamepad_index))
+	if (time_delta <= 0.0f)
+		return strength;
+	if (strength < target)
+		return fminf(target, strength + time_delta / VIGNETTE_EASE_IN);
+	return fmaxf(target, strength - time_delta / VIGNETTE_EASE_OUT);
+}
+
+void halo_stereo_stick_look(short gamepad_index, float yaw_response, float time_delta, float *yaw, float *pitch)
+{
+	float magnitude, turn_fraction = 0.0f;
+
+	if (gamepad_index != 0)
 		return;
+	vignette_stick_read = 1;
+	smooth_yaw = 0.0f;
+	if (!head_tracking(gamepad_index)) {
+		vignette_strength = 0.0f;
+		return;
+	}
 	*pitch = 0.0f;
-	if (snap_turn < 0) {
-		const char *turn = config_string("input.turn");
+	turn_settings();
+	if (turn_mode == TURN_SMOOTH) {
+		/* the game's response curve, at the speed asked for, steady and for
+		this frame's time: the game's own turn would speed up to three times
+		as fast while the stick is held over */
+		smooth_yaw = yaw_response * smooth_degrees_per_second * (3.14159265f / 180.0f) * time_delta;
+		turn_fraction = fabsf(yaw_response);
+	} else if (turn_mode == TURN_SNAP) {
+		/* a snap turns the way the stick would turn the look smoothly */
+		float snap_radians = snap_degrees * 3.14159265f / 180.0f;
 
-		snap_turn = turn && strcmp(turn, "snap") == 0;
-		snap_radians = (float)config_real("input.snap_angle") * 3.14159265f / 180.0f;
+		magnitude = fabsf(*yaw);
+		if (snap_armed && magnitude > SNAP_FLICK) {
+			snap_pending += *yaw > 0.0f ? snap_radians : -snap_radians;
+			snap_armed = 0;
+		} else if (magnitude < SNAP_RELEASE) {
+			snap_armed = 1;
+		}
 	}
-	if (!snap_turn)
-		return;
-	/* a snap turns the way the stick would turn the look smoothly */
-	magnitude = fabsf(*yaw);
-	if (snap_armed && magnitude > SNAP_FLICK) {
-		snap_pending += *yaw > 0.0f ? snap_radians : -snap_radians;
-		snap_armed = 0;
-	} else if (magnitude < SNAP_RELEASE) {
-		snap_armed = 1;
-	}
+	/* the turn, if any, comes in with the head's (halo_stereo_head_look) */
 	*yaw = 0.0f;
+	vignette_strength = comfort_vignette && turn_mode == TURN_SMOOTH ?
+		halo_stereo_vignette_ease(vignette_strength, turn_fraction, time_delta) : 0.0f;
+}
+
+float halo_stereo_vignette(void)
+{
+	return stereo_frame.mode == HALO_STEREO_HEAD && stereo_frame.eye_count == 2 ? vignette_strength : 0.0f;
 }
 
 /* the head's pitch inside the game's limit */
@@ -348,13 +444,14 @@ int halo_stereo_head_look(short gamepad_index, float current_pitch, float *yaw, 
 	*pitch = 0.0f;
 	if (!head_tracking(gamepad_index))
 		return 0;
-	*yaw = head_pending_yaw + snap_pending;
+	*yaw = head_pending_yaw + snap_pending + smooth_yaw;
 	/* the look's pitch is the head's, whatever moved it meanwhile (the game
 	levels it as the player walks, a script sets it) */
 	if (head_pitch_known)
 		*pitch = head_pitch_limited() - current_pitch;
 	head_pending_yaw = 0.0f;
 	snap_pending = 0.0f;
+	smooth_yaw = 0.0f;
 	return *yaw != 0.0f || *pitch != 0.0f;
 }
 

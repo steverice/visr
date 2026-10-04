@@ -434,6 +434,7 @@ struct gpu_stereo_present
 	int32_t cinematic;                 /* 1 while the cutscene screen is up */
 	float fade[4];                     /* RGB and intensity of the script fade */
 	float hud_aspect;                  /* the HUD's width over its height as laid out */
+	float vignette;                    /* 0 to 1: how much HEAD mode darkens the eyes' edges */
 };
 
 /* presents a stereo frame as gpu_present does a mono one (and returns the

@@ -76,8 +76,10 @@ static NSString *const shader_source =
 	move out to the Compositor's (stereo_depth_range). Never 0: the Compositor
 	takes depth 0 for nothing there (black, or the room), and the sky, the
 	clear and what only transparent effects drew all reach it as 0, so they
-	take the depth of something half way to the far plane */
-	"struct eye_uniforms { uint decode_srgb; float depth_scale; float depth_floor; float brightness; };\n"
+	take the depth of something half way to the far plane. The comfort
+	vignette (input.comfort_vignette) darkens the color only, toward black
+	outside the middle 60% of the picture, and never its depth */
+	"struct eye_uniforms { uint decode_srgb; float depth_scale; float depth_floor; float brightness; float vignette; };\n"
 	"fragment eye_pixel eye_fragment(picture_vertex in [[stage_in]], texture2d<float> picture [[texture(0)]],\n"
 	"	depth2d<float> depth [[texture(1)]], sampler linear [[sampler(0)]], sampler nearest [[sampler(1)]],\n"
 	"	constant eye_uniforms &u [[buffer(0)]])\n"
@@ -85,8 +87,9 @@ static NSString *const shader_source =
 	"	float3 color = picture.sample(linear, in.coordinate).rgb;\n"
 	"	if (u.decode_srgb)\n"
 	"		color = select(pow((color + 0.055) / 1.055, 2.4), color / 12.92, color <= 0.04045);\n"
+	"	float edge = smoothstep(0.6, 1.0, length(in.coordinate * 2.0 - 1.0));\n"
 	"	eye_pixel out;\n"
-	"	out.color = float4(color * u.brightness, 1);\n"
+	"	out.color = float4(color * u.brightness * (1.0 - u.vignette * edge), 1);\n"
 	"	out.depth = clamp(depth.sample(nearest, in.coordinate) * u.depth_scale, u.depth_floor, 1.0);\n"
 	"	return out;\n"
 	"}\n"
@@ -127,6 +130,7 @@ struct eye_uniforms
 	float depth_scale;
 	float depth_floor;
 	float brightness;
+	float vignette;
 };
 
 struct hud_uniforms
@@ -439,7 +443,7 @@ int host_stereo_ready(void)
 
 void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLTexture> right,
 	id<MTLTexture> left_depth, id<MTLTexture> right_depth, id<MTLTexture> hud, float hud_aspect,
-	float near_meters, float far_meters, float brightness)
+	float near_meters, float far_meters, float brightness, float vignette)
 {
 #if TARGET_OS_VISION
 	if (@available(visionOS 26.0, *))
@@ -485,7 +489,8 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 				int eye = view_index == 0 ? 0 : 1;
 				uint32_t decode_srgb = color.pixelFormat == MTLPixelFormatBGRA8Unorm_sRGB ||
 					color.pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB;
-				struct eye_uniforms eye_uniforms = { decode_srgb, depth_scale, depth_floor, brightness };
+				struct eye_uniforms eye_uniforms = { decode_srgb, depth_scale, depth_floor, brightness,
+					fmaxf(0.0f, fminf(1.0f, vignette)) };
 
 				pass.colorAttachments[0].texture = color;
 				pass.colorAttachments[0].slice = slice;

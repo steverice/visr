@@ -4,7 +4,12 @@ the player's look takes in the head's turn, the next frame begins with the
 head's new pose, and the render orients its camera. The world the camera
 shows must stay put in the room: its up is the room's up, and its forward
 doesn't move, while the head pans level at any pitch. A world that drifts
-in roll while the head pans is the bug from headset session 1. */
+in roll while the head pans is the bug from headset session 1.
+
+And the right stick's turn (input.turn): snaps by default, smooth turning at
+input.smooth_turn_speed whatever the frame rate, none at all for "off", and
+the comfort vignette's easing. stereo.c is included, not linked, so each
+check can read the settings afresh. */
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -13,7 +18,12 @@ in roll while the head pans is the bug from headset session 1. */
 #include "halo_stereo.h"
 #include "host_stereo_head.h"
 
-#define DEGREES (3.14159265f / 180.0f)
+/* the settings each check reads (NULL: the setting is absent) */
+static const char *setting_turn = "smooth";
+static double setting_snap_angle = 30.0, setting_smooth_turn_speed = 120.0;
+static int setting_comfort_vignette;
+static int unrecognized_logged;
+static char last_log[256];
 
 /* stereo.c's imports */
 const char *config_string(const char *name)
@@ -21,16 +31,35 @@ const char *config_string(const char *name)
 	if (!strcmp(name, "display.stereo"))
 		return "head";
 	if (!strcmp(name, "input.turn"))
-		return "smooth";
+		return setting_turn;
 	return "";
 }
-double config_real(const char *name) { (void)name; return 30.0; }
+double config_real(const char *name)
+{
+	if (!strcmp(name, "input.smooth_turn_speed"))
+		return setting_smooth_turn_speed;
+	return setting_snap_angle;
+}
+int config_boolean(const char *name) { (void)name; return setting_comfort_vignette; }
 void platform_video_drawable_size(int *width, int *height) { *width = *height = 0; }
-void platform_log(const char *format, ...) { (void)format; }
+void platform_log(const char *format, ...)
+{
+	va_list arguments;
+
+	va_start(arguments, format);
+	vsnprintf(last_log, sizeof(last_log), format, arguments);
+	va_end(arguments);
+	if (strstr(last_log, "is not recognized; using snap"))
+		unrecognized_logged++;
+}
 int halo_cinematic_screen(void) { return 0; }
 int halo_scripted_camera(void) { return 0; }
 int halo_third_person_camera(void) { return 0; }
 void halo_screen_commit_stereo_scale(void) {}
+
+#include "../../linux/game/stereo.c"
+
+#define DEGREES (3.14159265f / 180.0f)
 
 /* the device's pose this frame, columns right, up, back (ARKit's axes) */
 static float pose[3][3];
@@ -44,7 +73,7 @@ void host_stereo_frame(struct halo_stereo_frame *frame)
 	host_stereo_head_turn(&head, pose[0], pose[1], pose[2], frame);
 }
 
-static void rotate(float v[3], int axis, float angle)
+static void rotate_axis(float v[3], int axis, float angle)
 {
 	float c = cosf(angle), s = sinf(angle), x = v[0], y = v[1], z = v[2];
 
@@ -66,9 +95,9 @@ static void set_pose(float yaw, float pitch, float roll)
 		v[0] = column == 0; v[1] = column == 1; v[2] = column == 2;
 		for (step = 0; step < 3; step++)
 		{
-			if (step == 0) rotate(v, 2, roll);
-			if (step == 1) rotate(v, 0, pitch);
-			if (step == 2) rotate(v, 1, yaw);
+			if (step == 0) rotate_axis(v, 2, roll);
+			if (step == 1) rotate_axis(v, 0, pitch);
+			if (step == 2) rotate_axis(v, 1, yaw);
 		}
 	}
 }
@@ -159,6 +188,160 @@ static void pan(const char *name, float pitch, float roll)
 	}
 }
 
+/* the settings read afresh, as if the game had just started */
+static void restart(const char *turn, double snap_angle, double smooth_turn_speed, int comfort_vignette)
+{
+	setting_turn = turn;
+	setting_snap_angle = snap_angle;
+	setting_smooth_turn_speed = smooth_turn_speed;
+	setting_comfort_vignette = comfort_vignette;
+	turn_mode = -1;
+	stereo_mode = -1;
+	snap_pending = smooth_yaw = 0.0f;
+	snap_armed = 1;
+	vignette_strength = 0.0f;
+	unrecognized_logged = 0;
+	memset(&head, 0, sizeof(head));
+	set_pose(0.0f, 0.0f, 0.0f);
+	/* a frame with the Compositor's eyes: the head drives the view */
+	halo_stereo_frame_begin();
+}
+
+/* the game's response curve (globals.globals' look_function), as
+player_control.c evaluates it */
+static float response(float stick)
+{
+	static const float curve[6] = { 0.0f, 0.05f, 0.1f, 0.25f, 0.58f, 1.0f };
+	float x = fminf(fabsf(stick), 1.0f) * 5.0f;
+	int low = (int)x < 5 ? (int)x : 5, high = low < 5 ? low + 1 : 5;
+	float value = (curve[high] - curve[low]) * (x - low) + curve[low];
+
+	return stick < 0.0f ? -value : value;
+}
+
+/* holds the stick at a yaw for a time at a frame rate, as the game's loop
+does (the stick, then the look, then the next frame); returns the look's
+turn in degrees, and the vignette's strongest */
+static float hold_stick(float stick, float seconds, float frames_per_second, float *vignette_peak)
+{
+	float turned = 0.0f, peak = 0.0f;
+	int frame, frames = (int)lroundf(seconds * frames_per_second);
+
+	for (frame = 0; frame < frames; frame++) {
+		float yaw = stick, pitch = 0.3f, look_yaw, look_pitch;
+
+		halo_stereo_stick_look(0, response(stick), 1.0f / frames_per_second, &yaw, &pitch);
+		if (yaw != 0.0f || pitch != 0.0f) {
+			printf("  FAIL: the game's own stick turn wasn't zeroed (yaw %f, pitch %f)\n", yaw, pitch);
+			failures++;
+		}
+		if (halo_stereo_head_look(0, 0.0f, &look_yaw, &look_pitch))
+			turned += look_yaw;
+		halo_stereo_frame_begin();
+		if (halo_stereo_vignette() > peak)
+			peak = halo_stereo_vignette();
+	}
+	if (vignette_peak)
+		*vignette_peak = peak;
+	return turned / DEGREES;
+}
+
+static void check(int passed, const char *what)
+{
+	printf("  %s: %s\n", passed ? "ok" : "FAIL", what);
+	if (!passed)
+		failures++;
+}
+
+static void turning(void)
+{
+	float turned, peak, rate;
+
+	printf("right-stick turning (input.turn):\n");
+	restart(NULL, 30.0, 120.0, 0);
+	check(turn_mode == TURN_SNAP, "absent: snap");
+	restart("", 30.0, 120.0, 0);
+	check(turn_mode == TURN_SNAP, "empty: snap");
+	restart("spin", 30.0, 120.0, 0);
+	check(turn_mode == TURN_SNAP && unrecognized_logged == 1, "unrecognized: snap, logged once");
+	check(strstr(last_log, "input.turn snap, input.snap_angle 30.0, input.smooth_turn_speed 120.0, "
+		"input.comfort_vignette false") != NULL, "the settings line logs the effective settings");
+	hold_stick(1.0f, 0.1f, 90.0f, NULL);
+	check(unrecognized_logged == 1, "unrecognized: not logged again");
+
+	/* snap: one flick, one snap, however long it's held; back inside the
+	release and out again, another */
+	restart("snap", 30.0, 120.0, 0);
+	turned = hold_stick(1.0f, 1.0f, 90.0f, NULL);
+	check(fabsf(turned - 30.0f) < 0.001f, "snap: a held flick turns 30 degrees once");
+	hold_stick(0.0f, 0.1f, 90.0f, NULL);
+	turned = hold_stick(-0.8f, 0.5f, 30.0f, NULL);
+	check(fabsf(turned + 30.0f) < 0.001f, "snap: a flick the other way turns -30 degrees");
+	turned = hold_stick(0.6f, 0.5f, 90.0f, NULL);
+	check(turned == 0.0f, "snap: under the flick threshold, no turn");
+	restart("snap", 1.0, 120.0, 0);
+	check(fabsf(hold_stick(1.0f, 0.1f, 90.0f, NULL) - 5.0f) < 0.001f, "snap: input.snap_angle 1 clamps to 5");
+	restart("snap", 400.0, 120.0, 0);
+	check(fabsf(hold_stick(1.0f, 0.1f, 90.0f, NULL) - 180.0f) < 0.001f, "snap: input.snap_angle 400 clamps to 180");
+
+	restart("off", 30.0, 120.0, 0);
+	turned = hold_stick(1.0f, 1.0f, 90.0f, NULL) + hold_stick(0.0f, 0.1f, 90.0f, NULL) + hold_stick(-1.0f, 1.0f, 90.0f, NULL);
+	check(turned == 0.0f, "off: the stick never turns the look");
+
+	/* smooth: input.smooth_turn_speed a second at full deflection, at 30, 60
+	and 90 frames a second; the curve's share of it part way over */
+	restart("smooth", 30.0, 120.0, 0);
+	rate = hold_stick(1.0f, 1.0f, 90.0f, &peak);
+	check(fabsf(rate - 120.0f) < 1.2f, "smooth: full deflection turns 120 degrees in a second at 90 Hz");
+	check(peak == 0.0f, "smooth: no vignette unless input.comfort_vignette");
+	check(fabsf(hold_stick(-1.0f, 1.0f, 30.0f, NULL) + 120.0f) < 1.2f, "smooth: -120 degrees in a second at 30 Hz");
+	check(fabsf(hold_stick(1.0f, 1.0f, 60.0f, NULL) - 120.0f) < 1.2f, "smooth: 120 degrees in a second at 60 Hz");
+	check(fabsf(hold_stick(0.5f, 1.0f, 90.0f, NULL) - 120.0f * response(0.5f)) < 0.1f,
+		"smooth: half way over turns the curve's share (0.175)");
+	restart("smooth", 30.0, 45.0, 0);
+	check(fabsf(hold_stick(1.0f, 1.0f, 90.0f, NULL) - 45.0f) < 0.45f, "smooth: input.smooth_turn_speed 45");
+	printf("  smooth at 120 deg/s: %.3f degrees in a second at 90 Hz\n", rate);
+
+	/* the vignette: only smooth with input.comfort_vignette, as strong as
+	the turn, gone with the turn and for snaps */
+	restart("smooth", 30.0, 120.0, 1);
+	hold_stick(1.0f, 0.5f, 90.0f, &peak);
+	check(fabsf(peak - 1.0f) < 0.001f && fabsf(halo_stereo_vignette() - 1.0f) < 0.001f,
+		"vignette: full while turning at full speed");
+	hold_stick(0.0f, 0.3f, 90.0f, NULL);
+	check(halo_stereo_vignette() == 0.0f, "vignette: gone 0.3 s after the turn stops");
+	hold_stick(0.5f, 0.5f, 90.0f, &peak);
+	check(fabsf(peak - response(0.5f)) < 0.001f, "vignette: half way over, the turn's share");
+	restart("snap", 30.0, 120.0, 1);
+	hold_stick(1.0f, 0.5f, 90.0f, &peak);
+	check(peak == 0.0f, "vignette: none for snaps");
+}
+
+/* the vignette's easing, alone */
+static void vignette_easing(void)
+{
+	float strength = 0.0f;
+	int step;
+
+	printf("comfort vignette easing:\n");
+	for (step = 0; step < 8; step++)
+		strength = halo_stereo_vignette_ease(strength, 1.0f, 1.0f / 90.0f);
+	check(fabsf(strength - 8.0f / 9.0f) < 0.001f, "in: 8/9 after 8 frames at 90 Hz");
+	strength = halo_stereo_vignette_ease(strength, 1.0f, 1.0f / 90.0f);
+	check(strength > 0.999f, "in: full after 0.1 s");
+	strength = halo_stereo_vignette_ease(strength, 1.0f, 1.0f / 90.0f);
+	strength = halo_stereo_vignette_ease(strength, 1.0f, 1.0f / 90.0f);
+	check(strength == 1.0f, "in: never past the target");
+	strength = halo_stereo_vignette_ease(1.0f, 0.0f, 0.1f);
+	check(fabsf(strength - 0.5f) < 0.0001f, "out: half after 0.1 s");
+	strength = halo_stereo_vignette_ease(strength, 0.0f, 0.1f);
+	check(strength == 0.0f, "out: gone after 0.2 s");
+	check(fabsf(halo_stereo_vignette_ease(0.0f, 0.4f, 1.0f) - 0.4f) < 0.0001f, "in: to the turn's share, no further");
+	check(fabsf(halo_stereo_vignette_ease(1.0f, 0.4f, 0.05f) - 0.75f) < 0.0001f, "out: toward the turn's share");
+	check(halo_stereo_vignette_ease(0.3f, 2.0f, 0.0f) == 0.3f, "no time: no change");
+	check(halo_stereo_vignette_ease(0.0f, 2.0f, 1.0f) == 1.0f, "a share over 1: full");
+}
+
 int main(void)
 {
 	pan("level pan at 0 deg pitch", 0.0f, 0.0f);
@@ -167,6 +350,8 @@ int main(void)
 	pan("level pan at the views' tilt", asinf(0.009f), 0.0f);
 	pan("level pan at -10 deg, 5 deg roll", -10.0f * DEGREES, 5.0f * DEGREES);
 	pan("level pan at 30 deg pitch", 30.0f * DEGREES, 0.0f);
+	turning();
+	vignette_easing();
 	if (failures)
 	{
 		printf("stereo head probe: %d failed\n", failures);

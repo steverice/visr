@@ -3880,6 +3880,8 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 			script fade, which tints the space around the screen */
 			present.cinematic = halo_stereo_film();
 			halo_screen_fade(present.fade);
+			/* input.comfort_vignette, while the stick turns the look */
+			present.vignette = halo_stereo_vignette();
 			render_interpolation_next_frame_due(gpu_present_stereo(&present));
 		}
 		else
