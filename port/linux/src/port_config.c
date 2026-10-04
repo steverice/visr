@@ -487,6 +487,10 @@ static const struct config_setting config_settings[] =
 	{ "debug.terminal_on_screen", _config_boolean, "false", "HALO_TERMINAL_ON_SCREEN", _environment_set_is_true, _platform_ios,
 		"Draw the console's output (what print and commands print) over the\n"
 		"game, as the desktop builds do; false keeps it in the log only." },
+	{ "debug.test_extra_scene", _config_boolean, "false", "HALO_TEST_EXTRA_SCENE", _environment_set_is_true, _platform_ios,
+		"Ask for a second window scene a few seconds in, to check that the game\n"
+		"ignores its start, keeps its event pump and closes the scene (the\n"
+		"host's host_main.m). For the simulator." },
 	{ "debug.gl_debug", _config_boolean, "false", "HALO_GL_DEBUG", _environment_set_is_true, _platform_all,
 		"Report OpenGL errors in the log." },
 	{ "debug.metal_state_cache", _config_boolean, "true", "HALO_METAL_STATE_CACHE", _environment_value, _platform_ios,
