@@ -505,6 +505,25 @@ void player_effect_port_scripted_end(
 	SET_FLAG(player_effect_globals->global_flags, _scripted_player_effect_stopping_bit, FALSE);
 }
 
+/* port: the script fade's state (fade_in, fade_out) as
+player_effect_get_screen_flash reads it, without that function's change to
+the game state, for stereo's room tint (port/linux/game/cinematic_screen.c);
+FALSE before the effects exist or once the fade has ended */
+boolean player_effect_get_screen_fade(
+	real_rgb_color *color,
+	long *start_time,
+	short *ticks,
+	boolean *fading_out)
+{
+	if (!player_effect_globals || player_effect_globals->screen_fade.ticks == NONE)
+		return FALSE;
+	*color = player_effect_globals->screen_fade.color;
+	*start_time = player_effect_globals->screen_fade.start_time;
+	*ticks = player_effect_globals->screen_fade.ticks;
+	*fading_out = player_effect_globals->screen_fade.fading_out;
+	return TRUE;
+}
+
 void player_effect_get_damage_indicators(
 	short local_player_index,
 	byte *damage_indicators)

@@ -38,9 +38,9 @@ static ar_session_t session;
 static ar_world_tracking_provider_t world_tracking;
 static BOOL screen_placed;
 static simd_float4x4 origin_from_screen;
-static id<MTLRenderPipelineState> pipeline, hud_pipeline;
+static id<MTLRenderPipelineState> pipeline, hud_pipeline, fade_pipeline;
 static MTLPixelFormat pipeline_color, pipeline_depth;
-static id<MTLDepthStencilState> depth_state;
+static id<MTLDepthStencilState> depth_state, depth_none;
 static id<MTLSamplerState> sampler;
 static unsigned long theater_frames;
 
@@ -179,6 +179,20 @@ static NSString *const shader_source =
 	"		color = select(pow((color + 0.055) / 1.055, 2.4), color / 12.92, color <= 0.04045);\n"
 	"	return float4(color * u.brightness, 1);\n"
 	"}\n"
+	/* the script fade's tint of the room around the screen: full view, at
+	the far plane, its color premultiplied by its opacity */
+	"struct fade_vertex_out { float4 position [[position]]; };\n"
+	"vertex fade_vertex_out fade_vertex(uint index [[vertex_id]])\n"
+	"{\n"
+	"	float2 corner = float2(index & 1, index >> 1);\n"
+	"	fade_vertex_out out;\n"
+	"	out.position = float4(corner.x * 2 - 1, 1 - corner.y * 2, 0, 1);\n"
+	"	return out;\n"
+	"}\n"
+	"fragment float4 fade_fragment(fade_vertex_out in [[stage_in]], constant float4 &color [[buffer(0)]])\n"
+	"{\n"
+	"	return color;\n"
+	"}\n"
 	/* stereo on the screen: the HUD over the eye's picture, both display-
 	encoded, as the game would have blended it into its back buffer. The HUD
 	layer clears to 0,0,0,0, so what the game draws into it is premultiplied
@@ -223,10 +237,14 @@ static BOOL prepare(id<MTLDevice> device, MTLPixelFormat color, MTLPixelFormat d
 	descriptor.fragmentFunction = [library newFunctionWithName:@"theater_hud_fragment"];
 	if (pipeline)
 		hud_pipeline = [device newRenderPipelineStateWithDescriptor:descriptor error:&error];
-	if (!pipeline || !hud_pipeline)
+	descriptor.vertexFunction = [library newFunctionWithName:@"fade_vertex"];
+	descriptor.fragmentFunction = [library newFunctionWithName:@"fade_fragment"];
+	if (hud_pipeline)
+		fade_pipeline = [device newRenderPipelineStateWithDescriptor:descriptor error:&error];
+	if (!pipeline || !hud_pipeline || !fade_pipeline)
 	{
 		host_logf(HOST_LOG_ERROR, "theater: the screen's pipeline failed: %s", error.description.UTF8String);
-		pipeline = hud_pipeline = nil;
+		pipeline = hud_pipeline = fade_pipeline = nil;
 		return NO;
 	}
 	pipeline_color = color;
@@ -236,6 +254,10 @@ static BOOL prepare(id<MTLDevice> device, MTLPixelFormat color, MTLPixelFormat d
 	depth_descriptor.depthCompareFunction = MTLCompareFunctionGreater;
 	depth_descriptor.depthWriteEnabled = YES;
 	depth_state = [device newDepthStencilStateWithDescriptor:depth_descriptor];
+	/* the fade's tint is behind everything: it neither tests nor writes depth */
+	depth_descriptor.depthCompareFunction = MTLCompareFunctionAlways;
+	depth_descriptor.depthWriteEnabled = NO;
+	depth_none = [device newDepthStencilStateWithDescriptor:depth_descriptor];
 	MTLSamplerDescriptor *sampler_descriptor = [MTLSamplerDescriptor new];
 	sampler_descriptor.minFilter = MTLSamplerMinMagFilterLinear;
 	sampler_descriptor.magFilter = MTLSamplerMinMagFilterLinear;
@@ -384,11 +406,33 @@ void host_theater_frame_end(void)
 	frame_drop();
 }
 
+/* the script fade's tint for a target, premultiplied: its color (display-
+encoded, as the game's; decoded for an sRGB target) times its intensity, and
+the intensity; zero without a fade */
+static simd_float4 fade_tint(const float *fade, uint32_t decode_srgb)
+{
+	simd_float3 color;
+	float intensity;
+
+	if (!fade || !(fade[3] > 0.0f))
+		return (simd_float4){ 0.0f, 0.0f, 0.0f, 0.0f };
+	intensity = fminf(fade[3], 1.0f);
+	color = simd_clamp((simd_float3){ fade[0], fade[1], fade[2] }, 0.0f, 1.0f);
+	if (decode_srgb)
+	{
+		for (int channel = 0; channel < 3; channel++)
+			color[channel] = color[channel] <= 0.04045f ? color[channel] / 12.92f :
+				powf((color[channel] + 0.055f) / 1.055f, 2.4f);
+	}
+	return (simd_float4){ color.x * intensity, color.y * intensity, color.z * intensity, intensity };
+}
+
 /* the pictures on the screen for the open frame (or the next one): view 0's
-the left one, the others the right; the HUD, if any, over each; the
-pictures at a brightness */
+the left one, the others the right; the HUD, if any, over each; the script
+fade, if any (RGB and intensity), around the screen; the pictures at a
+brightness */
 static void present_pictures(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLTexture> right,
-	id<MTLTexture> hud, float brightness)
+	id<MTLTexture> hud, const float *fade, float brightness)
 {
 	if (@available(visionOS 26.0, *))
 	{
@@ -434,8 +478,14 @@ static void present_pictures(id<MTLCommandQueue> queue, id<MTLTexture> left, id<
 				pass.colorAttachments[0].storeAction = MTLStoreActionStore;
 				uint32_t decode_srgb = color.pixelFormat == MTLPixelFormatBGRA8Unorm_sRGB ||
 					color.pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB;
+				/* the fade's color as the target takes it: the game's colors are
+				display-encoded, an sRGB target encodes what it's given */
+				simd_float4 tint = fade_tint(fade, decode_srgb);
 
 				pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, environment_dark ? 1.0 : 0.0);
+				/* the dark surroundings are the fade's color times its intensity */
+				if (environment_dark && tint.w > 0.0f)
+					pass.colorAttachments[0].clearColor = MTLClearColorMake(tint.x, tint.y, tint.z, 1.0);
 				pass.depthAttachment.texture = depth;
 				pass.depthAttachment.slice = cp_view_texture_map_get_slice_index(map);
 				pass.depthAttachment.loadAction = MTLLoadActionClear;
@@ -458,6 +508,15 @@ static void present_pictures(id<MTLCommandQueue> queue, id<MTLTexture> left, id<
 				uniforms.brightness = brightness;
 				id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
 				[encoder setViewport:cp_view_texture_map_get_viewport(map)];
+				/* the room is the fade's color over it at the fade's opacity:
+				premultiplied over the clear, behind the screen */
+				if (!environment_dark && tint.w > 0.0f)
+				{
+					[encoder setRenderPipelineState:fade_pipeline];
+					[encoder setDepthStencilState:depth_none];
+					[encoder setFragmentBytes:&tint length:sizeof(tint) atIndex:0];
+					[encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
+				}
 				[encoder setRenderPipelineState:hud ? hud_pipeline : pipeline];
 				[encoder setDepthStencilState:depth_state];
 				[encoder setVertexBytes:&uniforms length:sizeof(uniforms) atIndex:0];
@@ -480,16 +539,22 @@ static void present_pictures(id<MTLCommandQueue> queue, id<MTLTexture> left, id<
 
 void host_theater_present(id<MTLCommandQueue> queue, id<MTLTexture> picture)
 {
-	present_pictures(queue, picture, picture, nil, 1.0f);
+	present_pictures(queue, picture, picture, nil, NULL, 1.0f);
 }
 
 void host_theater_present_eyes(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLTexture> right,
-	id<MTLTexture> hud, float brightness)
+	id<MTLTexture> hud, const float fade[4], float brightness)
 {
 	static unsigned long presents;
+	static BOOL fading;
 
 	if (presents++ == 0)
 		host_logf(HOST_LOG_INFO, "theater: first stereo frame on the screen: eyes %lux%lu, %s",
 			(unsigned long)left.width, (unsigned long)left.height, hud ? "a HUD" : "no HUD");
-	present_pictures(queue, left, right, hud, brightness);
+	/* each script fade that reaches the room, once as it starts */
+	if (fade && fade[3] > 0.0f && !fading)
+		host_logf(HOST_LOG_INFO, "theater: a script fade tints the %s: %.2f %.2f %.2f at %.2f",
+			environment_dark ? "dark" : "room", fade[0], fade[1], fade[2], fade[3]);
+	fading = fade && fade[3] > 0.0f;
+	present_pictures(queue, left, right, hud, fade, brightness);
 }

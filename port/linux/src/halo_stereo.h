@@ -76,6 +76,9 @@ loop, before it reads the eyes); nothing unless this frame is the film */
 void halo_stereo_film_frusta(float vertical_tangent);
 /* port/linux/game/cinematic_screen.c: 1 while the letterbox is in */
 int halo_cinematic_screen(void);
+/* the script fade (fade_in, fade_out; never a screen flash) with the tick
+fraction: its RGB and intensity, zero intensity if none */
+void halo_screen_fade(float rgb_intensity[4]);
 /* source/cutscene/cinematics.c: 0..1, how far the bars are in, following
 the active title's fades */
 float halo_cinematic_title_bars(void);

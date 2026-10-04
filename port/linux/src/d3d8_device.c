@@ -3721,8 +3721,10 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 			present.near_meters *= 3.048f;
 			present.far_meters *= 3.048f;
 			present.mode = stereo->mode;
-			/* a cutscene: the 3D film on the screen, whatever the mode */
+			/* a cutscene: the 3D film on the screen, whatever the mode; the
+			script fade, which tints the space around the screen */
 			present.cinematic = halo_stereo_film();
+			halo_screen_fade(present.fade);
 			render_interpolation_next_frame_due(gpu_present_stereo(&present));
 		}
 		else

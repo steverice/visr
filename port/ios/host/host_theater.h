@@ -10,10 +10,13 @@ void host_theater_present(id<MTLCommandQueue> queue, id<MTLTexture> picture);
 film in any mode): each eye's picture on the screen for its view (view 0 the
 left eye), the HUD (nil: none) blended over each, for the frame
 host_stereo_frame opened. The screen's depth is the Compositor's, as in
-mono: the picture is on a flat surface in the room. Brightness (0 to 1) dims
-the picture toward black, for the fade of a cut to or from the screen */
+mono: the picture is on a flat surface in the room. The script fade (RGB and
+intensity) tints the space around the screen: in the dark it's the
+surroundings' color times the intensity; in the room, the color over it at
+that opacity. Brightness (0 to 1) dims the picture toward black, for the
+fade of a cut to or from the screen */
 void host_theater_present_eyes(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLTexture> right,
-	id<MTLTexture> hud, float brightness);
+	id<MTLTexture> hud, const float fade[4], float brightness);
 #endif
 
 #if defined(__OBJC__) && !defined(__swift__)

@@ -3268,7 +3268,8 @@ it, goes on the theater screen for its view (host_theater_present_eyes);
 without a frame (the space closed, another mode) eye 0 goes through the mono
 path.
 
-A cutscene (present->cinematic, the 3D film) is on the screen in any mode. A cut
+A cutscene (present->cinematic, the 3D film) is on the screen in any mode,
+and the script fade (present->fade) tints the space around the screen. A cut
 between the full view and the screen (a cutscene starting or ending in HEAD
 mode) goes to black and fades back in over STEREO_CUT_FRAMES frames, unless
 a script fade already covers it. */
@@ -3346,7 +3347,7 @@ static uint32_t gpu_metal_present_stereo(const struct gpu_stereo_present *presen
 				use_texture(hud);
 			commit(YES);
 			host_theater_present_eyes(queue, color[0]->texture, color[1]->texture, hud ? hud->texture : nil,
-				stereo_cut_brightness(1, present));
+				present->fade, stereo_cut_brightness(1, present));
 			frames++;
 			pacing.work_started = CACurrentMediaTime();
 			return 0;
