@@ -459,9 +459,11 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 		static unsigned long presents;
 
 		if (presents++ == 0)
-			host_logf(HOST_LOG_INFO, "stereo: first present: eyes %lux%lu, %s, depth range %.3f to %.1f m, "
-				"%zu drawable%s", (unsigned long)left.width, (unsigned long)left.height,
-				hud ? "a HUD" : "no HUD", near_meters, far_meters, count, count == 1 ? "" : "s");
+			host_logf(HOST_LOG_INFO, "stereo: first present: eyes %lux%lu, %s (laid out at %.3f:1, a %.2f by %.2f m "
+				"quad %.1f m ahead), depth range %.3f to %.1f m, %zu drawable%s", (unsigned long)left.width,
+				(unsigned long)left.height, hud ? "a HUD" : "no HUD", hud_aspect, HUD_WIDTH,
+				hud_aspect > 0.0f ? HUD_WIDTH / hud_aspect : 0.0f, HUD_DISTANCE, near_meters, far_meters, count,
+				count == 1 ? "" : "s");
 
 		for (size_t index = 0; index < count; index++)
 		{
