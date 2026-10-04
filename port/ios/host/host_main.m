@@ -140,8 +140,16 @@ void host_extra_scene_poll(void) {
         SDL_Window *window=host_sdl_window();
         extra_scene_watch--;
         if(window&&(SDL_GetWindowFlags(window)&SDL_WINDOW_MINIMIZED)){
-            SDL_RestoreWindow(window);
-            host_logf(HOST_LOG_INFO,"the game's window is restored after the extra scene's close minimized it");
+            /* SDL's UIKit driver has no RestoreWindow (SDL_RestoreWindow does
+               nothing there); its foreground notifications give the window
+               back its focus and send it RESTORED, which clears the flag and
+               enters fullscreen again */
+            SDL_OnApplicationWillEnterForeground();
+            SDL_OnApplicationDidEnterForeground();
+            if(SDL_GetWindowFlags(window)&SDL_WINDOW_MINIMIZED)
+                host_logf(HOST_LOG_WARN,"the game's window is still minimized after the extra scene's close");
+            else
+                host_logf(HOST_LOG_INFO,"the game's window is restored after the extra scene's close minimized it");
             extra_scene_watch=0;
         }
     }
@@ -154,8 +162,11 @@ void host_extra_scene_poll(void) {
            resources for the new scene; the host's relative paths (config.toml,
            host_config.c) are the data folder's */
         if(getcwd(directory,sizeof(directory))&&strcmp(directory,data_root)){
-            chdir(data_root);
-            host_logf(HOST_LOG_INFO,"the working directory is the data folder again (the extra scene set %s)",directory);
+            if(chdir(data_root)==0)
+                host_logf(HOST_LOG_INFO,"the working directory is the data folder again (the extra scene set %s)",directory);
+            else
+                host_logf(HOST_LOG_WARN,"the working directory can't go back to the data folder (errno %d); it's %s",
+                    errno,directory);
         }
         /* a block on the main queue runs only when the main run loop does */
         dispatch_async(dispatch_get_main_queue(),^{host_logf(HOST_LOG_INFO,"the main queue runs again");});
