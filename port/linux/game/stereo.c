@@ -439,6 +439,20 @@ int halo_stereo_current_layer(void)
 	return stereo_layer;
 }
 
+/* screen geometry drawn while this is set writes alpha too
+(halo_stereo_set_covering) */
+static int screen_geometry_covers;
+
+void halo_stereo_set_covering(int covering)
+{
+	screen_geometry_covers = covering;
+}
+
+int halo_stereo_covering(void)
+{
+	return screen_geometry_covers;
+}
+
 /* whether the head drives the view: HEAD mode with the Compositor's eyes (the
 last frame's state, since the look runs before the frame begins) */
 static int head_tracking(short gamepad_index)

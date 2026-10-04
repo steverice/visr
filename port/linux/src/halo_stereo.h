@@ -49,6 +49,14 @@ void halo_stereo_frame_begin(void);                    /* latches this frame's s
 const struct halo_stereo_frame *halo_stereo_frame(void);
 void halo_stereo_layer(int layer);                     /* -1 mono, 0/1 an eye, 2 the HUD */
 int halo_stereo_current_layer(void);
+/* The HUD layer clears to transparent, and the presenters put it over the
+eyes by its alpha (premultiplied). The game's screen geometry writes color
+only (D3DRS_COLORWRITEENABLE without alpha), so in that layer it adds light
+and never covers: a black quad there shows nothing. While covering is set,
+screen geometry writes alpha too (rasterizer_xbox_dynavobgeom.c), for what
+must hide the picture: the cutscene bars (cinematics.c) */
+void halo_stereo_set_covering(int covering);
+int halo_stereo_covering(void);
 
 /* HEAD mode's look (source/game/player_control.c): the stick turns yaw only,
 as input.turn says (in input.snap_angle steps, smoothly at

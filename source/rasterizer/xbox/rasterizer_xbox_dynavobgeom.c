@@ -293,10 +293,14 @@ void _rasterizer_psuedo_dynamic_screen_quad_draw(
 		!parameters->map[1] || !parameters->meter_parameters);
 
 	IDirect3DDevice8_SetRenderState(global_d3d_device, D3DRS_CULLMODE, D3DCULL_NONE);
+	/* port: alpha too while stereo's HUD layer needs a draw to cover the
+	picture (halo_stereo_set_covering) */
 	IDirect3DDevice8_SetRenderState(
 		global_d3d_device,
 		D3DRS_COLORWRITEENABLE,
-		D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE);
+		halo_stereo_covering()
+			? D3DCOLORWRITEENABLE_ALL
+			: D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE);
 	IDirect3DDevice8_SetRenderState(global_d3d_device, D3DRS_ALPHABLENDENABLE, TRUE);
 	IDirect3DDevice8_SetRenderState(global_d3d_device, D3DRS_ALPHATESTENABLE, FALSE);
 	IDirect3DDevice8_SetRenderState(global_d3d_device, D3DRS_ZENABLE, FALSE);
@@ -657,6 +661,14 @@ void _rasterizer_psuedo_dynamic_screen_quad_draw(
 		0,
 		D3DTSS_ALPHAKILL,
 		D3DTALPHAKILL_DISABLE);
+	/* port: back to color only for whatever draws next */
+	if (halo_stereo_covering())
+	{
+		IDirect3DDevice8_SetRenderState(
+			global_d3d_device,
+			D3DRS_COLORWRITEENABLE,
+			D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE);
+	}
 
 	return;
 }
