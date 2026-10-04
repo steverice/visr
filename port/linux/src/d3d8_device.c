@@ -4090,9 +4090,10 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 			/* input.comfort_vignette, while the stick turns the look */
 			present.vignette = halo_stereo_vignette();
 			/* HEAD mode's HUD: the whole layer on the UI's quad while a menu,
-			the console or a progress bar drew into it; and where the
-			crosshair points */
-			present.hud_ui = hud && hud_layer_ui;
+			the console or a progress bar drew into it, except over a
+			cutscene's film, where the menu stays on the screen with the
+			frozen film; and where the crosshair points */
+			present.hud_ui = hud && hud_layer_ui && !halo_stereo_film_letterbox();
 			halo_stereo_reticle(present.reticle);
 			render_interpolation_next_frame_due(gpu_present_stereo(&present));
 		}
