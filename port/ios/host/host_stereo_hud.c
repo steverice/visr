@@ -20,17 +20,26 @@ assault rifle's crosshair at x 292-347, y 212-267. In the visionOS
 simulator's 853-line layout (a30, frames 2700-4500, Task 7c's fix round)
 the same elements sit 62.9 lines in from the left edge and 71.6 from the
 right (the meters at 662-782), at the same sizes and heights: the HUD's safe
-margin grows with the width, about 7.4% of it (47.8 of 640, 62.9 of 853).
-So each piece is a rectangle from an anchor on the layout's safe frame (its
-left or right edge inset by HUD_SAFE_SHARE of the width, or its center
-across; its top or bottom down), with margin, and follows its elements at
-any width. The tracker is
-at the bottom of Halo's HUD, so it goes in the bottom band; the counters,
-messages and meters in the top one. */
+margin grows with the width (47.8 of 640, 62.9 of 853; safe_inset below
+has the game's rule). So each piece is a rectangle from an anchor on the
+layout's safe frame (its left or right edge inset by the game's own safe
+inset, or its center across; its top or bottom down), with margin, and
+follows its elements at any width. The tracker is at the bottom of Halo's
+HUD, so it goes in the bottom band; the counters, messages and meters in
+the top one. */
 enum { ANCHOR_START = -1, ANCHOR_CENTER = 0, ANCHOR_END = 1 };
 
-/* the HUD's safe margin across, as a share of the layout's width */
-#define HUD_SAFE_SHARE 0.074f
+/* The HUD's safe frame across: the game anchors the HUD's corner elements
+to render.camera.window_bounds (hud_draw.c), which are the rasterizer's
+frame_bounds, set at startup as 48 lines in at 640 and widened in
+proportion, truncated: RASTERIZER_FRAME_BOUNDS_X0 * width /
+RASTERIZER_SCREEN_WIDTH, and the width less that on the right
+(rasterizer_xbox.c). The captures agree: 47.8 and 62.9 lines in at 640 and
+853 */
+static float safe_inset(float layout_width)
+{
+	return floorf(48.0f * layout_width / 640.0f);
+}
 
 struct piece
 {
@@ -43,14 +52,17 @@ struct piece
 	int band, row, side;
 };
 
-/* the reticle's square at the layout's center, in lines. The assault
-rifle's crosshair measures 56 across; the seats' and heavy weapons'
-(Warthog, Scorpion, Banshee, rocket launcher) weren't measured (no vehicle
-is reachable on the Mac, and their bitmaps weren't read), so the square is
-widened generously, to almost three times the rifle's: nothing else is drawn
-near the layer's center. A larger crosshair's edges still show, at the HUD
-pass's scale, through the catch-all quad */
-#define RETICLE_LINES 160.0f
+/* the reticle's square at the layout's center, in lines. Every crosshair
+the HUD draws comes from the combined reticle sheet
+(ui\hud\bitmaps\combined\hud_reticles, the weapons' and the vehicles'
+alike), whose Xbox cells are at most 66 by 66 at the HUD's scale of 1
+(port/assets/hud/layout.json, the sheet's 12 bitmaps: one 128-pixel sheet
+of 66, 18 by 10 and smaller cells and eleven 64 by 64); the assault rifle's
+measures 56 across on the layer. The square leaves a margin around the
+largest and ends at y 190, where the messages' piece begins, so no layer
+region is claimed twice (stereo_hud_probe). A larger crosshair's edge, if a
+tag scales one up, shows through the catch-all */
+#define RETICLE_LINES 100.0f
 
 static const struct piece pieces[] = {
 	/* the ammo and grenade counters, left, and the shield and health
@@ -72,7 +84,7 @@ a band's left and right pieces, in lines at the natural scale */
 
 static float layout_x(int anchor, float layout_width, float offset)
 {
-	float safe = HUD_SAFE_SHARE * layout_width;
+	float safe = safe_inset(layout_width);
 
 	return (anchor == ANCHOR_START ? safe : anchor == ANCHOR_CENTER ? layout_width / 2.0f : layout_width - safe) +
 		offset;

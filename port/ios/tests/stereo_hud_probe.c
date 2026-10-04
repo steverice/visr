@@ -105,7 +105,24 @@ static void catch_all_checks(float width)
 					claimed &= host_stereo_hud_claimed(quads, n, measured[w][e][corner & 1 ? 2 : 0] / widths[w],
 						measured[w][e][corner & 2 ? 3 : 1] / 480.0f);
 		}
-		check(claimed, "every measured element, at 640 and 853 lines across, is inside a piece");
+		/* and at 1600 lines, the elements where the game's rule puts them:
+		their 640-line offsets from the safe frame, 48 lines in at 640 and
+		floor(48 * width / 640) at any width (rasterizer_xbox.c) */
+		{
+			float inset = floorf(48.0f * 1600.0f / 640.0f);
+			int n = host_stereo_hud_layout(1600.0f, 0, ahead, hud_tangents, quads);
+
+			for (e = 0; e < 5; e++)
+				for (corner = 0; corner < 4; corner++)
+				{
+					float x = measured[0][e][corner & 1 ? 2 : 0], y = measured[0][e][corner & 2 ? 3 : 1];
+
+					/* the meters anchor right, the reticle centered, the rest left */
+					x = e == 2 ? 1600.0f - inset - (592.0f - x) : e == 4 ? 800.0f + (x - 320.0f) : inset + (x - 48.0f);
+					claimed &= host_stereo_hud_claimed(quads, n, x / 1600.0f, y / 480.0f);
+				}
+		}
+		check(claimed, "every measured element, at 640, 853 and 1600 lines across, is inside a piece");
 		count = host_stereo_hud_layout(width, 0, ahead, hud_tangents, quads);
 	}
 	count = host_stereo_hud_layout(width, 0, seat, hud_tangents, quads);
@@ -134,7 +151,7 @@ static void layout_checks(float width)
 	check(fabsf(quads[0].center[0]) < 1e-6f && fabsf(quads[0].center[1]) < 1e-6f &&
 		fabsf(quads[0].center[2] + HOST_STEREO_HUD_DISTANCE) < 1e-6f, "the reticle is centered, 2 m ahead");
 	check(fabsf(quads[0].x_axis[0] - quads[0].y_axis[1]) < 1e-6f &&
-		fabsf(quads[0].x_axis[0] * 2.0f - 160.0f * HOST_STEREO_HUD_METERS_PER_LINE) < 1e-6f,
+		fabsf(quads[0].x_axis[0] * 2.0f - 100.0f * HOST_STEREO_HUD_METERS_PER_LINE) < 1e-6f,
 		"the reticle is a square at the natural scale");
 	check(fabsf((quads[0].source[0] + quads[0].source[2]) / 2.0f - 0.5f) < 1e-6f &&
 		fabsf((quads[0].source[1] + quads[0].source[3]) / 2.0f - 0.5f) < 1e-6f,
@@ -192,6 +209,26 @@ static void layout_checks(float width)
 					overlap = 1;
 			}
 		check(!overlap, "no two pieces overlap");
+	}
+	/* no layer region belongs to two quads: the reticle's square and every
+	piece, in the layer (the catch-all, which takes only what's left,
+	aside) */
+	{
+		struct host_stereo_hud_quad all[HOST_STEREO_HUD_MAXIMUM_QUADS];
+		int n = host_stereo_hud_layout(width, 0, ahead, hud_tangents, all), a, b, shared = 0;
+
+		for (a = 0; a < n; a++)
+			for (b = a + 1; b < n; b++)
+				if (!all[a].catch_all && !all[b].catch_all && all[a].source[0] < all[b].source[2] &&
+					all[b].source[0] < all[a].source[2] && all[a].source[1] < all[b].source[3] &&
+					all[b].source[1] < all[a].source[3])
+				{
+					printf("  quads %d and %d share the layer's %.1f-%.1f by %.1f-%.1f lines\n", a, b,
+						fmaxf(all[a].source[0], all[b].source[0]) * width, fminf(all[a].source[2], all[b].source[2]) * width,
+						fmaxf(all[a].source[1], all[b].source[1]) * 480.0f, fminf(all[a].source[3], all[b].source[3]) * 480.0f);
+					shared = 1;
+				}
+		check(!shared, "no two quads (the reticle included) cut the same region of the layer");
 	}
 	/* the bands' rows: the counters and meters next to the reticle, the
 	messages above them */
