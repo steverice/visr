@@ -454,7 +454,13 @@ int halo_stereo_head_look(short gamepad_index, float current_pitch, float *yaw, 
 	*yaw = 0.0f;
 	*pitch = 0.0f;
 	if (!head_tracking(gamepad_index))
+	{
+		/* a snap armed in the frame the space closed doesn't wait to fire
+		when it opens again */
+		if (gamepad_index == 0)
+			snap_pending = 0.0f;
 		return 0;
+	}
 	*yaw = head_pending_yaw + snap_pending + smooth_yaw;
 	/* the look's pitch is the head's, whatever moved it meanwhile (the game
 	levels it as the player walks, a script sets it) */
