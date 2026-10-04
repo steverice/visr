@@ -732,6 +732,9 @@ static unsigned long render_target_write_serial;
 static float target_scale[2] = { 1.0f, 1.0f };
 /* the bound color target is stereo's HUD layer (draw_targets) */
 static BOOL target_hud_layer;
+/* something drew into the HUD layer this frame under render.c's UI span
+(halo_stereo_set_ui_span) */
+static BOOL hud_layer_ui;
 
 /* the pixel edge of a coordinate in the bound targets' units */
 static int32_t target_pixel(float coordinate, int axis)
@@ -2742,7 +2745,11 @@ static void raster_state_fill(BOOL has_depth, struct gpu_viewport *viewport, str
 		((write & D3DCOLORWRITEENABLE_GREEN) ? 2 : 0) | ((write & D3DCOLORWRITEENABLE_BLUE) ? 4 : 0) |
 		((write & D3DCOLORWRITEENABLE_ALPHA) ? 8 : 0));
 	if (target_hud_layer)
+	{
 		hud_layer_blend(blend);
+		if (halo_stereo_ui_span())
+			hud_layer_ui = TRUE;
+	}
 
 	/* the cull mode names the winding to discard; FRONTFACE names the
 	front winding */
@@ -4079,10 +4086,16 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 			present.cut_covered = halo_stereo_cut_covered();
 			/* input.comfort_vignette, while the stick turns the look */
 			present.vignette = halo_stereo_vignette();
+			/* HEAD mode's HUD: the whole layer on the UI's quad while a menu,
+			the console or a progress bar drew into it; and where the
+			crosshair points */
+			present.hud_ui = hud && hud_layer_ui;
+			halo_stereo_reticle(present.reticle);
 			render_interpolation_next_frame_due(gpu_present_stereo(&present));
 		}
 		else
 			render_interpolation_next_frame_due(gpu_present(back_buffer->target.texture));
+		hud_layer_ui = FALSE;
 		xgpu_texture_cache_begin_frame();
 		shader_list_take_pipelines();
 	}

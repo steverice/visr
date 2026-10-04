@@ -723,6 +723,28 @@ static void third_person(void)
 	check(passed, "the stick keeps the game's own turn and pitch (it swings the boom)");
 	check(halo_stereo_vignette() == 0.0f, "no comfort vignette for the stick's turn");
 	check(!halo_stereo_head_drives_look(0), "the head doesn't drive the look (the autolevel is the game's)");
+	/* the seat's gun aims along the game's camera (the facing): the
+	crosshair goes where that points in the head-turned picture, 30 degrees
+	right of the view's center and below it, at the angle between them */
+	{
+		float reticle[3], length, game[3], view[3], apart;
+
+		halo_stereo_reticle(reticle);
+		length = sqrtf(reticle[0] * reticle[0] + reticle[1] * reticle[1] + reticle[2] * reticle[2]);
+		game[0] = cosf(facing_pitch) * cosf(facing_yaw);
+		game[1] = cosf(facing_pitch) * sinf(facing_yaw);
+		game[2] = sinf(facing_pitch);
+		view[0] = cosf(f.view_pitch * DEGREES) * cosf(f.view_yaw * DEGREES);
+		view[1] = cosf(f.view_pitch * DEGREES) * sinf(f.view_yaw * DEGREES);
+		view[2] = sinf(f.view_pitch * DEGREES);
+		apart = acosf(fminf(1.0f, game[0] * view[0] + game[1] * view[1] + game[2] * view[2])) / DEGREES;
+		printf("  the seat's crosshair: %.4f %.4f %.4f in the eyes' frame, %.3f deg off center (the aim and the "
+			"view %.3f deg apart)\n", reticle[0], reticle[1], reticle[2], acosf(-reticle[2] / length) / DEGREES,
+			apart);
+		check(fabsf(length - 1.0f) < 1e-4f && reticle[0] > 0.4f && reticle[1] < -0.1f &&
+			fabsf(acosf(-reticle[2] / length) / DEGREES - apart) < 0.01f,
+			"a seat's crosshair points where the gun aims: right of and below the head-turned view's center");
+	}
 
 	/* the stick swings the camera (the facing, which the chase camera
 	follows): the head's turn stays on top of it */
@@ -738,6 +760,13 @@ static void third_person(void)
 	seated_view_yaw = f.view_yaw;
 	seated_facing_yaw = facing_yaw;
 	f = loop(&facing_yaw, &facing_pitch, 70.0f, -5.0f, 0.0f);
+	{
+		float reticle[3];
+
+		halo_stereo_reticle(reticle);
+		check(reticle[0] == 0.0f && reticle[1] == 0.0f && reticle[2] == -1.0f,
+			"on foot the crosshair is head-locked, straight ahead");
+	}
 	printf("  first person again: the view %.4f deg from the seat's last\n", degrees_apart(f.view_yaw, seated_view_yaw));
 	check(degrees_apart(f.view_yaw, seated_view_yaw) < 0.01f && fabsf(f.view_pitch + 5.0f) < 0.01f,
 		"leaving: the view's yaw holds (the seat's head turn kept), the pitch the head's");

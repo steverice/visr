@@ -509,6 +509,53 @@ static void third_person_begin(void)
 	third_person_head = third_person;
 }
 
+/* render.c's UI spans this frame (halo_stereo_set_ui_span) */
+static int ui_span;
+
+void halo_stereo_set_ui_span(int on)
+{
+	ui_span = on;
+}
+
+int halo_stereo_ui_span(void)
+{
+	return ui_span;
+}
+
+/* where the game's crosshair points in the eye cameras' frame (x right, y up,
+z back): straight ahead unless halo_stereo_head_orient turned a third-person
+camera */
+static float reticle_direction[3] = { 0.0f, 0.0f, -1.0f };
+
+/* the game camera's forward (aim) in the frame of the eye camera whose forward
+and up are given; NULLs: straight ahead */
+static void reticle_set(const float aim[3], const float forward[3], const float up[3])
+{
+	float right[3];
+
+	if (!aim) {
+		reticle_direction[0] = 0.0f;
+		reticle_direction[1] = 0.0f;
+		reticle_direction[2] = -1.0f;
+		return;
+	}
+	/* the world's z is up and its yaw is left positive, so right is forward
+	cross up */
+	right[0] = forward[1] * up[2] - forward[2] * up[1];
+	right[1] = forward[2] * up[0] - forward[0] * up[2];
+	right[2] = forward[0] * up[1] - forward[1] * up[0];
+	reticle_direction[0] = aim[0] * right[0] + aim[1] * right[1] + aim[2] * right[2];
+	reticle_direction[1] = aim[0] * up[0] + aim[1] * up[1] + aim[2] * up[2];
+	reticle_direction[2] = -(aim[0] * forward[0] + aim[1] * forward[1] + aim[2] * forward[2]);
+}
+
+void halo_stereo_reticle(float direction[3])
+{
+	direction[0] = reticle_direction[0];
+	direction[1] = reticle_direction[1];
+	direction[2] = reticle_direction[2];
+}
+
 void halo_stereo_frame_begin(void)
 {
 	int film, screen, on_screen, head_look_frame;
@@ -538,6 +585,8 @@ void halo_stereo_frame_begin(void)
 	memset(&stereo_frame, 0, sizeof(stereo_frame));
 	stereo_frame.mode = stereo_mode;
 	stereo_layer = HALO_STEREO_LAYER_MONO;
+	ui_span = 0;
+	reticle_set(NULL, NULL, NULL);
 	memset(frame_fade, 0, sizeof(frame_fade));
 	/* why the view is the film. In SCREEN mode everything is on the screen
 	already, so only the director's own cameras are the film: the player's
@@ -911,6 +960,7 @@ static void normalize(float v[3])
 void halo_stereo_head_orient(float forward[3], float up[3])
 {
 	float yaw, pitch;
+	float aim[3] = { forward[0], forward[1], forward[2] };
 
 	if (stereo_frame.mode != HALO_STEREO_HEAD || stereo_frame.eye_count != 2)
 		return;
@@ -944,6 +994,15 @@ void halo_stereo_head_orient(float forward[3], float up[3])
 	rotate(up, forward, -stereo_frame.head_roll);
 	normalize(forward);
 	normalize(up);
+	/* a seat's gun aims along the game's camera, which only the stick turns:
+	the crosshair goes where that points in the picture the head turned
+	(halo_stereo_reticle). On foot the game's look is the head's, and the
+	crosshair is straight ahead */
+	if (third_person_head) {
+		normalize(aim);
+		reticle_set(aim, forward, up);
+	} else
+		reticle_set(NULL, NULL, NULL);
 }
 
 void halo_stereo_set_depth_range(float z_near, float z_far)

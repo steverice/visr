@@ -53,6 +53,20 @@ hud_layer_blend): the presenters put it over each eye as rgb + eye * alpha */
 void halo_stereo_layer(int layer);
 int halo_stereo_current_layer(void);
 
+/* render.c sets this around what draws a menu, the console or the progress
+bar into the HUD layer: in HEAD mode the presenter then puts the whole layer
+on the UI's quad rather than splitting it into the HUD's pieces
+(d3d8_device.c notes whether anything drew under it) */
+void halo_stereo_set_ui_span(int on);
+int halo_stereo_ui_span(void);
+/* HEAD mode: where the game's crosshair (the center of the HUD layer)
+points, as a direction in the eye cameras' frame (x right, y up, z back,
+unnormalized): straight ahead (0, 0, -1) on foot, where the game's look is
+the head's; in a head-tracked third-person camera (a vehicle seat), the game
+camera's forward, which the gun follows, in the picture the head turned
+(halo_stereo_head_orient). For the presenter's reticle (gpu_stereo_present) */
+void halo_stereo_reticle(float direction[3]);
+
 /* HEAD mode's look (source/game/player_control.c): the stick turns yaw only,
 as input.turn says (in input.snap_angle steps, smoothly at
 input.smooth_turn_speed, or not at all), and never pitch; it takes the

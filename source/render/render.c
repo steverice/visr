@@ -86,6 +86,7 @@ symbols in this file:
 #include "effects/particle_systems.h"
 #include "effects/weather_particle_systems.h"
 #include "main/main.h"
+#include "main/console.h" /* port: stereo's UI quad (console_is_active) */
 #include "structures/structures.h"
 
 /* ---------- constants */
@@ -669,7 +670,10 @@ static void render_player_frame_stereo(
 		interface_draw_hud();
 		rasterizer_screen_flash();
 		halo_screen_ui_offset(TRUE);
+		/* port: a menu drawn here goes on the UI's quad (halo_stereo_set_ui_span) */
+		halo_stereo_set_ui_span(TRUE);
 		render_ui_widgets(window->local_player_index, &window->rasterizer_camera.viewport_bounds);
+		halo_stereo_set_ui_span(FALSE);
 		halo_screen_ui_offset(FALSE);
 	}
 	bink_playback_render();
@@ -896,15 +900,20 @@ void render_frame(
 		goes into the HUD layer, over the HUD pass */
 		if (window_type == 0 && render_stereo_eyes_drawn)
 			halo_stereo_layer(HALO_STEREO_LAYER_HUD);
+		/* the open console goes on the UI's quad (halo_stereo_set_ui_span) */
+		halo_stereo_set_ui_span(window_type == 0 && console_is_active());
 		render_nonplayer_frame(window, window_type);
+		halo_stereo_set_ui_span(FALSE);
 		halo_stereo_layer(HALO_STEREO_LAYER_MONO);
 	}
 
-	/* port: the progress bar too */
+	/* port: the progress bar too, on the UI's quad */
 	if (render_stereo_eyes_drawn)
 		halo_stereo_layer(HALO_STEREO_LAYER_HUD);
 	halo_screen_ui_offset(TRUE);
+	halo_stereo_set_ui_span(TRUE);
 	progress_bar_eachframe();
+	halo_stereo_set_ui_span(FALSE);
 	halo_screen_ui_offset(FALSE);
 	halo_stereo_layer(HALO_STEREO_LAYER_MONO);
 	rasterizer_windows_end();

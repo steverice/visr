@@ -98,6 +98,11 @@ run('xcrun', 'clang', '-O2', '-fsanitize=address,undefined', '-DHALO_IOS=1', '-I
     'port/ios/tests/stereo_head_probe.c', 'port/ios/host/host_stereo_head.c',
     '-o', BUILD/'stereo-head-probe')
 run(BUILD/'stereo-head-probe')
+# HEAD mode's HUD and UI layout: the bands and the UI inside foveation's sharp region, the
+# reticle centered or along a seat's aim, the level frame's yaw
+run('xcrun', 'clang', '-O2', '-fsanitize=address,undefined', '-Iport/ios/host', '-Iport/linux/src',
+    'port/ios/tests/stereo_hud_probe.c', 'port/ios/host/host_stereo_hud.c', '-o', BUILD/'stereo-hud-probe')
+run(BUILD/'stereo-hud-probe')
 # head-tracked stereo's first-person body: the render-only node matrices with the head and the
 # third-person arms collapsed, and when the body draws (the probe includes
 # port/linux/game/first_person_body.c)

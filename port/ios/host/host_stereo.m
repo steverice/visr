@@ -9,7 +9,11 @@ since the last frame turn the player's look (port/linux/game/stereo.c); its
 roll only tilts the eye cameras. The game renders each eye, then
 gpu_present_stereo (gpu_metal.m) hands the pictures here: each fills its view,
 with the game's depth (already reverse-Z, gpu_metal.m's reversed_depth) for
-the Compositor's reprojection, and the HUD floats head-locked in front.
+the Compositor's reprojection, and the HUD's pieces float in front of it
+(host_stereo_hud.h): the reticle where the crosshair points, the rest in
+bands that turn with the head's yaw only, level with the room. A frame
+without eyes (the main menu, a load) shows its picture on the UI's quad, the
+same way.
 
 Stereo on the theater screen (display.stereo = "screen") reads the same frame
 for the eyes' positions only: the look stays on the stick, and screen_eyes
@@ -33,12 +37,10 @@ Elsewhere host_stereo_frame leaves the frame mono. */
 #include "host_theater.h"
 #include "host_stereo_head.h"
 #include "host_stereo_vignette.h"
+#include "host_stereo_hud.h"
 
 /* one world unit in meters */
 #define METERS_PER_UNIT 3.048f
-/* the HUD's quad, head-locked: how far ahead and how wide, in meters */
-#define HUD_DISTANCE 2.0f
-#define HUD_WIDTH 1.6f
 
 /* stereo on the screen: the nearest an eye may be to the screen's plane,
 and how far toward its edges an eye's offset may go, as a share of the
@@ -55,8 +57,27 @@ static unsigned long stereo_frames;
 /* frames on the screen, presents, and whether the depth range warning was
 logged, since the space opened: the once-only logs repeat for each opening
 (host_stereo_space_opened) */
-static unsigned long screen_frames, stereo_presents;
+static unsigned long screen_frames, stereo_presents, ui_presents;
 static int depth_reported;
+/* the Compositor's frame is open for this game frame (host_stereo_frame)
+with display.stereo = "head", whatever the frame is (the full view, the film
+on the screen, or no eyes) */
+static int head_frame_open;
+
+/* display.stereo = "head", read once */
+static int head_configured(void)
+{
+	static int configured = -1;
+
+	if (configured < 0)
+	{
+		char value[16];
+
+		host_config_string("display.stereo", "off", value, sizeof(value));
+		configured = !strcmp(value, "head");
+	}
+	return configured;
+}
 
 static id<MTLRenderPipelineState> eye_pipeline, hud_pipeline;
 static MTLPixelFormat pipeline_color, pipeline_depth;
@@ -104,25 +125,32 @@ static NSString *const shader_source =
 	"	out.depth = clamp(depth.sample(nearest, in.coordinate) * u.depth_scale, u.depth_floor, 1.0);\n"
 	"	return out;\n"
 	"}\n"
-	"struct hud_uniforms { float4x4 clip_from_hud; float2 half_size; uint decode_srgb; float brightness; };\n"
+	/* one of the HUD's quads (host_stereo_hud.h): its texture's rectangle,
+	its center and half extents in its frame, which clip_from_frame takes
+	to the view */
+	"struct hud_uniforms { float4x4 clip_from_frame; float4 source; float4 center; float4 x_axis; float4 y_axis;\n"
+	"	uint decode_srgb; float brightness; uint opaque; };\n"
 	"vertex picture_vertex hud_vertex(uint index [[vertex_id]], constant hud_uniforms &u [[buffer(0)]])\n"
 	"{\n"
 	"	float2 corner = float2(index & 1, index >> 1);\n"
 	"	picture_vertex out;\n"
-	"	out.position = u.clip_from_hud * float4((corner.x * 2 - 1) * u.half_size.x, (1 - corner.y * 2) * u.half_size.y, 0, 1);\n"
-	"	out.coordinate = corner;\n"
+	"	out.position = u.clip_from_frame * float4(u.center.xyz + (corner.x * 2 - 1) * u.x_axis.xyz +\n"
+	"		(1 - corner.y * 2) * u.y_axis.xyz, 1);\n"
+	"	out.coordinate = mix(u.source.xy, u.source.zw, corner);\n"
 	"	return out;\n"
 	"}\n"
 	/* The HUD layer holds premultiplied color and, in alpha, how much of the
 	picture still shows (d3d8_device.c, hud_layer_blend): 1 where nothing
 	drew. Over the world it's the color plus the world times that, which the
-	blend makes of one minus it. Where it covers the world, its depth is the
-	quad's, so the Compositor reprojects it as the quad it is */
+	blend makes of one minus it. Where nothing drew the quad leaves the world
+	and its depth; elsewhere its depth is the quad's, so the Compositor
+	reprojects it as the quad it is. A mono picture on the UI's quad is
+	opaque (its alpha is the game's scratch) */
 	"fragment float4 hud_fragment(picture_vertex in [[stage_in]], texture2d<float> hud [[texture(0)]],\n"
 	"	sampler linear [[sampler(0)]], constant hud_uniforms &u [[buffer(0)]])\n"
 	"{\n"
 	"	float4 color = hud.sample(linear, in.coordinate);\n"
-	"	float covered = 1.0 - color.a;\n"
+	"	float covered = u.opaque ? 1.0 : 1.0 - color.a;\n"
 	"	if (max(covered, max(color.r, max(color.g, color.b))) < 1.0 / 255.0)\n"
 	"		discard_fragment();\n"
 	"	if (u.decode_srgb)\n"
@@ -168,10 +196,11 @@ struct eye_uniforms
 
 struct hud_uniforms
 {
-	simd_float4x4 clip_from_hud;
-	simd_float2 half_size;
+	simd_float4x4 clip_from_frame;
+	simd_float4 source, center, x_axis, y_axis;
 	uint32_t decode_srgb;
 	float brightness;
+	uint32_t opaque;
 };
 
 static BOOL prepare(id<MTLDevice> device, MTLPixelFormat color, MTLPixelFormat depth)
@@ -360,6 +389,7 @@ static void stereo_frame(struct halo_stereo_frame *frame) API_AVAILABLE(visionos
 		return;
 	}
 	cp_drawable_t drawable = host_theater_drawable(0, &origin_from_device, &anchored);
+	head_frame_open = head_configured();
 	/* on the screen, the head moves only the eyes: no turn, and the game
 	renders at the screen's picture size (host_theater_picture_size) */
 	if (frame->mode == HALO_STEREO_SCREEN)
@@ -433,6 +463,7 @@ void host_stereo_space_opened(void)
 	stereo_frames = 0;
 	screen_frames = 0;
 	stereo_presents = 0;
+	ui_presents = 0;
 	depth_reported = 0;
 #endif
 }
@@ -449,6 +480,7 @@ void host_stereo_frame(struct halo_stereo_frame *frame)
 	frame->eye_width = 0;
 	frame->eye_height = 0;
 #if TARGET_OS_VISION
+	head_frame_open = 0;
 	if (@available(visionOS 26.0, *))
 		stereo_frame(frame);
 #endif
@@ -478,9 +510,62 @@ int host_stereo_ready(void)
 #endif
 }
 
+#if TARGET_OS_VISION
+/* the level frame in the device's frame: at the device, turned by its yaw
+in the room only (host_stereo_hud_level_yaw) */
+static simd_float4x4 device_from_level(simd_float4x4 origin_from_device)
+{
+	float right[3] = { origin_from_device.columns[0].x, origin_from_device.columns[0].y,
+		origin_from_device.columns[0].z };
+	float back[3] = { origin_from_device.columns[2].x, origin_from_device.columns[2].y,
+		origin_from_device.columns[2].z };
+	float yaw = host_stereo_hud_level_yaw(right, back);
+	simd_float4x4 origin_from_level = (simd_float4x4){ {
+		{ cosf(yaw), 0.0f, -sinf(yaw), 0.0f },
+		{ 0.0f, 1.0f, 0.0f, 0.0f },
+		{ sinf(yaw), 0.0f, cosf(yaw), 0.0f },
+		origin_from_device.columns[3],
+	} };
+
+	return simd_mul(simd_inverse(origin_from_device), origin_from_level);
+}
+
+/* draws the quads over a view: clip_from_device is the view's projection
+from the device's frame, level the level frame in the device's */
+static void hud_draw(id<MTLRenderCommandEncoder> encoder, id<MTLTexture> texture,
+	const struct host_stereo_hud_quad *quads, int count, simd_float4x4 clip_from_device,
+	simd_float4x4 level, uint32_t decode_srgb, float brightness, uint32_t opaque) API_AVAILABLE(visionos(26.0))
+{
+	int index;
+
+	[encoder setRenderPipelineState:hud_pipeline];
+	[encoder setDepthStencilState:depth_always];
+	[encoder setFragmentTexture:texture atIndex:0];
+	[encoder setFragmentSamplerState:linear_sampler atIndex:0];
+	for (index = 0; index < count; index++)
+	{
+		const struct host_stereo_hud_quad *quad = &quads[index];
+		struct hud_uniforms uniforms;
+
+		uniforms.clip_from_frame = quad->frame == HOST_STEREO_HUD_LEVEL ? simd_mul(clip_from_device, level) :
+			clip_from_device;
+		uniforms.source = (simd_float4){ quad->source[0], quad->source[1], quad->source[2], quad->source[3] };
+		uniforms.center = (simd_float4){ quad->center[0], quad->center[1], quad->center[2], 0.0f };
+		uniforms.x_axis = (simd_float4){ quad->x_axis[0], quad->x_axis[1], quad->x_axis[2], 0.0f };
+		uniforms.y_axis = (simd_float4){ quad->y_axis[0], quad->y_axis[1], quad->y_axis[2], 0.0f };
+		uniforms.decode_srgb = decode_srgb;
+		uniforms.brightness = brightness;
+		uniforms.opaque = opaque;
+		[encoder setVertexBytes:&uniforms length:sizeof(uniforms) atIndex:0];
+		[encoder setFragmentBytes:&uniforms length:sizeof(uniforms) atIndex:0];
+		[encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
+	}
+}
+#endif
+
 void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLTexture> right,
 	id<MTLTexture> left_depth, id<MTLTexture> right_depth, id<MTLTexture> hud, float hud_aspect,
-	float near_meters, float far_meters, float brightness, float vignette)
+	int hud_ui, const float reticle[3], float near_meters, float far_meters, float brightness, float vignette)
 {
 #if TARGET_OS_VISION
 	if (@available(visionOS 26.0, *))
@@ -489,17 +574,31 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 		size_t count = host_theater_drawable_count();
 		float depth_scale, depth_floor;
 		simd_float2 depth_range = stereo_depth_range(near_meters, far_meters, &depth_scale, &depth_floor);
+		float layout_width = (hud_aspect > 0.0f ? hud_aspect : 4.0f / 3.0f) * HOST_STEREO_HUD_LINES;
+		struct host_stereo_hud_quad quads[HOST_STEREO_HUD_MAXIMUM_QUADS];
+		int quad_count = hud ? host_stereo_hud_layout(layout_width, hud_ui, reticle, quads) : 0;
+		static int ui_shown = -1;
 
 		if (stereo_presents++ == 0)
-			host_logf(HOST_LOG_INFO, "stereo: first present: eyes %lux%lu, %s (laid out at %.3f:1, a %.2f by %.2f m "
-				"quad %.1f m ahead), depth range %.3f to %.1f m, %zu drawable%s", (unsigned long)left.width,
-				(unsigned long)left.height, hud ? "a HUD" : "no HUD", hud_aspect, HUD_WIDTH,
-				hud_aspect > 0.0f ? HUD_WIDTH / hud_aspect : 0.0f, HUD_DISTANCE, near_meters, far_meters, count,
-				count == 1 ? "" : "s");
+			host_logf(HOST_LOG_INFO, "stereo: first present: eyes %lux%lu, %s (laid out at %.3f:1; its bands at "
+				"%.2f mm a line, the reticle at %.2f, %.1f m ahead, inside %.0f degrees of the center), depth range "
+				"%.3f to %.1f m, %zu drawable%s", (unsigned long)left.width, (unsigned long)left.height,
+				hud ? "a HUD" : "no HUD", hud_aspect, 1000.0f * host_stereo_hud_band_scale(layout_width),
+				1000.0f * HOST_STEREO_HUD_METERS_PER_LINE, HOST_STEREO_HUD_DISTANCE, HUD_SHARP_RADIUS_DEGREES,
+				near_meters, far_meters, count, count == 1 ? "" : "s");
+		/* each change between the HUD's pieces and the UI's quad */
+		if (hud && (hud_ui != 0) != ui_shown)
+		{
+			host_logf(HOST_LOG_INFO, "stereo: the HUD layer %s", hud_ui ? "holds a menu, the console or a progress "
+				"bar: whole, on the UI's quad" : "is the HUD: the reticle and the bands");
+			ui_shown = hud_ui != 0;
+		}
 
 		for (size_t index = 0; index < count; index++)
 		{
-			cp_drawable_t drawable = host_theater_drawable(index, NULL, NULL);
+			simd_float4x4 origin_from_device;
+			cp_drawable_t drawable = host_theater_drawable(index, &origin_from_device, NULL);
+			simd_float4x4 level = device_from_level(origin_from_device);
 			id<MTLCommandBuffer> commands;
 			size_t views;
 
@@ -573,28 +672,16 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 				[encoder setFragmentSamplerState:nearest_sampler atIndex:1];
 				[encoder setFragmentBytes:&eye_uniforms length:sizeof(eye_uniforms) atIndex:0];
 				[encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
-				if (hud)
+				/* the HUD's pieces at the shape the game lays it out in (its
+				texture is the eyes' size, whose pixels needn't be square) */
+				if (quad_count > 0)
 				{
-					struct hud_uniforms uniforms;
 					simd_float4x4 projection = cp_drawable_compute_projection(drawable,
 						cp_axis_direction_convention_right_up_back, view_index);
-					simd_float4x4 device_from_hud = matrix_identity_float4x4;
 
-					/* head-locked: in the device's frame, ahead of it */
-					device_from_hud.columns[3] = (simd_float4){ 0.0f, 0.0f, -HUD_DISTANCE, 1.0f };
-					uniforms.clip_from_hud = simd_mul(projection,
-						simd_mul(simd_inverse(cp_view_get_transform(view)), device_from_hud));
-					/* at the shape the game lays the HUD out in: its texture is
-					the eyes' size, whose pixels needn't be square */
-					uniforms.half_size = (simd_float2){ HUD_WIDTH / 2.0f, HUD_WIDTH / 2.0f /
-						(hud_aspect > 0.0f ? hud_aspect : (float)hud.width / (float)hud.height) };
-					uniforms.decode_srgb = decode_srgb;
-					uniforms.brightness = brightness;
-					[encoder setRenderPipelineState:hud_pipeline];
-					[encoder setVertexBytes:&uniforms length:sizeof(uniforms) atIndex:0];
-					[encoder setFragmentBytes:&uniforms length:sizeof(uniforms) atIndex:0];
-					[encoder setFragmentTexture:hud atIndex:0];
-					[encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
+					hud_draw(encoder, hud, quads, quad_count,
+						simd_mul(projection, simd_inverse(cp_view_get_transform(view))), level, decode_srgb,
+						brightness, 0);
 				}
 				[encoder endEncoding];
 			}
@@ -611,8 +698,108 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 	(void)right_depth;
 	(void)hud;
 	(void)hud_aspect;
+	(void)hud_ui;
+	(void)reticle;
 	(void)near_meters;
 	(void)far_meters;
 	(void)brightness;
+#endif
+}
+
+int host_stereo_ui_ready(void)
+{
+#if TARGET_OS_VISION
+	return head_frame_open && host_theater_frame_ready();
+#else
+	return 0;
+#endif
+}
+
+void host_stereo_present_ui(id<MTLCommandQueue> queue, id<MTLTexture> picture, id<MTLTexture> hud)
+{
+#if TARGET_OS_VISION
+	if (@available(visionOS 26.0, *))
+	{
+		size_t count = host_theater_drawable_count();
+		struct host_stereo_hud_quad quad;
+		BOOL dark = host_theater_dark();
+
+		host_stereo_hud_ui((float)picture.width / (float)picture.height, &quad);
+		if (ui_presents++ == 0)
+			host_logf(HOST_LOG_INFO, "stereo: a menu or a load: its %lux%lu picture%s on the UI's quad, %.2f by "
+				"%.2f m %.1f m ahead, level, turning with the head", (unsigned long)picture.width,
+				(unsigned long)picture.height, hud ? " and the HUD layer" : "", 2.0f * quad.x_axis[0],
+				2.0f * quad.y_axis[1], HOST_STEREO_HUD_DISTANCE);
+		for (size_t index = 0; index < count; index++)
+		{
+			simd_float4x4 origin_from_device;
+			cp_drawable_t drawable = host_theater_drawable(index, &origin_from_device, NULL);
+			simd_float4x4 level = device_from_level(origin_from_device);
+			id<MTLCommandBuffer> commands;
+			size_t views;
+
+			if (!prepare(queue.device, cp_drawable_get_color_texture(drawable, 0).pixelFormat,
+				cp_drawable_get_depth_texture(drawable, 0).pixelFormat))
+			{
+				host_theater_frame_end();
+				return;
+			}
+			commands = [queue commandBuffer];
+			views = cp_drawable_get_view_count(drawable);
+			for (size_t view_index = 0; view_index < views; view_index++)
+			{
+				cp_view_t view = cp_drawable_get_view(drawable, view_index);
+				cp_view_texture_map_t map = cp_view_get_view_texture_map(view);
+				size_t texture = cp_view_texture_map_get_texture_index(map);
+				size_t slice = cp_view_texture_map_get_slice_index(map);
+				id<MTLTexture> color = cp_drawable_get_color_texture(drawable, texture);
+				id<MTLTexture> depth = cp_drawable_get_depth_texture(drawable, texture);
+				MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
+				uint32_t decode_srgb = color.pixelFormat == MTLPixelFormatBGRA8Unorm_sRGB ||
+					color.pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB;
+				simd_float4x4 projection = cp_drawable_compute_projection(drawable,
+					cp_axis_direction_convention_right_up_back, view_index);
+
+				/* around the quad, the theater's surroundings: dark, or the room
+				(passthrough) */
+				pass.colorAttachments[0].texture = color;
+				pass.colorAttachments[0].slice = slice;
+				pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+				pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+				pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, dark ? 1.0 : 0.0);
+				pass.depthAttachment.texture = depth;
+				pass.depthAttachment.slice = slice;
+				pass.depthAttachment.loadAction = MTLLoadActionClear;
+				pass.depthAttachment.storeAction = MTLStoreActionStore;
+				pass.depthAttachment.clearDepth = 0.0;
+				if (depth.pixelFormat == MTLPixelFormatDepth32Float_Stencil8)
+				{
+					pass.stencilAttachment.texture = depth;
+					pass.stencilAttachment.slice = slice;
+					pass.stencilAttachment.loadAction = MTLLoadActionClear;
+					pass.stencilAttachment.storeAction = MTLStoreActionDontCare;
+				}
+				if (color.textureType == MTLTextureType2DArray)
+					pass.renderTargetArrayLength = 1;
+				id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
+				[encoder setViewport:cp_view_texture_map_get_viewport(map)];
+				simd_float4x4 clip_from_device = simd_mul(projection, simd_inverse(cp_view_get_transform(view)));
+
+				hud_draw(encoder, picture, &quad, 1, clip_from_device, level, decode_srgb, 1.0f, 1);
+				/* the menu over it, by its transmittance; the quad's depth is
+				written already */
+				if (hud)
+					hud_draw(encoder, hud, &quad, 1, clip_from_device, level, decode_srgb, 1.0f, 0);
+				[encoder endEncoding];
+			}
+			cp_drawable_encode_present(drawable, commands);
+			[commands commit];
+		}
+		host_theater_frame_end();
+	}
+#else
+	(void)queue;
+	(void)picture;
+	(void)hud;
 #endif
 }

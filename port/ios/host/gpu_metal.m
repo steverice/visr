@@ -3157,6 +3157,18 @@ static uint32_t gpu_metal_present(gpu_texture back_buffer)
 		command_buffer();
 		pass_finish(YES);
 #if TARGET_OS_VISION
+		/* head-tracked stereo without eyes this frame (the main menu, a
+		load): the picture goes on the UI's quad, level in front of the head
+		(host_stereo_present_ui), not the theater screen */
+		if (theater_wanted && record && record->texture && host_theater_active() && host_stereo_ui_ready())
+		{
+			use_texture(record);
+			commit(YES);
+			host_stereo_present_ui(queue, record->texture, nil);
+			frames++;
+			pacing.work_started = CACurrentMediaTime();
+			return 0;
+		}
 		/* theater mode: the picture, at the screen's size (sharp enough for its
 		angle, host_theater_picture_size), goes on the screen
 		in the immersive space, whose frames pace the game; the window isn't
@@ -3365,8 +3377,25 @@ static uint32_t gpu_metal_present_stereo(const struct gpu_stereo_present *presen
 				use_texture(hud);
 			commit(YES);
 			host_stereo_present(queue, color[0]->texture, color[1]->texture, depth[0]->texture, depth[1]->texture,
-				hud ? hud->texture : nil, present->hud_aspect, present->near_meters, present->far_meters,
-				stereo_cut_brightness(0, present), present->vignette);
+				hud ? hud->texture : nil, present->hud_aspect, present->hud_ui, present->reticle, present->near_meters,
+				present->far_meters, stereo_cut_brightness(0, present), present->vignette);
+			frames++;
+			pacing.work_started = CACurrentMediaTime();
+			return 0;
+		}
+		/* HEAD mode with a menu over the film (the main menu's scripted
+		scene, the pause menu in a cutscene): the left eye's picture with the
+		menu on the UI's quad, as a frame without eyes, not on the screen */
+		if (theater_wanted && on_screen && present->hud_ui && color[0] &&
+			color[0]->texture && hud && hud->texture && host_stereo_ui_ready())
+		{
+			command_buffer();
+			pass_end();
+			use_texture(color[0]);
+			use_texture(hud);
+			commit(YES);
+			host_stereo_present_ui(queue, color[0]->texture, hud->texture);
+			stereo_shown = -1;
 			frames++;
 			pacing.work_started = CACurrentMediaTime();
 			return 0;

@@ -439,6 +439,8 @@ struct gpu_stereo_present
 	float hud_aspect;                  /* the HUD's width over its height as laid out */
 	float vignette;                    /* 0 to 1: how much HEAD mode darkens the eyes' edges */
 	int32_t cut_covered;               /* 1 while the script fade covers a cut (no fade through black) */
+	int32_t hud_ui;                    /* 1 while the HUD layer holds a menu, the console or a progress bar */
+	float reticle[3];                  /* where the HUD's center points in the eyes' frame (halo_stereo_reticle) */
 };
 
 /* presents a stereo frame as gpu_present does a mono one (and returns the
