@@ -10,6 +10,7 @@ struct host_stereo_head
 {
 	int known;                 /* the head's pose has been read once */
 	float yaw, pitch, roll;    /* its last angles, radians */
+	float yaw_from_right;      /* its last yaw read from its right (host_stereo_head.c) */
 };
 
 /* fills the frame's head_yaw, head_pitch and head_roll (halo_stereo.h) from

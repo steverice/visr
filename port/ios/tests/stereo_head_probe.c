@@ -425,8 +425,37 @@ static void vignette_binocular(void)
 		"50 degrees out (past the nearest edge's angle): full");
 }
 
+/* a tilted head nodding across the 85-degree line, with no turn about the
+room's up, must not turn the look (the yaw's source changes there) */
+static void pole_crossing(void)
+{
+	struct halo_stereo_frame frame;
+	float worst = 0.0f;
+	int step;
+
+	memset(&head, 0, sizeof(head));
+	for (step = 0; step <= 40; step++)
+	{
+		/* 80 to 90 degrees and back, with 10 degrees of roll */
+		float pitch = (step <= 20 ? 80.0f + step * 0.5f : 90.0f - (step - 20) * 0.5f) * DEGREES;
+
+		memset(&frame, 0, sizeof(frame));
+		set_pose(20.0f * DEGREES, fminf(pitch, 89.9f * DEGREES), 10.0f * DEGREES);
+		host_stereo_head_turn(&head, pose[0], pose[1], pose[2], &frame);
+		if (fabsf(frame.head_yaw) > worst)
+			worst = fabsf(frame.head_yaw);
+	}
+	printf("%-36s worst head yaw %.3f deg\n", "a tilted nod across 85 deg", worst / DEGREES);
+	if (worst / DEGREES > 0.5f)
+	{
+		printf("  FAIL: nodding with the head tilted turned the look\n");
+		failures++;
+	}
+}
+
 int main(void)
 {
+	pole_crossing();
 	pole();
 	pan("level pan at 0 deg pitch", 0.0f, 0.0f);
 	pan("level pan at -10 deg pitch", -10.0f * DEGREES, 0.0f);

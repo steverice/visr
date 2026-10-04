@@ -26,11 +26,13 @@ void host_stereo_head_turn(struct host_stereo_head *head, const float right[3], 
 	float roll = atan2f(right[1], up[1]);
 
 	/* near straight up or down forward's horizontal part vanishes and its yaw
-	can swing by pi in a frame: the yaw comes from the head's right there,
-	which stays level (the same angle for a level head; off by the roll
-	otherwise) */
-	if (fabsf(pitch) >= HEAD_YAW_PITCH_LIMIT)
-		yaw = atan2f(-right[2], right[0]);
+	can swing by pi in a frame; the head's right stays level there, and a turn
+	about the room's up turns it by the same angle at any pitch or roll. Its
+	own yaw is off from forward's by about the roll, so a frame's turn takes
+	both ends from one source: right's whenever this frame or the last is
+	past the limit, else forward's. Crossing the limit with the head tilted
+	then doesn't step the view by the tilt */
+	float yaw_from_right = atan2f(-right[2], right[0]);
 
 	/* the yaw is a turn since the last frame (the body's yaw is the game's,
 	which the stick turns too); the pitch and roll are the head's own, so the
@@ -38,10 +40,16 @@ void host_stereo_head_turn(struct host_stereo_head *head, const float right[3], 
 	head's (the game starts level, levels itself, clamps), and the yaw about
 	the room's up then rolls the world as the head pans */
 	if (head->known)
-		frame->head_yaw = wrapped(yaw - head->yaw);
+	{
+		if (fabsf(pitch) >= HEAD_YAW_PITCH_LIMIT || fabsf(head->pitch) >= HEAD_YAW_PITCH_LIMIT)
+			frame->head_yaw = wrapped(yaw_from_right - head->yaw_from_right);
+		else
+			frame->head_yaw = wrapped(yaw - head->yaw);
+	}
 	frame->head_pitch = pitch;
 	frame->head_roll = roll;
 	head->yaw = yaw;
+	head->yaw_from_right = yaw_from_right;
 	head->pitch = pitch;
 	head->roll = roll;
 	head->known = 1;
