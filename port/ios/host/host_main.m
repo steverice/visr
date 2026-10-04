@@ -131,8 +131,16 @@ scene closes once the game's window exists */
 void host_extra_scene_poll(void) {
     if(!extra_scene_pending)return;
     if(extra_scene_pending==1){
+        char directory[1024];
         SDL_SetiOSEventPump(true);
         host_logf(HOST_LOG_INFO,"the event pump is back on after the extra window scene's start");
+        /* SDL's scene delegate also changed the working directory to the app's
+           resources for the new scene; the host's relative paths (config.toml,
+           host_config.c) are the data folder's */
+        if(getcwd(directory,sizeof(directory))&&strcmp(directory,data_root)){
+            chdir(data_root);
+            host_logf(HOST_LOG_INFO,"the working directory is the data folder again (the extra scene set %s)",directory);
+        }
         /* a block on the main queue runs only when the main run loop does */
         dispatch_async(dispatch_get_main_queue(),^{host_logf(HOST_LOG_INFO,"the main queue runs again");});
         extra_scene_pending=2;

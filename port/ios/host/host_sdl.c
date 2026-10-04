@@ -254,6 +254,10 @@ int host_sdl_poll_event(void *event)
 	/* a few seconds in, once the game's window is up */
 	if (test_extra_scene && ++polls == 600)
 		host_extra_scene_test();
+	/* and later, that the host still reads config.toml */
+	if (test_extra_scene && polls == 1800)
+		host_logf(HOST_LOG_INFO, "debug.test_extra_scene: config.toml's display.theater_distance reads %.2f",
+			host_config_real("display.theater_distance", -1.0));
 #else
 	(void)test_extra_scene;
 	(void)polls;
