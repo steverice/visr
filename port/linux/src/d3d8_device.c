@@ -2648,13 +2648,15 @@ composite rgb + picture * alpha, and the layer clears to color 0, alpha 1
 Mono blends each draw into the picture: P' = src * S + P * D, for the
 operation's sign. With the layer standing for C + P * T, the same draw makes
 C' = src * S + C * D (the game's own blend, on the color) and T' = T * D,
-exact whenever D is the same for every channel and S doesn't read the
-destination: alpha then blends by ZERO and D. Blending off is D = ZERO.
+exact for ADD whenever D is the same for every channel and S doesn't read
+the destination: alpha then blends by ZERO and D. Blending off is D = ZERO.
 That covers the HUD's alpha-blended draws (INVSRCALPHA), its additive ones
 (ONE: the picture still shows) and the meters (SRCALPHA, hud_hires.h). The
 game's own alpha writes there (scratch, in mono) are replaced. Other blends
-(a destination factor per channel, MIN and MAX) keep the game's write mask:
-they change the color alone, as before; debug.gpu_stats counts them. The
+(a destination factor per channel; SUBTRACT and REVERSE_SUBTRACT, which the
+layer's color, starting at 0, clamps away where mono would subtract from
+the picture; MIN and MAX) keep the game's write mask: they change the color
+alone, as before, and debug.gpu_stats counts them. The
 port's screen flash in the layer reads the transmittance itself
 (rasterizer_xbox_screen_effect.c, D3DBLEND_INVDESTALPHA) and writes color
 only: it is left alone. Mono never draws here */
@@ -2668,10 +2670,11 @@ static void hud_layer_blend(struct gpu_blend_state *blend)
 	BOOL scalar = destination == GPU_BLEND_ZERO || destination == GPU_BLEND_ONE ||
 		destination == GPU_BLEND_SOURCE_ALPHA || destination == GPU_BLEND_ONE_MINUS_SOURCE_ALPHA ||
 		destination == GPU_BLEND_CONSTANT_ALPHA || destination == GPU_BLEND_ONE_MINUS_CONSTANT_ALPHA;
-	/* SUBTRACT would subtract the transmittance; ADD and REVERSE_SUBTRACT
-	keep it at T * D */
-	BOOL operation = !blend->enable || blend->operation == GPU_BLEND_OP_ADD ||
-		blend->operation == GPU_BLEND_OP_REVERSE_SUBTRACT;
+	/* only ADD: the layer's color starts at 0 and can't go below it, so a
+	subtraction (SUBTRACT, REVERSE_SUBTRACT) is clamped away where little has
+	drawn, while mono subtracts from the picture; MIN and MAX take no
+	factors */
+	BOOL operation = !blend->enable || blend->operation == GPU_BLEND_OP_ADD;
 
 	/* a draw that writes no color (depth or stencil only) leaves it */
 	if (!(blend->color_write_mask & 7))
