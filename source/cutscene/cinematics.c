@@ -293,6 +293,46 @@ void cinematic_set_title_delayed(
 	return;
 }
 
+/* port: how far stereo's cutscene screen brings its bars in
+(halo_stereo.h): as far as the furthest faded-in title, by the fade
+cinematic_render gives its text */
+float halo_cinematic_title_bars(
+	void)
+{
+	real bars = 0.0f;
+	short title_slot_index;
+
+	for (title_slot_index = 0;
+		title_slot_index < MAXIMUM_QUEUED_CINEMATIC_TITLES;
+		title_slot_index++)
+	{
+		struct cinematic_title const *active_title =
+			&cinematic_globals->queued_titles[title_slot_index];
+		struct scenario_cutscene_title const *title;
+		real fade_amount = 1.0f;
+
+		if (active_title->title_index == NONE)
+			continue;
+		title = TAG_BLOCK_GET_ELEMENT(
+			&global_scenario_get()->cutscene_chapter_titles,
+			active_title->title_index,
+			struct scenario_cutscene_title);
+		if (!game_in_editor())
+		{
+			real title_time = (real)active_title->time;
+
+			if (title_time < title->fade_in_time)
+				fade_amount = title_time / title->fade_in_time;
+			else if (title_time > title->up_time)
+				fade_amount = 1.0f - (title_time - title->up_time) / title->fade_out_time;
+			fade_amount = PIN(fade_amount, 0.0f, 1.0f);
+		}
+		bars = MAX(bars, fade_amount);
+	}
+
+	return bars;
+}
+
 void cinematic_render(
 	void)
 {
@@ -303,6 +343,7 @@ void cinematic_render(
 		long game_time;
 		long elapsed_ticks;
 		real letterbox_amount;
+		real bar_amount;
 
 		game_time = game_time_get();
 		elapsed_ticks =
@@ -326,13 +367,21 @@ void cinematic_render(
 
 		cinematic_globals->letterbox_amount = letterbox_amount;
 
-		if (cinematic_globals->letterbox_amount > 0.0f)
+		/* port: stereo's 3D film (port/linux/game/stereo.c) fills its 16:9
+		screen with the letterbox's inside, so its bars come in only while a
+		title shows, as far as the title has faded in; other stereo frames
+		(gameplay, as the bars slide out after a cutscene) have none */
+		bar_amount = cinematic_globals->letterbox_amount;
+		if (halo_stereo_frame()->eye_count == 2)
+			bar_amount = halo_stereo_film() ? halo_cinematic_title_bars() : 0.0f;
+
+		if (bar_amount > 0.0f)
 		{
 			rectangle2d bar;
 			real bar_height;
 			real viewport_height;
 
-			bar_height = cinematic_globals->letterbox_amount * 0.125f;
+			bar_height = bar_amount * 0.125f;
 			viewport_height = (real)(
 				render.camera.viewport_bounds.y1 -
 				render.camera.viewport_bounds.y0);

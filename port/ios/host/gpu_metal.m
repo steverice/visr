@@ -3266,7 +3266,42 @@ host_stereo_frame opened at the frame's begin (host_stereo.m); in stereo on
 the screen (display.stereo = "screen") each eye's picture, with the HUD over
 it, goes on the theater screen for its view (host_theater_present_eyes);
 without a frame (the space closed, another mode) eye 0 goes through the mono
-path */
+path.
+
+A cutscene (present->cinematic, the 3D film) is on the screen in any mode. A cut
+between the full view and the screen (a cutscene starting or ending in HEAD
+mode) goes to black and fades back in over STEREO_CUT_FRAMES frames, unless
+a script fade already covers it. */
+#if TARGET_OS_VISION
+#define STEREO_CUT_FRAMES 6
+/* a script fade this far in covers a cut */
+#define STEREO_CUT_COVERED 0.99f
+/* what the last stereo frame showed: -1 none (mono), 0 the full view, 1 the
+screen; and the frames of the cut's fade still to come */
+static int stereo_shown = -1;
+static int stereo_cut_frames;
+
+/* the brightness of a frame showing the full view (0) or the screen (1):
+STEREO_CUT_FRAMES frames from black after a cut no script fade covers */
+static float stereo_cut_brightness(int shown, const struct gpu_stereo_present *present)
+{
+	float brightness;
+
+	if (stereo_shown >= 0 && shown != stereo_shown && !(present->fade[3] >= STEREO_CUT_COVERED))
+	{
+		stereo_cut_frames = STEREO_CUT_FRAMES;
+		platform_log("stereo: from %s to %s through black", stereo_shown ? "the screen" : "the full view",
+			shown ? "the screen" : "the full view");
+	}
+	stereo_shown = shown;
+	if (stereo_cut_frames <= 0)
+		return 1.0f;
+	brightness = 1.0f - (float)stereo_cut_frames / (float)STEREO_CUT_FRAMES;
+	stereo_cut_frames--;
+	return brightness;
+}
+#endif
+
 static uint32_t gpu_metal_present_stereo(const struct gpu_stereo_present *present)
 {
 #if TARGET_OS_VISION
@@ -3275,8 +3310,9 @@ static uint32_t gpu_metal_present_stereo(const struct gpu_stereo_present *presen
 		MetalTexture *color[2] = { texture_record(present->eye_color[0]), texture_record(present->eye_color[1]) };
 		MetalTexture *depth[2] = { texture_record(present->eye_depth[0]), texture_record(present->eye_depth[1]) };
 		MetalTexture *hud = present->hud ? texture_record(present->hud) : nil;
+		BOOL on_screen = present->mode == HALO_STEREO_SCREEN || present->cinematic;
 
-		if (theater_wanted && present->mode == HALO_STEREO_HEAD && color[0] && color[0]->texture && color[1] &&
+		if (theater_wanted && !on_screen && present->mode == HALO_STEREO_HEAD && color[0] && color[0]->texture && color[1] &&
 			color[1]->texture && depth[0] && depth[0]->texture && depth[1] && depth[1]->texture && host_stereo_ready())
 		{
 			int eye;
@@ -3293,12 +3329,13 @@ static uint32_t gpu_metal_present_stereo(const struct gpu_stereo_present *presen
 				use_texture(hud);
 			commit(YES);
 			host_stereo_present(queue, color[0]->texture, color[1]->texture, depth[0]->texture, depth[1]->texture,
-				hud ? hud->texture : nil, present->near_meters, present->far_meters);
+				hud ? hud->texture : nil, present->near_meters, present->far_meters,
+				stereo_cut_brightness(0, present));
 			frames++;
 			pacing.work_started = CACurrentMediaTime();
 			return 0;
 		}
-		if (theater_wanted && present->mode == HALO_STEREO_SCREEN && color[0] && color[0]->texture && color[1] &&
+		if (theater_wanted && on_screen && color[0] && color[0]->texture && color[1] &&
 			color[1]->texture && host_stereo_ready())
 		{
 			command_buffer();
@@ -3308,11 +3345,13 @@ static uint32_t gpu_metal_present_stereo(const struct gpu_stereo_present *presen
 			if (hud && hud->texture)
 				use_texture(hud);
 			commit(YES);
-			host_theater_present_eyes(queue, color[0]->texture, color[1]->texture, hud ? hud->texture : nil);
+			host_theater_present_eyes(queue, color[0]->texture, color[1]->texture, hud ? hud->texture : nil,
+				stereo_cut_brightness(1, present));
 			frames++;
 			pacing.work_started = CACurrentMediaTime();
 			return 0;
 		}
+		stereo_shown = -1;
 	}
 #endif
 	return gpu_metal_present(present->eye_color[0]);

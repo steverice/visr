@@ -6,12 +6,14 @@
 /* draws picture on the theater screen for the Compositor's open frame (or the
 next one) */
 void host_theater_present(id<MTLCommandQueue> queue, id<MTLTexture> picture);
-/* stereo on the screen (display.stereo = "screen"): each eye's picture on the
-screen for its view (view 0 the left eye), the HUD (nil: none) blended over
-each, for the frame host_stereo_frame opened. The screen's depth is the
-Compositor's, as in mono: the picture is on a flat surface in the room */
+/* stereo on the screen (display.stereo = "screen", and the cutscenes' 3D
+film in any mode): each eye's picture on the screen for its view (view 0 the
+left eye), the HUD (nil: none) blended over each, for the frame
+host_stereo_frame opened. The screen's depth is the Compositor's, as in
+mono: the picture is on a flat surface in the room. Brightness (0 to 1) dims
+the picture toward black, for the fade of a cut to or from the screen */
 void host_theater_present_eyes(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLTexture> right,
-	id<MTLTexture> hud);
+	id<MTLTexture> hud, float brightness);
 #endif
 
 #if defined(__OBJC__) && !defined(__swift__)

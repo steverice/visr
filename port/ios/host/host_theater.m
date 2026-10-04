@@ -160,7 +160,7 @@ int host_theater_active(void)
 static NSString *const shader_source =
 	@"#include <metal_stdlib>\n"
 	"using namespace metal;\n"
-	"struct screen_uniforms { float4x4 clip_from_screen; float2 half_size; uint decode_srgb; };\n"
+	"struct screen_uniforms { float4x4 clip_from_screen; float2 half_size; uint decode_srgb; float brightness; };\n"
 	"struct screen_vertex { float4 position [[position]]; float2 coordinate; };\n"
 	"vertex screen_vertex theater_vertex(uint index [[vertex_id]], constant screen_uniforms &u [[buffer(0)]])\n"
 	"{\n"
@@ -177,7 +177,7 @@ static NSString *const shader_source =
 	/* the game's colors are display-encoded; an sRGB target encodes what it's given */
 	"	if (u.decode_srgb)\n"
 	"		color = select(pow((color + 0.055) / 1.055, 2.4), color / 12.92, color <= 0.04045);\n"
-	"	return float4(color, 1);\n"
+	"	return float4(color * u.brightness, 1);\n"
 	"}\n"
 	/* stereo on the screen: the HUD over the eye's picture, both display-
 	encoded, as the game would have blended it into its back buffer. The HUD
@@ -190,7 +190,7 @@ static NSString *const shader_source =
 	"	float3 color = saturate(over.rgb + picture.sample(linear, in.coordinate).rgb * (1 - over.a));\n"
 	"	if (u.decode_srgb)\n"
 	"		color = select(pow((color + 0.055) / 1.055, 2.4), color / 12.92, color <= 0.04045);\n"
-	"	return float4(color, 1);\n"
+	"	return float4(color * u.brightness, 1);\n"
 	"}\n";
 
 struct screen_uniforms
@@ -198,6 +198,7 @@ struct screen_uniforms
 	simd_float4x4 clip_from_screen;
 	simd_float2 half_size;
 	uint32_t decode_srgb;
+	float brightness;
 };
 
 static BOOL prepare(id<MTLDevice> device, MTLPixelFormat color, MTLPixelFormat depth)
@@ -384,9 +385,10 @@ void host_theater_frame_end(void)
 }
 
 /* the pictures on the screen for the open frame (or the next one): view 0's
-the left one, the others the right; the HUD, if any, over each */
+the left one, the others the right; the HUD, if any, over each; the
+pictures at a brightness */
 static void present_pictures(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLTexture> right,
-	id<MTLTexture> hud)
+	id<MTLTexture> hud, float brightness)
 {
 	if (@available(visionOS 26.0, *))
 	{
@@ -430,6 +432,9 @@ static void present_pictures(id<MTLCommandQueue> queue, id<MTLTexture> left, id<
 				pass.colorAttachments[0].slice = cp_view_texture_map_get_slice_index(map);
 				pass.colorAttachments[0].loadAction = MTLLoadActionClear;
 				pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+				uint32_t decode_srgb = color.pixelFormat == MTLPixelFormatBGRA8Unorm_sRGB ||
+					color.pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB;
+
 				pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, environment_dark ? 1.0 : 0.0);
 				pass.depthAttachment.texture = depth;
 				pass.depthAttachment.slice = cp_view_texture_map_get_slice_index(map);
@@ -449,8 +454,8 @@ static void present_pictures(id<MTLCommandQueue> queue, id<MTLTexture> left, id<
 					simd_mul(simd_inverse(origin_from_view), origin_from_screen));
 				uniforms.half_size = (simd_float2){ screen_width / 2.0f,
 					screen_width / 2.0f * (float)picture.height / (float)picture.width };
-				uniforms.decode_srgb = color.pixelFormat == MTLPixelFormatBGRA8Unorm_sRGB ||
-					color.pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB;
+				uniforms.decode_srgb = decode_srgb;
+				uniforms.brightness = brightness;
 				id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
 				[encoder setViewport:cp_view_texture_map_get_viewport(map)];
 				[encoder setRenderPipelineState:hud ? hud_pipeline : pipeline];
@@ -475,16 +480,16 @@ static void present_pictures(id<MTLCommandQueue> queue, id<MTLTexture> left, id<
 
 void host_theater_present(id<MTLCommandQueue> queue, id<MTLTexture> picture)
 {
-	present_pictures(queue, picture, picture, nil);
+	present_pictures(queue, picture, picture, nil, 1.0f);
 }
 
 void host_theater_present_eyes(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLTexture> right,
-	id<MTLTexture> hud)
+	id<MTLTexture> hud, float brightness)
 {
 	static unsigned long presents;
 
 	if (presents++ == 0)
 		host_logf(HOST_LOG_INFO, "theater: first stereo frame on the screen: eyes %lux%lu, %s",
 			(unsigned long)left.width, (unsigned long)left.height, hud ? "a HUD" : "no HUD");
-	present_pictures(queue, left, right, hud);
+	present_pictures(queue, left, right, hud, brightness);
 }

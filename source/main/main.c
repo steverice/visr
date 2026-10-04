@@ -1144,6 +1144,14 @@ void set_window_camera_values(
 				0.75f * render_camera_get_adjusted_field_of_view_tangent(
 					observer->field_of_view),
 				1.0f);
+		/* port: the cutscene screen shows the letterbox's inside, 640x360 of 640x480 */
+		if (halo_stereo_film())
+		{
+			window->rasterizer_camera.vertical_field_of_view =
+				2.0f * arctangent(
+					0.75f * tangent(window->rasterizer_camera.vertical_field_of_view * 0.5f),
+					1.0f);
+		}
 
 		if (window->local_player_index != NONE &&
 			!console_is_active() &&

@@ -73,7 +73,7 @@ static NSString *const shader_source =
 	given. Its depth is reverse-Z already, for its near and far planes, which
 	the drawable's depth range is set to; scaled when the near plane had to
 	move out to the Compositor's (stereo_depth_range) */
-	"struct eye_uniforms { uint decode_srgb; float depth_scale; };\n"
+	"struct eye_uniforms { uint decode_srgb; float depth_scale; float brightness; };\n"
 	"fragment eye_pixel eye_fragment(picture_vertex in [[stage_in]], texture2d<float> picture [[texture(0)]],\n"
 	"	depth2d<float> depth [[texture(1)]], sampler linear [[sampler(0)]], sampler nearest [[sampler(1)]],\n"
 	"	constant eye_uniforms &u [[buffer(0)]])\n"
@@ -82,11 +82,11 @@ static NSString *const shader_source =
 	"	if (u.decode_srgb)\n"
 	"		color = select(pow((color + 0.055) / 1.055, 2.4), color / 12.92, color <= 0.04045);\n"
 	"	eye_pixel out;\n"
-	"	out.color = float4(color, 1);\n"
+	"	out.color = float4(color * u.brightness, 1);\n"
 	"	out.depth = min(depth.sample(nearest, in.coordinate) * u.depth_scale, 1.0);\n"
 	"	return out;\n"
 	"}\n"
-	"struct hud_uniforms { float4x4 clip_from_hud; float2 half_size; uint decode_srgb; };\n"
+	"struct hud_uniforms { float4x4 clip_from_hud; float2 half_size; uint decode_srgb; float brightness; };\n"
 	"vertex picture_vertex hud_vertex(uint index [[vertex_id]], constant hud_uniforms &u [[buffer(0)]])\n"
 	"{\n"
 	"	float2 corner = float2(index & 1, index >> 1);\n"
@@ -109,13 +109,14 @@ static NSString *const shader_source =
 	"		discard_fragment();\n"
 	"	if (u.decode_srgb)\n"
 	"		color.rgb = select(pow((color.rgb + 0.055) / 1.055, 2.4), color.rgb / 12.92, color.rgb <= 0.04045);\n"
-	"	return color;\n"
+	"	return float4(color.rgb * u.brightness, color.a);\n"
 	"}\n";
 
 struct eye_uniforms
 {
 	uint32_t decode_srgb;
 	float depth_scale;
+	float brightness;
 };
 
 struct hud_uniforms
@@ -123,6 +124,7 @@ struct hud_uniforms
 	simd_float4x4 clip_from_hud;
 	simd_float2 half_size;
 	uint32_t decode_srgb;
+	float brightness;
 };
 
 static BOOL prepare(id<MTLDevice> device, MTLPixelFormat color, MTLPixelFormat depth)
@@ -431,7 +433,7 @@ int host_stereo_ready(void)
 
 void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLTexture> right,
 	id<MTLTexture> left_depth, id<MTLTexture> right_depth, id<MTLTexture> hud,
-	float near_meters, float far_meters)
+	float near_meters, float far_meters, float brightness)
 {
 #if TARGET_OS_VISION
 	if (@available(visionOS 26.0, *))
@@ -477,7 +479,7 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 				int eye = view_index == 0 ? 0 : 1;
 				uint32_t decode_srgb = color.pixelFormat == MTLPixelFormatBGRA8Unorm_sRGB ||
 					color.pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB;
-				struct eye_uniforms eye_uniforms = { decode_srgb, depth_scale };
+				struct eye_uniforms eye_uniforms = { decode_srgb, depth_scale, brightness };
 
 				pass.colorAttachments[0].texture = color;
 				pass.colorAttachments[0].slice = slice;
@@ -522,6 +524,7 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 					uniforms.half_size = (simd_float2){ HUD_WIDTH / 2.0f,
 						HUD_WIDTH / 2.0f * (float)hud.height / (float)hud.width };
 					uniforms.decode_srgb = decode_srgb;
+					uniforms.brightness = brightness;
 					[encoder setRenderPipelineState:hud_pipeline];
 					[encoder setVertexBytes:&uniforms length:sizeof(uniforms) atIndex:0];
 					[encoder setFragmentBytes:&uniforms length:sizeof(uniforms) atIndex:0];
@@ -544,5 +547,6 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 	(void)hud;
 	(void)near_meters;
 	(void)far_meters;
+	(void)brightness;
 #endif
 }

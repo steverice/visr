@@ -65,4 +65,19 @@ depth (d3d8_device.c), set by the eye loop each stereo frame */
 void halo_stereo_set_depth_range(float z_near, float z_far);
 void halo_stereo_depth_range(float *z_near, float *z_far);
 
+/* The cutscene screen. In stereo, while the letterbox is in, the game plays
+as a 3D film on a 16:9 screen (stereo.c): the cinematic camera rendered
+twice, framed on the letterbox's inside with no bars except while a title
+shows. */
+/* 1 when this frame is the 3D film: stereo with eyes, and the letterbox in */
+int halo_stereo_film(void);
+/* the film's frusta, from the camera's own vertical tangent (render.c's eye
+loop, before it reads the eyes); nothing unless this frame is the film */
+void halo_stereo_film_frusta(float vertical_tangent);
+/* port/linux/game/cinematic_screen.c: 1 while the letterbox is in */
+int halo_cinematic_screen(void);
+/* source/cutscene/cinematics.c: 0..1, how far the bars are in, following
+the active title's fades */
+float halo_cinematic_title_bars(void);
+
 #endif

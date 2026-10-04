@@ -480,6 +480,9 @@ static void render_player_frame_stereo(
 	aspect = (real)(window->rasterizer_camera.viewport_bounds.x1 - window->rasterizer_camera.viewport_bounds.x0) /
 		(real)(window->rasterizer_camera.viewport_bounds.y1 - window->rasterizer_camera.viewport_bounds.y0);
 	field_of_view_tangent = tangent(window->rasterizer_camera.vertical_field_of_view * 0.5f);
+	/* the 3D film's eyes take their frusta from the cinematic camera's
+	field of view (stereo.c); nothing otherwise */
+	halo_stereo_film_frusta(field_of_view_tangent);
 
 	/* culling: one frustum that contains both eyes' exactly. Its bounds are
 	the union of the eyes' tangents; its apex is the center camera moved back
