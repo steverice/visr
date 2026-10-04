@@ -534,7 +534,8 @@ def test_prepare_rewrite_drops_settings_an_earlier_run_left(tmp_path):
                               set=["display.renderer=\"metal\""], init=[])
     mac_run.prepare(args, tmp_path, rewrite=True)
     text = (tmp_path / "config.toml").read_text()
-    assert "network_test" not in text
+    # DEFAULTS resets debug.network_test itself, to "": the earlier run's value is gone either way
+    assert "bloodgulch" not in text
     assert "exit_after = 5.0" in text and 'renderer = "metal"' in text
 
 
