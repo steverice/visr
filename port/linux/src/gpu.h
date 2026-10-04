@@ -107,9 +107,12 @@ void gpu_texture_copy_level(gpu_texture source, gpu_texture destination, uint32_
 /* the levels after base_level from base_level */
 void gpu_texture_generate_mipmaps(gpu_texture texture, uint32_t base_level);
 void gpu_texture_destroy(gpu_texture texture);
-/* level 0 of a 2D color texture as BGRA8 rows from the top; returns 0 and
-writes nothing if size is short of width * height * 4 or the backend cannot
-read the texture (ES: block-compressed textures) */
+/* level 0 of a 2D color texture as BGRA8 rows from the top; of a 2D
+depth-stencil render target, its depth as one float per texel, rows from the
+top, as the game sees it (0 at the near plane, 1 at the far plane and where
+nothing drew), for debugging. Returns 0 and writes nothing if size is short of
+width * height * 4 or the backend cannot read the texture (ES: block-compressed
+textures and depth) */
 uint32_t gpu_texture_read(gpu_texture texture, void *pixels, uint32_t size);
 
 /* ---------- buffers: the vertex mirror's segments */

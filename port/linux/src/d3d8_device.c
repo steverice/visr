@@ -3646,6 +3646,93 @@ static void write_screenshot(struct render_target_entry *target, const char *suf
 	free(pixels);
 }
 
+/* a depth target's depth as the game sees it (gpu_texture_read), or NULL if
+the backend can't read it back; the caller frees it */
+static float *depth_read(struct render_target_entry *target)
+{
+	uint32_t size = (uint32_t)(target->target.gl_width * target->target.gl_height * 4);
+	float *depth = malloc(size);
+
+	if (depth && !gpu_texture_read(target->target.texture, depth, size))
+	{
+		free(depth);
+		depth = NULL;
+	}
+	return depth;
+}
+
+/* the share of a depth target's texels nothing drew (the far plane's
+depth), which the Compositor treats as empty: 0..1, or -1 if the backend
+can't read the depth back */
+static float depth_empty_share(struct render_target_entry *target)
+{
+	unsigned long count = target->target.gl_width * target->target.gl_height, index, empty = 0;
+	float *depth = depth_read(target);
+
+	if (!depth || !count)
+	{
+		free(depth);
+		return -1.0f;
+	}
+	for (index = 0; index < count; index++)
+		empty += depth[index] >= 1.0f;
+	free(depth);
+	return (float)empty / (float)count;
+}
+
+/* debug.screenshot_every in a stereo frame: an eye's depth as a grayscale
+frameNNNNN-left-depth.bmp. Reverse-Z, as the Compositor gets it (near is
+bright); black only where nothing drew, which the Compositor treats as
+empty, and anything drawn at least a dark gray, so the two can't be confused */
+static void write_depth_screenshot(struct render_target_entry *target, const char *suffix)
+{
+	const char *directory = *config_string("debug.screenshot_directory") ?
+		config_string("debug.screenshot_directory") : NULL;
+	unsigned long width = target->target.gl_width, height = target->target.gl_height;
+	unsigned char *pixels;
+	float *depth;
+	char path[512];
+	FILE *file;
+	unsigned long index, empty = 0;
+	unsigned char header[54] = { 'B', 'M' };
+	unsigned long image_size = width * height * 4;
+
+	if (!directory || !(depth = depth_read(target)))
+		return;
+	pixels = malloc(image_size);
+	for (index = 0; index < width * height; index++)
+	{
+		float reversed = 1.0f - depth[index];
+		unsigned char gray = reversed <= 0.0f ? 0 :
+			(unsigned char)(32.0f + 223.0f * sqrtf(sqrtf(reversed < 1.0f ? reversed : 1.0f)));
+
+		empty += reversed <= 0.0f;
+		pixels[index * 4] = pixels[index * 4 + 1] = pixels[index * 4 + 2] = gray;
+		pixels[index * 4 + 3] = 0xff;
+	}
+	free(depth);
+	snprintf(path, sizeof(path), "%s/frame%05lu%s.bmp", directory, device.frame, suffix);
+	file = fopen(path, "wb");
+	if (file)
+	{
+		*(unsigned int *)(header + 2) = (unsigned int)(54 + image_size);
+		*(unsigned int *)(header + 10) = 54;
+		*(unsigned int *)(header + 14) = 40;
+		*(int *)(header + 18) = (int)width;
+		*(int *)(header + 22) = -(int)height; /* rows from the top, as read */
+		*(unsigned short *)(header + 26) = 1;
+		*(unsigned short *)(header + 28) = 32;
+		*(unsigned int *)(header + 34) = (unsigned int)image_size;
+		fwrite(header, 1, sizeof(header), file);
+		for (index = 0; index < height; index++)
+			fwrite(pixels + index * width * 4, 1, width * 4, file);
+		fclose(file);
+	}
+	platform_log("frame %lu: %s: %.1f%% of the depth is empty", device.frame, suffix,
+		100.0f * (float)empty / (float)(width * height));
+	free(pixels);
+}
+
 /* the back buffer's texture for a stereo layer if something drew it this
 frame, else NULL (without creating it) */
 static struct render_target_entry *back_buffer_drawn_this_frame(int layer)
@@ -3697,6 +3784,7 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 			{
 				write_screenshot(back_buffer, "-left");
 				write_screenshot(render_target_get_layer(&device.back_buffer, 1), "-right");
+				write_depth_screenshot(render_target_get_layer(&device.depth_buffer, 0), "-left-depth");
 				if (hud)
 					write_screenshot(hud, "-hud");
 			}
@@ -3705,6 +3793,20 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 		{
 			struct gpu_stereo_present present = { 0 };
 			int eye;
+			static int depth_checked;
+
+			/* debug.gpu_stats: how much of the first stereo frame's eye depth is
+			empty, which the Compositor would show as nothing (passthrough) */
+			if (debug_settings.statistics && !depth_checked)
+			{
+				float share = depth_empty_share(render_target_get_layer(&device.depth_buffer, 0));
+
+				depth_checked = 1;
+				if (share >= 0.0f)
+					platform_log("stereo: the first stereo frame's left eye depth is %.1f%% empty", 100.0f * share);
+				else
+					platform_log("stereo: the first stereo frame's depth can't be read back");
+			}
 
 			for (eye = 0; eye < 2; eye++)
 			{

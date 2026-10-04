@@ -738,12 +738,40 @@ static uint32_t gpu_metal_texture_read(gpu_texture texture, void *pixels, uint32
 		id<MTLBlitCommandEncoder> blit;
 
 		if (!record || !record->texture || description->type != GPU_TEXTURE_2D ||
-			description->format != GPU_FORMAT_BGRA8)
+			(description->format != GPU_FORMAT_BGRA8 && description->format != GPU_FORMAT_DEPTH_STENCIL) ||
+			(description->format == GPU_FORMAT_DEPTH_STENCIL && description->usage != GPU_USAGE_RENDER_TARGET))
 			return 0;
 		width = description->width;
 		height = description->height;
 		if (size < width * height * 4)
 			return 0;
+		/* a depth target's depth plane, which holds the reversed depth
+		(reversed_depth): read back as the game's */
+		if (description->format == GPU_FORMAT_DEPTH_STENCIL)
+		{
+			float *depth = pixels;
+			unsigned long index;
+
+			staging = [device newBufferWithLength:width * height * 4 options:MTLResourceStorageModeShared];
+			pass_end();
+			blit = [command_buffer() blitCommandEncoder];
+			[blit copyFromTexture:record->texture sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
+				sourceSize:MTLSizeMake(width, height, 1) toBuffer:staging destinationOffset:0
+				destinationBytesPerRow:width * 4 destinationBytesPerImage:width * height * 4
+				options:MTLBlitOptionDepthFromDepthStencil];
+			[blit endEncoding];
+			use_texture(record);
+			{
+				id<MTLCommandBuffer> waited = commands;
+
+				commit(NO);
+				[waited waitUntilCompleted];
+			}
+			memcpy(pixels, staging.contents, width * height * 4);
+			for (index = 0; index < width * height; index++)
+				depth[index] = reversed_depth(depth[index]);
+			return 1;
+		}
 		/* BGRA8Unorm is already the BGRA byte order gpu.h reads back, and row
 		0 is the top */
 		if (description->usage != GPU_USAGE_RENDER_TARGET)

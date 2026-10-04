@@ -1215,10 +1215,24 @@ static uint32_t gpu_gl_texture_read(gpu_texture texture, void *pixels, uint32_t 
 	const struct gpu_texture_description *description = &texture_record(texture)->description;
 	uint32_t width = description->width, height = description->height;
 
-	if (description->type != GPU_TEXTURE_2D || description->format == GPU_FORMAT_DEPTH_STENCIL ||
-		size < width * height * 4)
-	{
+	if (description->type != GPU_TEXTURE_2D || size < width * height * 4)
 		return 0;
+	if (description->format == GPU_FORMAT_DEPTH_STENCIL)
+	{
+#ifdef GPU_GL_ES
+		/* ES 3.0 reads back no depth */
+		return 0;
+#else
+		/* the depth as floats, rows in the order the color reads give them */
+		state_texture(0, GL_TEXTURE_2D, texture);
+		if (gl_state.active_texture != GL_TEXTURE0)
+		{
+			gl_state.active_texture = GL_TEXTURE0;
+			glActiveTexture(GL_TEXTURE0);
+		}
+		glGetTexImage(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, GL_FLOAT, pixels);
+		return 1;
+#endif
 	}
 	if (description->usage != GPU_USAGE_RENDER_TARGET)
 	{
