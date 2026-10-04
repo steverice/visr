@@ -293,14 +293,27 @@ void cinematic_set_title_delayed(
 	return;
 }
 
+/* port: stereo's log line (port/linux/src/sdl_platform.c, or the iOS host) */
+void platform_log(char const *format, ...);
+
 /* port: how far stereo's cutscene screen brings its bars in
-(halo_stereo.h): as far as the furthest faded-in title, by the fade
-cinematic_render gives its text */
+(halo_stereo.h): as far as the furthest faded-in title cinematic_render
+can draw, by the fade it gives its text */
 float halo_cinematic_title_bars(
 	void)
 {
 	real bars = 0.0f;
 	short title_slot_index;
+	long help_text_tag_index = global_scenario_get()->ingame_help_text.index;
+	struct string_list *string_list;
+
+	/* cinematic_render draws no title without the font or the help text */
+	if (hud_globals->messaging.single_player_font.index == NONE ||
+		help_text_tag_index == NONE)
+	{
+		return 0.0f;
+	}
+	string_list = unicode_string_list_definition_get(help_text_tag_index);
 
 	for (title_slot_index = 0;
 		title_slot_index < MAXIMUM_QUEUED_CINEMATIC_TITLES;
@@ -317,6 +330,11 @@ float halo_cinematic_title_bars(
 			&global_scenario_get()->cutscene_chapter_titles,
 			active_title->title_index,
 			struct scenario_cutscene_title);
+		if (title->text_index < 0 ||
+			title->text_index >= string_list->strings.count)
+		{
+			continue;
+		}
 		if (!game_in_editor())
 		{
 			real title_time = (real)active_title->time;
@@ -376,7 +394,6 @@ void cinematic_render(
 		if (halo_stereo_frame()->eye_count == 2)
 		{
 			static boolean bars_shown = FALSE;
-			void platform_log(char const *format, ...);
 
 			bar_amount = halo_stereo_film_letterbox() ? halo_cinematic_title_bars() : 0.0f;
 			/* once each time a title brings them in, and as they leave */
