@@ -32,7 +32,9 @@ display.film_depth_share and display.film_convergence, and doesn't lean.
 SCREEN mode's gameplay is the same picture from the player's camera, with
 display.screen_depth_share and display.screen_convergence, and the head's
 offset from the screen's axis moves the eyes, as through a small window
-(the lean). In SCREEN mode the film's scripted reason counts
+(the lean). The first-person weapon has its own nearly flat mapping, its
+nearest point on the screen's surface (halo_stereo_first_person_eye, for
+rasterizer_set_frustum_z). In SCREEN mode the film's scripted reason counts
 only the director's camera, so the player's own camera under a script and a
 third-person camera stay gameplay; when the frame's mapping changes, it
 eases over MAPPING_EASE_SECONDS rather than popping (no cut covers it).
@@ -604,6 +606,23 @@ void halo_stereo_screen_frusta(float vertical_tangent)
 {
 	if ((halo_stereo_film() || halo_stereo_screen_gameplay()) && vertical_tangent > 0.0f)
 		screen_frusta(vertical_tangent);
+}
+
+int halo_stereo_first_person_eye(struct halo_stereo_eye *eye)
+{
+	struct screen_mapping weapon;
+	struct halo_stereo_eye eyes[2];
+
+	if (!halo_stereo_screen_gameplay() || (stereo_layer != 0 && stereo_layer != 1))
+		return 0;
+	/* the weapon's mapping, leaning with the scene's */
+	weapon.depth_share = FIRST_PERSON_DEPTH_SHARE;
+	weapon.convergence_meters = FIRST_PERSON_CONVERGENCE_METERS;
+	weapon.lean = mapping_easing.now.lean;
+	screen_mapping_eyes(&weapon, screen_vertical_tangent, screen_viewer_separation, screen_half_width,
+		screen_head_offset, eyes);
+	*eye = eyes[stereo_layer];
+	return 1;
 }
 
 void halo_stereo_log_culling(float distance_back)

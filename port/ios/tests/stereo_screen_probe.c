@@ -1,8 +1,8 @@
 /* SCREEN mode's 3D TV and the film (port/linux/game/stereo.c): the one
 mapping both use (screen_mapping_eyes), the ease between them, the reasons
-that pick one in SCREEN mode, and the screen's framing. stereo.c is
-included, not linked, as stereo_head_probe.c does, so the checks reach its
-static functions.
+that pick one in SCREEN mode, the screen's framing, and the first-person
+weapon's own eye. stereo.c is included, not linked, as stereo_head_probe.c
+does, so the checks reach its static functions.
 
 A point z ahead of the camera, x to its right, lands on a screen of half
 width w at w ((x - x_eye) / z + x_eye / C_w) / T for an eye of the mapping
@@ -361,6 +361,58 @@ static void reasons(void)
 	reset_game();
 }
 
+static void first_person_eye(void)
+{
+	const float c = FIRST_PERSON_CONVERGENCE_METERS / METERS_PER_UNIT;
+	float on_axis[3] = { 0.0f, 0.0f, c }, low[3] = { 0.15f * c, -0.2f * c, c }, far[3] = { 0.0f, 0.0f, 1e6f };
+	struct halo_stereo_eye eyes[2], leaned[2], none;
+	float a[2], b[2], worst = 0.0f;
+	int eye;
+
+	printf("the first-person weapon's eye (C %.2f m):\n", FIRST_PERSON_CONVERGENCE_METERS);
+	reset_game();
+	halo_stereo_screen_frusta(VERTICAL);
+	for (eye = 0; eye < 2; eye++) {
+		halo_stereo_layer(eye);
+		if (!halo_stereo_first_person_eye(&eyes[eye]))
+			worst = 1.0f;
+	}
+	check(worst == 0.0f, "a SCREEN gameplay eye has one");
+	check(fabsf(parallax(eyes, on_axis)) < 1e-5f && fabsf(parallax(eyes, low)) < 1e-5f,
+		"its nearest point lies on the screen's surface");
+	check(parallax(eyes, far) <= FIRST_PERSON_DEPTH_SHARE * SEPARATION * 1.0001f && parallax(eyes, far) > 0.0f,
+		"the rest at most its share of the eyes behind it");
+	printf("    infinity %.2f mm behind; the eyes %.3f mm apart\n", parallax(eyes, far) * 1000.0f,
+		(eyes[1].offset[0] - eyes[0].offset[0]) * METERS_PER_UNIT * 1000.0f);
+	halo_stereo_layer(HALO_STEREO_LAYER_HUD);
+	check(!halo_stereo_first_person_eye(&none), "the HUD layer has none");
+	/* the same lean: the weapon holds still on the surface */
+	host_head[0] = 0.2f;
+	frames(1);
+	halo_stereo_screen_frusta(VERTICAL);
+	for (eye = 0; eye < 2; eye++) {
+		halo_stereo_layer(eye);
+		halo_stereo_first_person_eye(&leaned[eye]);
+		on_screen(&eyes[eye], low, a);
+		on_screen(&leaned[eye], low, b);
+		worst = fmaxf(worst, fmaxf(fabsf(a[0] - b[0]), fabsf(a[1] - b[1])));
+	}
+	check(worst < 1e-5f && leaned[0].offset[0] != eyes[0].offset[0], "leaning, it stays put on the screen");
+	host_head[0] = 0.0f;
+	halo_stereo_layer(0);
+	game_letterbox = 1;
+	frames(1);
+	check(!halo_stereo_first_person_eye(&none), "the film has none");
+	game_letterbox = 0;
+	stereo_mode = HALO_STEREO_HEAD;
+	frames(3 * FILM_HOLD_FRAMES);
+	halo_stereo_layer(0);
+	check(!halo_stereo_first_person_eye(&none) && !halo_stereo_screen_gameplay() && !halo_stereo_screen_framing(),
+		"HEAD mode has none, and keeps its framing");
+	stereo_mode = HALO_STEREO_SCREEN;
+	halo_stereo_layer(HALO_STEREO_LAYER_MONO);
+}
+
 int main(void)
 {
 	const struct screen_mapping gameplay = { SCREEN_DEPTH_SHARE, SCREEN_CONVERGENCE_METERS, SCREEN_LEAN_SCALE };
@@ -379,6 +431,7 @@ int main(void)
 	ease_at(90.0f);
 	ease_at(45.0f);
 	reasons();
+	first_person_eye();
 	if (failures) {
 		printf("stereo screen probe: %d failed\n", failures);
 		return 1;

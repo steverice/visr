@@ -2726,6 +2726,58 @@ void rasterizer_set_stencil_mode(
 	return;
 }
 
+/* port: the first-person weapon's own eye in a SCREEN gameplay eye
+(halo_stereo_first_person_eye): the window's view and the projection's x
+and y columns as the window began, while the weapon's are in place */
+static real_matrix4x3 first_person_saved_world_to_view;
+static real first_person_saved_projection_columns[4][2];
+static boolean first_person_eye_applied;
+
+/* port: the weapon's eye in place of the window's for the weapon's draws:
+the window's camera (this eye's) moved by the difference between the
+weapon's eye and this one, with the weapon eye's bounds (tangents over the
+center camera's, as render_player_frame_stereo divides them). Its view and
+its projection's x and y columns go into the window's frustum; the z
+column is the weapon's depth range, which render_camera_hack_frustum_z
+sets next */
+static void rasterizer_first_person_eye(
+	struct halo_stereo_eye const *weapon_eye)
+{
+	struct halo_stereo_eye const *eye = &halo_stereo_frame()->eyes[halo_stereo_current_layer()];
+	struct render_camera camera = global_window_parameters.camera;
+	struct render_frustum frustum;
+	real_rectangle2d bounds;
+	real_vector3d right;
+	real_vector3d up;
+	real right_offset = weapon_eye->offset[0] - eye->offset[0];
+	real up_offset = weapon_eye->offset[1] - eye->offset[1];
+	real aspect = (real)(camera.viewport_bounds.x1 - camera.viewport_bounds.x0) /
+		(real)(camera.viewport_bounds.y1 - camera.viewport_bounds.y0);
+	real field_of_view_tangent = tangent(camera.vertical_field_of_view * 0.5f);
+	short row;
+
+	cross_product3d(&camera.forward, &camera.up, &right);
+	normalize3d(&right);
+	cross_product3d(&right, &camera.forward, &up);
+	normalize3d(&up);
+	camera.position.x += right.i * right_offset + up.i * up_offset;
+	camera.position.y += right.j * right_offset + up.j * up_offset;
+	camera.position.z += right.k * right_offset + up.k * up_offset;
+	bounds.x0 = -weapon_eye->left / (aspect * field_of_view_tangent);
+	bounds.x1 = weapon_eye->right / (aspect * field_of_view_tangent);
+	bounds.y0 = -weapon_eye->down / field_of_view_tangent;
+	bounds.y1 = weapon_eye->up / field_of_view_tangent;
+	render_camera_build_frustum(&camera, &bounds, &frustum, TRUE);
+	global_window_parameters.frustum.world_to_view = frustum.world_to_view;
+	for (row = 0; row < 4; row++)
+	{
+		global_window_parameters.frustum.projection_matrix[row][0] = frustum.projection_matrix[row][0];
+		global_window_parameters.frustum.projection_matrix[row][1] = frustum.projection_matrix[row][1];
+	}
+	first_person_eye_applied = TRUE;
+	return;
+}
+
 void rasterizer_set_frustum_z(
 	real z_near,
 	real z_far)
@@ -2738,6 +2790,41 @@ void rasterizer_set_frustum_z(
 		"c:\\halo\\SOURCE\\rasterizer\\xbox\\rasterizer_xbox.c",
 		2967,
 		global_d3d_device);
+	/* port: in a SCREEN gameplay eye the first-person weapon has its own
+	eye, nearly flat with its nearest point on the screen's surface
+	(stereo.c); the window's save call keeps the view and projection, and
+	the restore call puts them back beside the depth range. Mono, HEAD mode
+	and the film never have a weapon eye */
+	if (z_near == -1.0f && z_far == -1.0f)
+	{
+		first_person_saved_world_to_view = global_window_parameters.frustum.world_to_view;
+		for (row = 0; row < 4; row++)
+		{
+			first_person_saved_projection_columns[row][0] = global_window_parameters.frustum.projection_matrix[row][0];
+			first_person_saved_projection_columns[row][1] = global_window_parameters.frustum.projection_matrix[row][1];
+		}
+		first_person_eye_applied = FALSE;
+	}
+	else if (z_near == 0.0f && z_far == 0.0f)
+	{
+		if (first_person_eye_applied)
+		{
+			global_window_parameters.frustum.world_to_view = first_person_saved_world_to_view;
+			for (row = 0; row < 4; row++)
+			{
+				global_window_parameters.frustum.projection_matrix[row][0] = first_person_saved_projection_columns[row][0];
+				global_window_parameters.frustum.projection_matrix[row][1] = first_person_saved_projection_columns[row][1];
+			}
+			first_person_eye_applied = FALSE;
+		}
+	}
+	else if (z_near == rasterizer_globals.first_person_weapon_near_clip_distance)
+	{
+		struct halo_stereo_eye weapon_eye;
+
+		if (halo_stereo_first_person_eye(&weapon_eye))
+			rasterizer_first_person_eye(&weapon_eye);
+	}
 	render_camera_hack_frustum_z(
 		&global_window_parameters.frustum,
 		z_near,
