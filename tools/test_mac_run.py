@@ -68,13 +68,13 @@ def _container(root: Path, name: str, identifier: str) -> Path:
 
 def test_find_container_matches_bundle_identifier(tmp_path):
     _container(tmp_path, "A", "org.example.other")
-    wanted = _container(tmp_path, "B", "org.steverice.haloce.macrunner")
-    assert mac_run.find_container(tmp_path, "org.steverice.haloce.macrunner") == wanted / "Data/Documents"
+    wanted = _container(tmp_path, "B", "org.steverice.visr.macrunner")
+    assert mac_run.find_container(tmp_path, "org.steverice.visr.macrunner") == wanted / "Data/Documents"
 
 
 def test_find_container_returns_none_when_absent(tmp_path):
     _container(tmp_path, "A", "org.example.other")
-    assert mac_run.find_container(tmp_path, "org.steverice.haloce.macrunner") is None
+    assert mac_run.find_container(tmp_path, "org.steverice.visr.macrunner") is None
 
 
 def _bmp(width: int, height: int, pixels: bytes) -> bytes:
