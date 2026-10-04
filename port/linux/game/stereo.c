@@ -79,9 +79,10 @@ Compositor's next frame and fills the eyes and the head's turn from it */
 void host_stereo_frame(struct halo_stereo_frame *frame);
 #endif
 
-/* the debug side-by-side eyes: fixed frusta and a typical eye separation */
-#define SIDE_BY_SIDE_TANGENT 0.8f
-#define SIDE_BY_SIDE_OFFSET 0.0105f
+/* the debug side-by-side eyes: fixed frusta and a typical eye separation
+(halo_stereo.h, which the side-by-side presenter shares) */
+#define SIDE_BY_SIDE_TANGENT HALO_STEREO_SIDE_BY_SIDE_TANGENT
+#define SIDE_BY_SIDE_OFFSET HALO_STEREO_SIDE_BY_SIDE_OFFSET
 
 /* one world unit in meters */
 #define METERS_PER_UNIT 3.048f
@@ -251,6 +252,10 @@ ticks between two cutscenes (under a white fade), which would otherwise flip
 the view to the full view and back */
 #define FILM_HOLD_FRAMES 10
 static int film_hold;
+/* the zoom's inset this frame (halo_stereo_inset_begin); the last state
+logged (-1: none yet); the HUD's draws routed into it
+(halo_stereo_inset_overlay) */
+static int inset_frame, inset_logged = -1, inset_overlay_on;
 
 /* a setting clamped to its range, logged once if it wasn't in it */
 static float clamped_setting(const char *name, float value, float minimum, float maximum, const char *unit)
@@ -602,6 +607,8 @@ void halo_stereo_frame_begin(void)
 	stereo_frame.mode = stereo_mode;
 	stereo_layer = HALO_STEREO_LAYER_MONO;
 	ui_span = 0;
+	inset_frame = 0;
+	inset_overlay_on = 0;
 	reticle_set(NULL, NULL, NULL);
 	hud_tangents[0] = hud_tangents[1] = 0.0f;
 	memset(frame_fade, 0, sizeof(frame_fade));
@@ -840,6 +847,54 @@ int halo_stereo_current_layer(void)
 	return stereo_layer;
 }
 
+int halo_stereo_repeat_pass(void)
+{
+	return stereo_layer == 1 || stereo_layer == HALO_STEREO_LAYER_INSET;
+}
+
+/* the zoom's inset: HEAD mode's full view and the side-by-side view (the
+Mac's stand-in for it), never the screen (SCREEN gameplay, the film), where
+the game's own zoom shows as in mono */
+int halo_stereo_inset_begin(int zoomed)
+{
+	int mode = stereo_frame.mode;
+
+	inset_frame = zoomed && stereo_frame.eye_count == 2 && !halo_stereo_film() && !halo_stereo_screen_gameplay() &&
+		(mode == HALO_STEREO_HEAD || mode == HALO_STEREO_SIDE_BY_SIDE);
+	/* the first time, and each change under debug.gpu_stats */
+	if (inset_frame != inset_logged && (inset_logged < 0 ? inset_frame : stereo_stats))
+		platform_log(inset_frame ? "stereo: zoomed: the zoomed view on the inset, %.0f%% of the eyes' height, its "
+			"central %.0f lines on a quad %.2f m wide, %.2f m ahead" : "stereo: unzoomed: no inset",
+			100.0f * HALO_STEREO_INSET_HEIGHT_SHARE, HALO_STEREO_INSET_LINES, HALO_STEREO_INSET_WIDTH_METERS,
+			HALO_STEREO_INSET_DISTANCE_METERS);
+	if (inset_frame || inset_logged >= 0)
+		inset_logged = inset_frame;
+	return inset_frame;
+}
+
+int halo_stereo_inset(void)
+{
+	return inset_frame;
+}
+
+int halo_stereo_eye_unzoomed(void)
+{
+	return inset_frame && (stereo_layer == 0 || stereo_layer == 1);
+}
+
+void halo_stereo_inset_overlay(int on)
+{
+	if (on) {
+		if (inset_frame && stereo_layer == HALO_STEREO_LAYER_HUD) {
+			stereo_layer = HALO_STEREO_LAYER_INSET;
+			inset_overlay_on = 1;
+		}
+	} else if (inset_overlay_on) {
+		stereo_layer = HALO_STEREO_LAYER_HUD;
+		inset_overlay_on = 0;
+	}
+}
+
 /* whether the head drives the look: HEAD mode with the Compositor's eyes,
 not in third person, where the stick has the look as in mono (the last
 frame's state, since the look runs before the frame begins) */
@@ -1020,6 +1075,12 @@ void halo_stereo_head_orient(float forward[3], float up[3])
 		reticle_set(aim, forward, up);
 	} else
 		reticle_set(NULL, NULL, NULL);
+}
+
+void halo_stereo_inset_orient(float forward[3], float up[3])
+{
+	if (!third_person_head)
+		halo_stereo_head_orient(forward, up);
 }
 
 void halo_stereo_set_depth_range(float z_near, float z_far)

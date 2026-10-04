@@ -615,7 +615,10 @@ void interface_draw_screen_effects(
 				&hud_definition->screen_effects,
 				0,
 				struct hud_screen_effect_definition);
-			boolean zoomed = player_control_get_zoom_level(render.local_player_index) != NONE;
+			/* port: in stereo, the eyes of a frame with the zoom's inset keep
+			the zoom's screen effects out (halo_stereo.h): the inset has them */
+			boolean zoomed = player_control_get_zoom_level(render.local_player_index) != NONE &&
+				!halo_stereo_eye_unzoomed();
 			struct rasterizer_cinematic_screen_effect_parameters parameters;
 
 			csmemset(&parameters, 0, sizeof(parameters));

@@ -26,7 +26,7 @@ static float host_head[2];
 static unsigned long clock_frames;
 static char last_log[512];
 static int easing_logs;
-static char film_log[512], gameplay_log[512];
+static char film_log[512], gameplay_log[512], inset_log[512];
 
 int halo_cinematic_screen(void) { return game_letterbox; }
 int halo_scripted_camera(void) { return game_camera_disabled || game_director_camera; }
@@ -50,6 +50,8 @@ void platform_log(const char *format, ...)
 		strcpy(film_log, last_log);
 	if (strstr(last_log, "SCREEN gameplay as a 3D TV"))
 		strcpy(gameplay_log, last_log);
+	if (strstr(last_log, "stereo: zoomed:"))
+		strcpy(inset_log, last_log);
 }
 
 #include "../../linux/game/stereo.c"
@@ -445,6 +447,95 @@ static void first_person_eye(void)
 	halo_stereo_layer(HALO_STEREO_LAYER_MONO);
 }
 
+/* the zoom's inset (halo_stereo.h): when a frame has it, what each layer
+does with the zoom, and where the HUD's crosshairs go */
+static void zoom_inset(void)
+{
+	float forward[3], up[3], head_forward[3], head_up[3];
+
+	printf("the zoom's inset:\n");
+	reset_game();
+	stereo_mode = HALO_STEREO_HEAD;
+	frames(3 * FILM_HOLD_FRAMES);
+	check(!halo_stereo_inset_begin(0) && !halo_stereo_inset(), "HEAD mode unzoomed: none");
+	check(halo_stereo_inset_begin(1) && halo_stereo_inset(), "HEAD mode's full view, zoomed: the inset");
+	check(strstr(inset_log, "50% of the eyes' height, its central 480 lines on a quad 0.60 m wide, 1.50 m ahead") != NULL,
+		"its log line");
+	printf("    %s\n", inset_log);
+	halo_stereo_layer(0);
+	check(halo_stereo_eye_unzoomed() && !halo_stereo_repeat_pass(),
+		"eye 0 leaves out the zoom's screen effects and advances the frame's time");
+	halo_stereo_layer(1);
+	check(halo_stereo_eye_unzoomed() && halo_stereo_repeat_pass(), "eye 1 leaves them out and draws eye 0's moment");
+	halo_stereo_layer(HALO_STEREO_LAYER_INSET);
+	check(!halo_stereo_eye_unzoomed() && halo_stereo_repeat_pass(),
+		"the inset keeps them (the mask, the zoom's blur) and draws eye 0's moment");
+	halo_stereo_layer(HALO_STEREO_LAYER_HUD);
+	halo_stereo_inset_overlay(1);
+	check(halo_stereo_current_layer() == HALO_STEREO_LAYER_INSET,
+		"in the HUD pass the crosshairs and the zoomed view's elements draw into the inset");
+	halo_stereo_inset_overlay(0);
+	check(halo_stereo_current_layer() == HALO_STEREO_LAYER_HUD, "and the HUD layer comes back after them");
+	halo_stereo_layer(0);
+	halo_stereo_inset_overlay(1);
+	check(halo_stereo_current_layer() == 0, "outside the HUD layer the overlay changes no layer");
+	halo_stereo_inset_overlay(0);
+	check(halo_stereo_current_layer() == 0, "nor does its end");
+	/* on foot the inset's camera turns with the head, as the eyes' do */
+	forward[0] = head_forward[0] = 0.6f;
+	forward[1] = head_forward[1] = 0.8f;
+	forward[2] = head_forward[2] = 0.0f;
+	up[0] = head_up[0] = up[1] = head_up[1] = 0.0f;
+	up[2] = head_up[2] = 1.0f;
+	stereo_frame.head_pitch = head_pitch_now = 0.3f;
+	halo_stereo_inset_orient(forward, up);
+	halo_stereo_head_orient(head_forward, head_up);
+	check(fabsf(forward[2] - sinf(0.3f)) < 1e-5f && !memcmp(forward, head_forward, sizeof(forward)) &&
+		!memcmp(up, head_up, sizeof(up)), "on foot the inset's camera is the eyes' cameras' (the head's look)");
+	halo_stereo_layer(HALO_STEREO_LAYER_HUD);
+	frames(1);
+	check(!halo_stereo_inset(), "each frame's begin clears it");
+	halo_stereo_inset_overlay(1);
+	check(halo_stereo_current_layer() != HALO_STEREO_LAYER_INSET, "and without it the HUD stays in the HUD layer");
+	halo_stereo_inset_overlay(0);
+	/* a head-tracked seat (Task 7d): the inset looks along the gun */
+	game_third_person = 1;
+	frames(2);
+	check(halo_stereo_inset_begin(1), "a head-tracked third-person seat, zoomed: the inset");
+	forward[0] = 1.0f;
+	forward[1] = forward[2] = 0.0f;
+	up[0] = up[1] = 0.0f;
+	up[2] = 1.0f;
+	halo_stereo_inset_orient(forward, up);
+	check(forward[0] == 1.0f && forward[1] == 0.0f && forward[2] == 0.0f && up[2] == 1.0f,
+		"its camera stays the game's, where the gun aims, whatever the head does");
+	game_third_person = 0;
+	frames(3 * FILM_HOLD_FRAMES);
+	game_letterbox = 1;
+	frames(1);
+	check(!halo_stereo_inset_begin(1), "the film (a cutscene) has none: the game's zoom shows on the screen");
+	game_letterbox = 0;
+	frames(3 * FILM_HOLD_FRAMES);
+	host_eyes = 0;
+	frames(1);
+	check(!halo_stereo_inset_begin(1), "nor does a frame without the Compositor's eyes");
+	host_eyes = 1;
+	stereo_mode = HALO_STEREO_SCREEN;
+	frames(3 * FILM_HOLD_FRAMES);
+	check(halo_stereo_screen_gameplay() && !halo_stereo_inset_begin(1),
+		"SCREEN gameplay has none: the game's zoom narrows the 3D TV's picture");
+	stereo_mode = HALO_STEREO_SIDE_BY_SIDE;
+	frames(3 * FILM_HOLD_FRAMES);
+	check(halo_stereo_inset_begin(1), "the side-by-side view, the Mac's stand-in for HEAD mode, has it");
+	side_by_side_screen = 1;
+	frames(3 * FILM_HOLD_FRAMES);
+	check(!halo_stereo_inset_begin(1), "but not as SCREEN gameplay (debug.side_by_side_screen)");
+	side_by_side_screen = 0;
+	stereo_mode = HALO_STEREO_SCREEN;
+	halo_stereo_layer(HALO_STEREO_LAYER_MONO);
+	reset_game();
+}
+
 int main(void)
 {
 	const struct screen_mapping gameplay = { SCREEN_DEPTH_SHARE, SCREEN_CONVERGENCE_METERS, SCREEN_LEAN_SCALE };
@@ -464,6 +555,7 @@ int main(void)
 	ease_at(45.0f);
 	reasons();
 	first_person_eye();
+	zoom_inset();
 	if (failures) {
 		printf("stereo screen probe: %d failed\n", failures);
 		return 1;

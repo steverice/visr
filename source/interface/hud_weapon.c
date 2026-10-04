@@ -1721,7 +1721,11 @@ static void render_weapon_hud(
 			boolean zoomed_layout = hud_multitexture_overlays_follow_zoom(&element->static_element.multitexture_overlays);
 
 			if (zoomed_layout)
+			{
 				hud_zoomed_layout_begin(&window_bounds);
+				/* port: in stereo, while zoomed, into the zoom's inset */
+				halo_stereo_inset_overlay(TRUE);
+			}
 			state_index = element->header.state_type;
 			hud_draw_static_element(
 				local_player_index,
@@ -1730,7 +1734,10 @@ static void render_weapon_hud(
 				state_flags[state_index],
 				hud_state->last_weapon_flash_time[state_index]);
 			if (zoomed_layout)
+			{
+				halo_stereo_inset_overlay(FALSE);
 				hud_zoomed_layout_end(&window_bounds);
+			}
 		}
 	}
 
@@ -1752,7 +1759,11 @@ static void render_weapon_hud(
 			boolean zoomed_layout = hud_multitexture_overlays_follow_zoom(&element->meter_element.multitexture_overlays);
 
 			if (zoomed_layout)
+			{
 				hud_zoomed_layout_begin(&window_bounds);
+				/* port: in stereo, while zoomed, into the zoom's inset */
+				halo_stereo_inset_overlay(TRUE);
+			}
 
 			state_index = element->header.state_type;
 			value = (byte)number_values[state_index];
@@ -1766,7 +1777,10 @@ static void render_weapon_hud(
 				(real)hud_state->last_weapon_flash_time[state_index],
 				0.0f);
 			if (zoomed_layout)
+			{
+				halo_stereo_inset_overlay(FALSE);
 				hud_zoomed_layout_end(&window_bounds);
+			}
 		}
 	}
 
@@ -1833,7 +1847,11 @@ static void render_weapon_hud(
 			}
 
 			if (zoomed_layout)
+			{
 				hud_zoomed_layout_begin(&window_bounds);
+				/* port: in stereo, while zoomed, into the zoom's inset */
+				halo_stereo_inset_overlay(TRUE);
+			}
 			hud_draw_numbers(
 				local_player_index,
 				&definition->absolute_placement,
@@ -1844,7 +1862,10 @@ static void render_weapon_hud(
 				hud_state->last_weapon_flash_time[state_index],
 				0.0f);
 			if (zoomed_layout)
+			{
+				halo_stereo_inset_overlay(FALSE);
 				hud_zoomed_layout_end(&window_bounds);
+			}
 		}
 	}
 
@@ -2047,11 +2068,14 @@ void hud_render_weapon_interface(
 		hud_index = definition->weapon.interface_definition.hud_interface.index;
 		if (hud_index != NONE)
 		{
+			/* port: in stereo, while zoomed, into the zoom's inset (halo_stereo.h) */
+			halo_stereo_inset_overlay(TRUE);
 			crosshairs_draw(
 				player,
 				weapon_index,
 				hud_index,
 				&weapon_state);
+			halo_stereo_inset_overlay(FALSE);
 			render_weapon_hud(
 				hud_index,
 				player->local_player_index,
@@ -2070,11 +2094,13 @@ void hud_render_weapon_interface(
 	{
 		struct weapon_interface_state weapon_state = { 0 };
 
+		halo_stereo_inset_overlay(TRUE); /* port */
 		crosshairs_draw(
 			player,
 			NONE,
 			hud_globals->defaults.default_weapon_hud.index,
 			&weapon_state);
+		halo_stereo_inset_overlay(FALSE); /* port */
 	}
 
 	render_grenade_hud(

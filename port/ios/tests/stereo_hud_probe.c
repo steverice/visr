@@ -2,7 +2,7 @@
 band element and the UI inside foveation's sharp region with the head level,
 the bands above and below the reticle and clear of it, the reticle centered
 and at its natural size, a seat's reticle along the game camera's aim, the
-level frame's yaw. With --quads WIDTH UI X Y Z it prints the layout's quads
+zoom's inset's quad, the level frame's yaw. With --quads WIDTH UI X Y Z it prints the layout's quads
 instead (one per line: frame, source u0 v0 u1 v1, center, x axis, y axis),
 for the Mac's HEAD-mode composite (t7c/head_composite.py in the stereo
 plan's folder). */
@@ -293,6 +293,44 @@ static void reticle_checks(void)
 	}
 }
 
+/* the zoom's inset (halo_stereo.h): the inset layer's central square on an
+opaque square quad 0.6 m wide, 1.5 m ahead, by the reticle's rule */
+static void inset_checks(float width)
+{
+	struct host_stereo_hud_quad quad;
+	float ahead[3] = { 0.0f, 0.0f, -1.0f };
+	float yaw = -30.0f * DEGREES, pitch = 10.0f * DEGREES;
+	float aim[3] = { -sinf(yaw) * cosf(pitch), sinf(pitch), -cosf(yaw) * cosf(pitch) };
+	float behind[3] = { 0.3f, 0.0f, 1.0f };
+	float point[3] = { 0.1f, -0.3f, -0.4f };
+	float side = fminf(480.0f, width);
+	char what[160];
+
+	check(host_stereo_hud_inset(width, NULL, ahead, &quad) == 1 && quad.opaque && quad.frame == HOST_STEREO_HUD_HEAD &&
+		!quad.catch_all && !quad.hidden, "the inset is an opaque, head-locked quad");
+	check(fabsf(quad.center[0]) < 1e-6f && fabsf(quad.center[1]) < 1e-6f && fabsf(quad.center[2] + 1.5f) < 1e-6f,
+		"on foot it's straight ahead, 1.5 m away");
+	snprintf(what, sizeof(what), "it's 0.6 m wide and square (%.3f by %.3f m, %.1f degrees across)",
+		2.0f * quad.x_axis[0], 2.0f * quad.y_axis[1], 2.0f * atanf(quad.x_axis[0] / 1.5f) / DEGREES);
+	check(fabsf(2.0f * quad.x_axis[0] - 0.6f) < 1e-6f && fabsf(2.0f * quad.y_axis[1] - 0.6f) < 1e-6f &&
+		fabsf(quad.x_axis[1]) < 1e-6f && fabsf(quad.y_axis[0]) < 1e-6f, what);
+	snprintf(what, sizeof(what), "at %.0f lines across it shows the layer's central %.0f-line square (u %.4f to %.4f)",
+		width, side, quad.source[0], quad.source[2]);
+	check(fabsf(quad.source[0] - (width - side) / 2.0f / width) < 1e-6f &&
+		fabsf(quad.source[2] - (width + side) / 2.0f / width) < 1e-6f && quad.source[1] == 0.0f &&
+		quad.source[3] == 1.0f && fabsf((quad.source[2] - quad.source[0]) * width - (quad.source[3] - quad.source[1]) * 480.0f) <
+		1e-3f * width || side < 480.0f, what);
+	check(host_stereo_hud_inset(width, NULL, aim, &quad) == 1 &&
+		fabsf(atan2f(quad.center[0], -quad.center[2]) - 30.0f * DEGREES) < 1e-4f &&
+		fabsf(asinf(quad.center[1] / 1.5f) - 10.0f * DEGREES) < 1e-4f && fabsf(quad.x_axis[1]) < 1e-6f,
+		"in a seat it sits along the gun's aim, 30 degrees right and 10 up, upright");
+	check(host_stereo_hud_inset(width, NULL, behind, &quad) == 0, "with the aim behind the eyes there's none");
+	check(host_stereo_hud_inset(width, point, aim, &quad) == 1 && quad.center[0] == 0.1f && quad.center[1] == -0.3f &&
+		quad.center[2] == -0.4f && fabsf(2.0f * quad.x_axis[0] * 2.0f * quad.x_axis[0] +
+		2.0f * quad.x_axis[2] * 2.0f * quad.x_axis[2] - 0.36f) < 1e-5f,
+		"given a point (Task 11's scope on the gun), it's centered there, facing back along the aim");
+}
+
 static void level_checks(void)
 {
 	float yaws[] = { 0.0f, 40.0f, -120.0f, 179.0f };
@@ -352,6 +390,9 @@ int main(int argc, char **argv)
 	ui_checks(16.0f / 9.0f);
 	ui_checks(0.9f);
 	reticle_checks();
+	inset_checks(640.0f);
+	inset_checks(854.0f);
+	inset_checks(1600.0f);
 	level_checks();
 	printf("%s\n", failures ? "stereo_hud_probe: FAILED" : "stereo_hud_probe: PASS");
 	return failures ? 1 : 0;

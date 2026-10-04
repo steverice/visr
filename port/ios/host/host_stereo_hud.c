@@ -1,5 +1,6 @@
 /* HEAD mode's HUD and UI layout (host_stereo_hud.h). */
 #include "host_stereo_hud.h"
+#include "halo_stereo.h"
 #include <math.h>
 #include <string.h>
 
@@ -182,15 +183,18 @@ float host_stereo_hud_band_scale(float layout_width)
 	return limit / reach;
 }
 
-int host_stereo_hud_reticle(float layout_width, const float position[3], const float direction[3],
-	struct host_stereo_hud_quad *quad)
+/* a square quad showing the layer's square of the given side (lines) at its
+center, half a meters across, facing back along direction, upright, at
+distance along it or centered at position (host_stereo_hud_reticle's
+rule); 0 if none */
+static int facing_square(float layout_width, float side, float half, float distance, const float position[3],
+	const float direction[3], struct host_stereo_hud_quad *quad)
 {
 	float d[3] = { direction[0], direction[1], direction[2] };
 	float length = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
-	float half = RETICLE_LINES / 2.0f * HOST_STEREO_HUD_METERS_PER_LINE;
 	float right[3], up[3], right_length;
-	float rectangle[4] = { layout_width / 2.0f - RETICLE_LINES / 2.0f, HOST_STEREO_HUD_LINES / 2.0f - RETICLE_LINES / 2.0f,
-		layout_width / 2.0f + RETICLE_LINES / 2.0f, HOST_STEREO_HUD_LINES / 2.0f + RETICLE_LINES / 2.0f };
+	float rectangle[4] = { layout_width / 2.0f - side / 2.0f, HOST_STEREO_HUD_LINES / 2.0f - side / 2.0f,
+		layout_width / 2.0f + side / 2.0f, HOST_STEREO_HUD_LINES / 2.0f + side / 2.0f };
 	int axis;
 
 	if (!(length > 1e-6f))
@@ -219,11 +223,31 @@ int host_stereo_hud_reticle(float layout_width, const float position[3], const f
 	source_of(rectangle, layout_width, quad->source);
 	for (axis = 0; axis < 3; axis++)
 	{
-		quad->center[axis] = position ? position[axis] : d[axis] * HOST_STEREO_HUD_DISTANCE;
+		quad->center[axis] = position ? position[axis] : d[axis] * distance;
 		quad->x_axis[axis] = right[axis] * half;
 		quad->y_axis[axis] = up[axis] * half;
 	}
 	quad->frame = HOST_STEREO_HUD_HEAD;
+	return 1;
+}
+
+int host_stereo_hud_reticle(float layout_width, const float position[3], const float direction[3],
+	struct host_stereo_hud_quad *quad)
+{
+	return facing_square(layout_width, RETICLE_LINES, RETICLE_LINES / 2.0f * HOST_STEREO_HUD_METERS_PER_LINE,
+		HOST_STEREO_HUD_DISTANCE, position, direction, quad);
+}
+
+int host_stereo_hud_inset(float layout_width, const float position[3], const float direction[3],
+	struct host_stereo_hud_quad *quad)
+{
+	if (!(layout_width > 0.0f))
+		layout_width = 640.0f;
+	if (!facing_square(layout_width, fminf(HALO_STEREO_INSET_LINES, layout_width), HALO_STEREO_INSET_WIDTH_METERS / 2.0f,
+		HALO_STEREO_INSET_DISTANCE_METERS, position, direction, quad))
+		return 0;
+	/* its picture covers what it's over */
+	quad->opaque = 1;
 	return 1;
 }
 

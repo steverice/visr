@@ -382,12 +382,17 @@ static boolean screenshot_in_progress(
 }
 
 /* port: in stereo, eye 1's flares take a spare window index (stereo renders
-one window, so the last is never used) for their occlusion slots: each eye
-keeps its own results, fades them once per frame and draws only its own */
+one window, so the last is never used) for their occlusion slots, and the
+zoom's inset's the one before it: each pass keeps its own results, fades
+them once per frame and draws only its own */
 static long lens_flare_window_index(
 	void)
 {
-	return halo_stereo_current_layer() == 1 ? MAXIMUM_WINDOWS - 1 : global_window_parameters.window_index;
+	int layer = halo_stereo_current_layer();
+
+	return layer == 1 ? MAXIMUM_WINDOWS - 1 :
+		layer == HALO_STEREO_LAYER_INSET ? MAXIMUM_WINDOWS - 2 :
+		global_window_parameters.window_index;
 }
 
 static struct rasterizer_lens_flare_submit_parameters *lens_flare_parameters_get(
@@ -576,8 +581,8 @@ void rasterizer_lens_flare_submit(
 					lens_flare_parameters_get((short)local_lens_flare_count++);
 
 				memcpy(lens_flare_parameters, parameters, sizeof(*lens_flare_parameters));
-				/* port: eye 1's own occlusion slots (lens_flare_window_index) */
-				if (halo_stereo_current_layer() == 1)
+				/* port: eye 1's and the inset's own occlusion slots (lens_flare_window_index) */
+				if (halo_stereo_repeat_pass())
 				{
 					lens_flare_parameters->compressed_window_index= (byte)(
 						(parameters->compressed_window_index & _lens_flare_first_person_weapon_flag) |

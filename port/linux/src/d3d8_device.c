@@ -629,8 +629,9 @@ static void offscreen_target_scale(unsigned long width, unsigned long height, DW
 }
 
 /* the layer a screen-sized target is drawn for now: in a stereo frame each
-eye and the HUD have their own textures (the one layer key, so a fourth layer
-is a change to halo_stereo.h), else the one the game always had */
+eye, the HUD and the zoom's inset have their own textures (the one layer
+key: a new layer is a change to halo_stereo.h), else the one the game
+always had */
 static int render_target_layer(void)
 {
 	return halo_stereo_frame()->eye_count == 2 ? halo_stereo_current_layer() : HALO_STEREO_LAYER_MONO;
@@ -663,6 +664,10 @@ static struct render_target_entry *render_target_get_layer(const D3DSurface *sur
 			scale[0] = screen_scale_mono[0];
 			scale[1] = screen_scale_mono[1];
 		}
+		/* the zoom's inset: the screen as mono draws it, at square pixels and
+		a share of the eyes' height (halo_stereo.h) */
+		if (layer == HALO_STEREO_LAYER_INSET)
+			scale[0] = scale[1] = screen_scale[1] * HALO_STEREO_INSET_HEIGHT_SHARE;
 	}
 	else
 		offscreen_target_scale(width, height, format, scale);
@@ -4021,6 +4026,7 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 		struct render_target_entry *back_buffer = render_target_get_layer(&device.back_buffer,
 			stereo_frame ? 0 : HALO_STEREO_LAYER_MONO);
 		struct render_target_entry *hud = stereo_frame ? back_buffer_drawn_this_frame(HALO_STEREO_LAYER_HUD) : NULL;
+		struct render_target_entry *inset = stereo_frame ? back_buffer_drawn_this_frame(HALO_STEREO_LAYER_INSET) : NULL;
 
 		if (trace_frame())
 			platform_log("present back buffer %08lx texture %u", (unsigned long)device.back_buffer.Data,
@@ -4039,6 +4045,8 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 					write_screenshot(hud, "-hud");
 					write_screenshot_channel(hud, "-hud-alpha", 1);
 				}
+				if (inset)
+					write_screenshot(inset, "-inset");
 			}
 		}
 		if (stereo_frame)
@@ -4072,6 +4080,9 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 			passed only if that was this frame */
 			if (hud)
 				present.hud = hud->target.texture;
+			/* the zoom's inset, only if it drew this frame */
+			if (inset)
+				present.inset = inset->target.texture;
 			/* the eyes' planes (the eye loop's, halo_stereo_set_depth_range), in
 			meters: one world unit is 3.048 m */
 			halo_stereo_depth_range(&present.near_meters, &present.far_meters);

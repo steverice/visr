@@ -61,6 +61,8 @@ static unsigned long screen_frames, stereo_presents, ui_presents;
 /* the last frame's HUD went whole on the UI's quad: -1 none yet since the
 space opened */
 static int ui_shown = -1;
+/* the last frame showed the zoom's inset */
+static int inset_logged;
 static int depth_reported;
 /* the Compositor's frame is open for this game frame (host_stereo_frame)
 with display.stereo = "head", whatever the frame is (the full view, the film
@@ -477,6 +479,7 @@ void host_stereo_space_opened(void)
 	stereo_presents = 0;
 	ui_presents = 0;
 	ui_shown = -1;
+	inset_logged = 0;
 	depth_reported = 0;
 #endif
 }
@@ -578,7 +581,7 @@ static void hud_draw(id<MTLRenderCommandEncoder> encoder, id<MTLTexture> texture
 		uniforms.y_axis = (simd_float4){ quad->y_axis[0], quad->y_axis[1], quad->y_axis[2], 0.0f };
 		uniforms.decode_srgb = decode_srgb;
 		uniforms.brightness = brightness;
-		uniforms.opaque = opaque;
+		uniforms.opaque = opaque || quad->opaque;
 		[encoder setVertexBytes:&uniforms length:sizeof(uniforms) atIndex:0];
 		[encoder setFragmentBytes:&uniforms length:sizeof(uniforms) atIndex:0];
 		[encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
@@ -588,8 +591,8 @@ static void hud_draw(id<MTLRenderCommandEncoder> encoder, id<MTLTexture> texture
 
 void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLTexture> right,
 	id<MTLTexture> left_depth, id<MTLTexture> right_depth, id<MTLTexture> hud, float hud_aspect,
-	int hud_ui, const float reticle[3], const float hud_tangents[2], float near_meters, float far_meters,
-	float brightness, float vignette)
+	int hud_ui, const float reticle[3], const float hud_tangents[2], id<MTLTexture> inset, float near_meters,
+	float far_meters, float brightness, float vignette)
 {
 #if TARGET_OS_VISION
 	if (@available(visionOS 26.0, *))
@@ -601,6 +604,10 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 		float layout_width = (hud_aspect > 0.0f ? hud_aspect : 4.0f / 3.0f) * HOST_STEREO_HUD_LINES;
 		struct host_stereo_hud_quad quads[HOST_STEREO_HUD_MAXIMUM_QUADS];
 		int quad_count = hud ? host_stereo_hud_layout(layout_width, hud_ui, reticle, hud_tangents, quads) : 0;
+		/* the zoom's inset, over the HUD, along the reticle's direction; not
+		while a menu holds the HUD layer, whose UI quad it would cover */
+		struct host_stereo_hud_quad inset_quad;
+		int inset_shown = inset && !hud_ui && host_stereo_hud_inset(layout_width, NULL, reticle, &inset_quad);
 
 		if (stereo_presents++ == 0)
 			host_logf(HOST_LOG_INFO, "stereo: first present: eyes %lux%lu, %s (laid out at %.3f:1; its bands at "
@@ -610,6 +617,19 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 				1000.0f * host_stereo_hud_band_scale(layout_width), 1000.0f * HOST_STEREO_HUD_METERS_PER_LINE,
 				HOST_STEREO_HUD_DISTANCE, HUD_SHARP_RADIUS_DEGREES, hud_tangents ? hud_tangents[0] : 0.0f,
 				hud_tangents ? hud_tangents[1] : 0.0f, near_meters, far_meters, count, count == 1 ? "" : "s");
+		/* the zoom's inset as it comes and goes */
+		if ((inset_shown != 0) != inset_logged)
+		{
+			if (inset_shown)
+				host_logf(HOST_LOG_INFO, "stereo: zoomed: the inset (%lux%lu, its central %.0f lines) on a quad %.2f m "
+					"wide, %.2f m ahead along (%.3f, %.3f, %.3f)", (unsigned long)inset.width,
+					(unsigned long)inset.height, fminf(HALO_STEREO_INSET_LINES, layout_width),
+					HALO_STEREO_INSET_WIDTH_METERS, HALO_STEREO_INSET_DISTANCE_METERS, inset_quad.center[0],
+					inset_quad.center[1], inset_quad.center[2]);
+			else
+				host_logf(HOST_LOG_INFO, "stereo: the inset is gone");
+			inset_logged = inset_shown != 0;
+		}
 		/* each change between the HUD's pieces and the UI's quad */
 		if (hud && (hud_ui != 0) != ui_shown)
 		{
@@ -707,6 +727,15 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 						simd_mul(projection, simd_inverse(cp_view_get_transform(view))), level, decode_srgb,
 						brightness, 0);
 				}
+				if (inset_shown)
+				{
+					simd_float4x4 projection = cp_drawable_compute_projection(drawable,
+						cp_axis_direction_convention_right_up_back, view_index);
+
+					hud_draw(encoder, inset, &inset_quad, 1,
+						simd_mul(projection, simd_inverse(cp_view_get_transform(view))), level, decode_srgb,
+						brightness, 1);
+				}
 				[encoder endEncoding];
 			}
 			cp_drawable_encode_present(drawable, commands);
@@ -725,6 +754,7 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 	(void)hud_ui;
 	(void)reticle;
 	(void)hud_tangents;
+	(void)inset;
 	(void)near_meters;
 	(void)far_meters;
 	(void)brightness;

@@ -63,6 +63,9 @@ struct host_stereo_hud_quad
 	int catch_all;
 	/* not drawn (a reticle off the view), but its rectangle is claimed */
 	int hidden;
+	/* covers what it's over whatever its texture's alpha (the zoom's inset,
+	a picture) */
+	int opaque;
 };
 
 /* most quads a layout makes */
@@ -79,6 +82,18 @@ aim hits) it's centered there. This is the one place the reticle is
 placed: tracked-controller aiming (Task 11) replaces its caller's
 arguments. */
 int host_stereo_hud_reticle(float layout_width, const float position[3], const float direction[3],
+	struct host_stereo_hud_quad *quad);
+
+/* The zoom's inset (halo_stereo.h): the inset layer's central square,
+HALO_STEREO_INSET_LINES on a side (the layer is laid out as the HUD,
+layout_width lines across), on an opaque square quad
+HALO_STEREO_INSET_WIDTH_METERS wide, facing the eyes, by the reticle's
+rule (host_stereo_hud_reticle) at HALO_STEREO_INSET_DISTANCE_METERS:
+straight ahead and head-locked on foot, along a head-tracked seat's aim,
+none when that's not ahead, or centered at position (Task 11: the scope on
+the gun). It's drawn over the HUD, so it covers the reticle's quad, whose
+crosshairs the game draws into the inset meanwhile */
+int host_stereo_hud_inset(float layout_width, const float position[3], const float direction[3],
 	struct host_stereo_hud_quad *quad);
 
 /* the quads for a HEAD-mode frame's HUD layer laid out layout_width lines

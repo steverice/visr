@@ -87,6 +87,7 @@ symbols in this file:
 #include "effects/weather_particle_systems.h"
 #include "main/main.h"
 #include "main/console.h" /* port: stereo's UI quad (console_is_active) */
+#include "game/players.h" /* port: stereo's zoom inset (player_control_get_zoom_level) */
 #include "structures/structures.h"
 
 /* ---------- constants */
@@ -458,7 +459,10 @@ static void render_window(
 		else
 		{
 			interface_draw_screen_effects();
-			rasterizer_screen_flash();
+			/* the zoom's inset takes its flash after the HUD pass draws its
+			crosshairs into it, over them as in mono */
+			if (halo_stereo_current_layer() != HALO_STEREO_LAYER_INSET)
+				rasterizer_screen_flash();
 		}
 	}
 
@@ -502,8 +506,23 @@ static void render_player_frame_stereo(
 	real time_delta_since_tick_sec;
 	struct render_screen_flash screen_flash;
 	float fade[4];
+	boolean inset;
+	short pass_count;
+	struct render_camera inset_camera;
+	struct render_camera inset_rasterizer_camera;
 
 	stereo = halo_stereo_frame();
+	/* the zoom's inset (halo_stereo.h): while zoomed in HEAD mode's full
+	view the eyes keep the headset's view, and a third pass renders the
+	zoomed camera mono, as mono renders it, into the inset layer. Its
+	cameras are the game's before the head turns them below
+	(halo_stereo_inset_orient turns them on foot) */
+	inset = halo_stereo_inset_begin(player_control_get_zoom_level(window->local_player_index) != NONE);
+	pass_count = inset ? 3 : 2;
+	inset_camera = *camera;
+	inset_rasterizer_camera = window->rasterizer_camera;
+	halo_stereo_inset_orient(&inset_camera.forward.i, &inset_camera.up.i);
+	halo_stereo_inset_orient(&inset_rasterizer_camera.forward.i, &inset_rasterizer_camera.up.i);
 	/* head-tracked stereo: the cameras turn by the head's turn the look takes
 	in next frame, and tilt by its roll (the render's alone; the aim has no
 	roll), so the picture matches the pose the presenter hands the
@@ -568,36 +587,52 @@ static void render_player_frame_stereo(
 	halo_stereo_set_fade(fade);
 
 	time_delta_since_tick_sec = render.time_delta_since_tick_sec;
-	for (eye = 0; eye < 2; eye++)
+	/* the eyes, then the zoom's inset if any (pass 2) */
+	for (eye = 0; eye < pass_count; eye++)
 	{
-		const struct halo_stereo_eye *stereo_eye = &stereo->eyes[eye];
 		struct render_camera eye_camera;
 		real_rectangle2d eye_bounds;
 		struct render_frustum eye_frustum;
 		struct render_mirror mirror;
 		boolean has_mirror = FALSE;
+		struct render_frustum inset_frustum;
 
-		eye_camera = window->rasterizer_camera;
-		/* the offset is right, up and back in the camera's frame */
-		eye_camera.position.x += right.i * stereo_eye->offset[0] + up.i * stereo_eye->offset[1] -
-			eye_camera.forward.i * stereo_eye->offset[2];
-		eye_camera.position.y += right.j * stereo_eye->offset[0] + up.j * stereo_eye->offset[1] -
-			eye_camera.forward.j * stereo_eye->offset[2];
-		eye_camera.position.z += right.k * stereo_eye->offset[0] + up.k * stereo_eye->offset[1] -
-			eye_camera.forward.k * stereo_eye->offset[2];
-		eye_bounds.x0 = -stereo_eye->left / (aspect * field_of_view_tangent);
-		eye_bounds.x1 = stereo_eye->right / (aspect * field_of_view_tangent);
-		eye_bounds.y0 = -stereo_eye->down / field_of_view_tangent;
-		eye_bounds.y1 = stereo_eye->up / field_of_view_tangent;
+		if (eye < 2)
+		{
+			const struct halo_stereo_eye *stereo_eye = &stereo->eyes[eye];
+
+			eye_camera = window->rasterizer_camera;
+			/* the offset is right, up and back in the camera's frame */
+			eye_camera.position.x += right.i * stereo_eye->offset[0] + up.i * stereo_eye->offset[1] -
+				eye_camera.forward.i * stereo_eye->offset[2];
+			eye_camera.position.y += right.j * stereo_eye->offset[0] + up.j * stereo_eye->offset[1] -
+				eye_camera.forward.j * stereo_eye->offset[2];
+			eye_camera.position.z += right.k * stereo_eye->offset[0] + up.k * stereo_eye->offset[1] -
+				eye_camera.forward.k * stereo_eye->offset[2];
+			eye_bounds.x0 = -stereo_eye->left / (aspect * field_of_view_tangent);
+			eye_bounds.x1 = stereo_eye->right / (aspect * field_of_view_tangent);
+			eye_bounds.y0 = -stereo_eye->down / field_of_view_tangent;
+			eye_bounds.y1 = stereo_eye->up / field_of_view_tangent;
+		}
+		else
+		{
+			/* the inset: mono's zoomed camera and frustum, which it also culls
+			with (render_player_frame), so a seat's inset, along the gun,
+			sees what the head has turned away from */
+			eye_camera = inset_rasterizer_camera;
+			render_camera_build_frustum_bounds(&inset_camera, &eye_bounds);
+			render_camera_build_frustum(&inset_camera, &eye_bounds, &inset_frustum, TRUE);
+		}
 		render_camera_build_frustum(&eye_camera, &eye_bounds, &eye_frustum, TRUE);
 
 		/* the layer is set before the mirror, so a screen-sized target the
 		mirror pass touches is this eye's */
-		halo_stereo_layer(eye);
+		halo_stereo_layer(eye < 2 ? eye : HALO_STEREO_LAYER_INSET);
 		/* port: once per frame in stereo: what advances by the frame's time
 		while it renders (glow, the sky's animation, weather) advances in eye
-		0 only, and eye 1 (its mirror too) draws the same moment */
-		if (eye == 1)
+		0 only, and eye 1 and the inset (their mirrors too) draw the same
+		moment (halo_stereo_repeat_pass) */
+		if (eye >= 1)
 			render.time_delta_since_tick_sec = 0.0f;
 		/* the mirror's render_window runs in the eye's layer, so it skips
 		render_ui_widgets, deliberately: they draw once, in the HUD pass. It
@@ -632,12 +667,12 @@ static void render_player_frame_stereo(
 			has_mirror = TRUE;
 		}
 
-		render_stereo_visibility_camera = &cull_camera;
+		render_stereo_visibility_camera = eye < 2 ? &cull_camera : NULL;
 		render_stereo_screen_flash = &screen_flash;
 		render_window(
 			window->local_player_index,
-			camera,
-			&cull_frustum,
+			eye < 2 ? camera : &inset_camera,
+			eye < 2 ? &cull_frustum : &inset_frustum,
 			&eye_camera,
 			&eye_frustum,
 			_render_target_primary,
@@ -671,8 +706,17 @@ static void render_player_frame_stereo(
 	rasterizer_window_begin(&parameters);
 	if (!bink_playback_in_progress())
 	{
+		/* (while zoomed, the crosshairs and the zoomed view's elements draw
+		into the inset: halo_stereo_inset_overlay) */
 		interface_draw_hud();
 		rasterizer_screen_flash();
+		/* the inset's flash, over its crosshairs as mono's is over the HUD */
+		if (inset)
+		{
+			halo_stereo_layer(HALO_STEREO_LAYER_INSET);
+			rasterizer_screen_flash();
+			halo_stereo_layer(HALO_STEREO_LAYER_HUD);
+		}
 		halo_screen_ui_offset(TRUE);
 		/* port: a menu drawn here goes on the UI's quad (halo_stereo_set_ui_span) */
 		halo_stereo_set_ui_span(TRUE);

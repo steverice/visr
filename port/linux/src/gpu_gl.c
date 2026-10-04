@@ -8,7 +8,9 @@ gpu.h declares.
 
 #include "gpu.h"
 #include "gl.h"
+#include "halo_stereo.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1902,6 +1904,8 @@ blended by its alpha (a blit can't blend). Row 0 of the texture is the top. */
 static struct
 {
 	GLuint program, sampler, vertex_array;
+	/* the program's source rectangle (u0, v0, u1, v1, v down) */
+	GLint source;
 } overlay;
 
 static int overlay_prepare(void)
@@ -1912,11 +1916,12 @@ static int overlay_prepare(void)
 #else
 		"#version 450 core\n"
 #endif
+		"uniform vec4 source;\n"
 		"out vec2 uv;\n"
 		"void main()\n"
 		"{\n"
 		"	vec2 corner = vec2(float(gl_VertexID & 1), float(gl_VertexID >> 1));\n"
-		"	uv = vec2(corner.x, 1.0 - corner.y);\n"
+		"	uv = mix(source.xy, source.zw, vec2(corner.x, 1.0 - corner.y));\n"
 		"	gl_Position = vec4(corner * 2.0 - 1.0, 0.0, 1.0);\n"
 		"}\n";
 	static const char *const fragment_source =
@@ -1961,6 +1966,7 @@ static int overlay_prepare(void)
 		glSamplerParameteri(overlay.sampler, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
 		glSamplerParameteri(overlay.sampler, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 		glGenVertexArrays(1, &overlay.vertex_array);
+		overlay.source = glGetUniformLocation(overlay.program, "source");
 	}
 	return 1;
 }
@@ -2013,6 +2019,7 @@ static uint32_t gpu_gl_present_stereo(const struct gpu_stereo_present *present)
 		picture's transmittance (d3d8_device.c, hud_layer_blend) */
 		glBlendFuncSeparate(GL_ONE, GL_SRC_ALPHA, GL_ZERO, GL_ONE);
 		glUseProgram(overlay.program);
+		glUniform4f(overlay.source, 0.0f, 0.0f, 1.0f, 1.0f);
 		glBindVertexArray(overlay.vertex_array);
 		glActiveTexture(GL_TEXTURE0);
 		glBindTexture(GL_TEXTURE_2D, present->hud);
@@ -2025,6 +2032,44 @@ static uint32_t gpu_gl_present_stereo(const struct gpu_stereo_present *present)
 		glBindSampler(0, 0);
 		glBindVertexArray(streams.vertex_array);
 		glDisable(GL_BLEND);
+	}
+	/* the zoom's inset (halo_stereo.h): its central square, opaque, over the
+	HUD where the HEAD presenter's quad would be, in each eye's fixed
+	frustum, with the parallax of its distance */
+	if (present->inset && overlay_prepare())
+	{
+		float layout_width = (present->hud_aspect > 0.0f ? present->hud_aspect : 4.0f / 3.0f) * 480.0f;
+		float side = HALO_STEREO_INSET_LINES < layout_width ? HALO_STEREO_INSET_LINES : layout_width;
+		float half_tangent = HALO_STEREO_INSET_WIDTH_METERS / 2.0f / HALO_STEREO_INSET_DISTANCE_METERS;
+
+		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, default_framebuffer());
+		glDisable(GL_DEPTH_TEST);
+		glDisable(GL_CULL_FACE);
+		glDisable(GL_STENCIL_TEST);
+		glDisable(GL_BLEND);
+		glUseProgram(overlay.program);
+		glUniform4f(overlay.source, 0.5f - side / 2.0f / layout_width, 0.0f, 0.5f + side / 2.0f / layout_width, 1.0f);
+		glBindVertexArray(overlay.vertex_array);
+		glActiveTexture(GL_TEXTURE0);
+		glBindTexture(GL_TEXTURE_2D, present->inset);
+		glBindSampler(0, overlay.sampler);
+		for (eye = 0; eye < 2; eye++)
+		{
+			/* the eye sits its offset (meters) to the side, so the quad's
+			center is that much the other way over the distance */
+			float offset = (eye == 0 ? -HALO_STEREO_SIDE_BY_SIDE_OFFSET : HALO_STEREO_SIDE_BY_SIDE_OFFSET) * 3.048f;
+			float center = -offset / HALO_STEREO_INSET_DISTANCE_METERS;
+			float scale = 0.5f / HALO_STEREO_SIDE_BY_SIDE_TANGENT;
+			int x0 = boxes[eye][0] + (int)lroundf(boxes[eye][2] * (0.5f + (center - half_tangent) * scale));
+			int x1 = boxes[eye][0] + (int)lroundf(boxes[eye][2] * (0.5f + (center + half_tangent) * scale));
+			int y0 = boxes[eye][1] + (int)lroundf(boxes[eye][3] * (0.5f - half_tangent * scale));
+			int y1 = boxes[eye][1] + (int)lroundf(boxes[eye][3] * (0.5f + half_tangent * scale));
+
+			glViewport(x0, y0, x1 - x0, y1 - y0);
+			glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+		}
+		glBindSampler(0, 0);
+		glBindVertexArray(streams.vertex_array);
 	}
 	platform_video_swap();
 	/* the blits and the overlay bypassed the cached state */

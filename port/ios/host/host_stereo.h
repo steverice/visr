@@ -29,11 +29,13 @@ input.comfort_vignette. The HUD is laid out at hud_aspect's shape (its width
 over its height); with hud_ui it holds a menu, the console or a progress bar
 and goes whole on the UI's quad; reticle is where its center points in the
 eyes' frame, and hud_tangents the HUD pass's projection, for the catch-all
-quad (gpu_stereo_present) */
+quad (gpu_stereo_present). inset (nil: none) is the zoom's inset, laid out as the
+HUD, whose central square goes on its own quad over the HUD
+(host_stereo_hud_inset) */
 void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLTexture> right,
 	id<MTLTexture> left_depth, id<MTLTexture> right_depth, id<MTLTexture> hud, float hud_aspect,
-	int hud_ui, const float reticle[3], const float hud_tangents[2], float near_meters, float far_meters,
-	float brightness, float vignette);
+	int hud_ui, const float reticle[3], const float hud_tangents[2], id<MTLTexture> inset, float near_meters,
+	float far_meters, float brightness, float vignette);
 /* HEAD mode without eyes this frame (a load: a mono picture), or with a
 menu over the film (the main menu's scripted scene, the pause menu in a
 cutscene): 1 while the Compositor's frame host_stereo_frame opened can take
