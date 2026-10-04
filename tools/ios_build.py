@@ -86,6 +86,10 @@ def main():
         ('port/third_party/kcp/LICENSE', 'kcp.txt'),
         ('port/third_party/extract-xiso/LICENSE.TXT', 'extract-xiso.txt'),
         ('port/third_party/tomlc17/LICENSE', 'tomlc17.txt'),
+        ('port/third_party/stb/LICENSE', 'stb_truetype.txt'),
+        ('port/assets/fonts/Overpass-OFL.txt', 'Overpass-OFL.txt'),
+        ('port/assets/fonts/OpenCE-OFL.txt', 'OpenCE-OFL.txt'),
+        ('port/assets/fonts/Newtown-LICENSE.txt', 'Newtown.txt'),
     ):
         shutil.copyfile(ROOT/source, notices/name)
     build=ROOT/'build'/platform_name/('app-simulator' if args.simulator else
