@@ -647,8 +647,10 @@ static void render_player_frame_stereo(
 	render.time_delta_since_tick_sec = time_delta_since_tick_sec;
 
 	/* the HUD pass: the presenter blends its layer over each eye by its
-	alpha. The transparent clear relies on the zeroed fog color (black) and
-	on real_rgb_color_to_pixel32 leaving alpha at 0. While a movie plays, it
+	alpha, the picture's transmittance (d3d8_device.c, hud_layer_blend). The
+	empty clear relies on the zeroed fog color (black) and on
+	real_rgb_color_to_pixel32 leaving alpha at 0, which the layer takes as
+	nothing drawn. While a movie plays, it
 	draws here, once, as a flat picture for both eyes (as render_window
 	draws it in mono: in place of the HUD) */
 	halo_stereo_layer(HALO_STEREO_LAYER_HUD);

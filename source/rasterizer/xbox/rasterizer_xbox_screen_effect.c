@@ -1186,10 +1186,11 @@ void _rasterizer_screen_flash(
 	short viewport_height;
 	/* port: stereo's HUD layer (render_player_frame_stereo), drawn after the
 	eyes have the flash. The presenter puts the layer over each eye as
-	premultiplied color plus the eye times one minus its alpha, so a lighten
-	or darken flash scaled by the layer's alpha (D3DBLEND_DESTALPHA, alpha
-	unwritten) gives the HUD exactly mono's flash over it, and nothing where
-	the layer is empty; the other types change the picture alone */
+	premultiplied color plus the eye times the layer's alpha, the picture's
+	transmittance (d3d8_device.c), so a lighten or darken flash scaled by
+	one minus that (D3DBLEND_INVDESTALPHA, alpha unwritten) gives the HUD
+	exactly mono's flash over it, and nothing where the layer is empty; the
+	other types change the picture alone */
 	boolean stereo_hud_layer = halo_stereo_current_layer() == HALO_STEREO_LAYER_HUD;
 
 	match_assert(
@@ -1248,7 +1249,7 @@ void _rasterizer_screen_flash(
 				IDirect3DDevice8_SetRenderState(
 					global_d3d_device,
 					D3DRS_SRCBLEND,
-					stereo_hud_layer ? D3DBLEND_DESTALPHA : D3DBLEND_ONE);
+					stereo_hud_layer ? D3DBLEND_INVDESTALPHA : D3DBLEND_ONE);
 				IDirect3DDevice8_SetRenderState(
 					global_d3d_device,
 					D3DRS_DESTBLEND,
@@ -1265,7 +1266,7 @@ void _rasterizer_screen_flash(
 				IDirect3DDevice8_SetRenderState(
 					global_d3d_device,
 					D3DRS_SRCBLEND,
-					stereo_hud_layer ? D3DBLEND_DESTALPHA : D3DBLEND_ONE);
+					stereo_hud_layer ? D3DBLEND_INVDESTALPHA : D3DBLEND_ONE);
 				IDirect3DDevice8_SetRenderState(
 					global_d3d_device,
 					D3DRS_DESTBLEND,

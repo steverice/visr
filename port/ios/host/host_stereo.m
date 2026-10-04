@@ -113,21 +113,21 @@ static NSString *const shader_source =
 	"	out.coordinate = corner;\n"
 	"	return out;\n"
 	"}\n"
-	/* The HUD layer clears to 0,0,0,0, so what the game draws into it comes
-	out premultiplied: an alpha-blended draw leaves its color times its
-	alpha, an additive one (text, glows) its color with alpha 0. Over the
-	world, then, it's the color plus the world times one minus alpha. Where
-	it covers the world, its depth is the quad's, so the Compositor
-	reprojects it as the quad it is */
+	/* The HUD layer holds premultiplied color and, in alpha, how much of the
+	picture still shows (d3d8_device.c, hud_layer_blend): 1 where nothing
+	drew. Over the world it's the color plus the world times that, which the
+	blend makes of one minus it. Where it covers the world, its depth is the
+	quad's, so the Compositor reprojects it as the quad it is */
 	"fragment float4 hud_fragment(picture_vertex in [[stage_in]], texture2d<float> hud [[texture(0)]],\n"
 	"	sampler linear [[sampler(0)]], constant hud_uniforms &u [[buffer(0)]])\n"
 	"{\n"
 	"	float4 color = hud.sample(linear, in.coordinate);\n"
-	"	if (max(color.a, max(color.r, max(color.g, color.b))) < 1.0 / 255.0)\n"
+	"	float covered = 1.0 - color.a;\n"
+	"	if (max(covered, max(color.r, max(color.g, color.b))) < 1.0 / 255.0)\n"
 	"		discard_fragment();\n"
 	"	if (u.decode_srgb)\n"
 	"		color.rgb = select(pow((color.rgb + 0.055) / 1.055, 2.4), color.rgb / 12.92, color.rgb <= 0.04045);\n"
-	"	return float4(color.rgb * u.brightness, color.a);\n"
+	"	return float4(color.rgb * u.brightness, covered);\n"
 	"}\n";
 
 /* the eye depth's floor when the game's planes aren't usable: the

@@ -244,7 +244,10 @@ struct gpu_blend_state
 	uint32_t color;
 	/* bit 0 red, 1 green, 2 blue, 3 alpha */
 	uint8_t color_write_mask;
-	uint8_t pad[3];
+	/* nonzero: alpha blends by its own factors (same operation), else by
+	source and destination; only stereo's HUD layer sets it (d3d8_device.c,
+	hud_layer_blend) */
+	uint8_t alpha_separate, alpha_source, alpha_destination;
 };
 
 struct gpu_raster_state

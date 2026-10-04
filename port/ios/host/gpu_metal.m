@@ -1422,10 +1422,9 @@ descriptor against the target it draws to. */
 struct pipeline_key
 {
 	gpu_shader vertex_shader, pixel_shader;
-	uint8_t blend, source, destination, operation, write_mask;
+	uint8_t blend, source, destination, operation, write_mask, alpha_source, alpha_destination;
 	/* the stages that rebuild their border colors (exact_borders) */
 	uint8_t exact_borders;
-	uint8_t pad[2];
 	uint32_t color_format, depth_format;
 	/* the vertex function's specialization (attribute_kinds) */
 	uint8_t attribute_kinds[GPU_ATTRIBUTE_COUNT];
@@ -1718,8 +1717,10 @@ static MTLRenderPipelineDescriptor *pipeline_descriptor(const struct pipeline_ke
 	if (key->blend)
 	{
 		attachment.blendingEnabled = YES;
-		attachment.sourceRGBBlendFactor = attachment.sourceAlphaBlendFactor = blend_factor(key->source);
-		attachment.destinationRGBBlendFactor = attachment.destinationAlphaBlendFactor = blend_factor(key->destination);
+		attachment.sourceRGBBlendFactor = blend_factor(key->source);
+		attachment.sourceAlphaBlendFactor = blend_factor(key->alpha_source);
+		attachment.destinationRGBBlendFactor = blend_factor(key->destination);
+		attachment.destinationAlphaBlendFactor = blend_factor(key->alpha_destination);
 		attachment.rgbBlendOperation = attachment.alphaBlendOperation = blend_operation(key->operation);
 	}
 	descriptor.depthAttachmentPixelFormat = (MTLPixelFormat)key->depth_format;
@@ -1926,6 +1927,11 @@ static void pipeline_key_from_description(const struct gpu_pipeline_description 
 		key->source = description->source;
 		key->destination = description->destination;
 		key->operation = description->operation;
+		/* a list's pipelines blend alpha as color: only the stereo HUD layer
+		blends alpha on its own (gpu_blend_state.alpha_separate), and its
+		pipelines compile at their first draw */
+		key->alpha_source = key->source;
+		key->alpha_destination = key->destination;
 	}
 	key->write_mask = description->write_mask & 0xf;
 	key->exact_borders = description->exact_borders & 0xf;
@@ -1959,6 +1965,8 @@ static id<MTLRenderPipelineState> draw_pipeline(const struct gpu_draw *draw, con
 		key.source = draw->blend.source;
 		key.destination = draw->blend.destination;
 		key.operation = draw->blend.operation;
+		key.alpha_source = draw->blend.alpha_separate ? draw->blend.alpha_source : key.source;
+		key.alpha_destination = draw->blend.alpha_separate ? draw->blend.alpha_destination : key.destination;
 	}
 	key.write_mask = draw->color_target ? draw->blend.color_write_mask & 0xf : 0;
 	key.exact_borders = (uint8_t)exact;

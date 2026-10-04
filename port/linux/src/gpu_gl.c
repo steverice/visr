@@ -262,7 +262,7 @@ static struct gpu_gl_state
 	GLuint stencil_value_mask;
 	GLenum stencil_operations[3];
 	GLuint stencil_write_mask;
-	GLenum blend_source, blend_destination, blend_equation;
+	GLenum blend_source, blend_destination, blend_alpha_source, blend_alpha_destination, blend_equation;
 	float blend_color[4];
 	unsigned char color_mask;
 	GLenum front_face, cull_mode, polygon_mode;
@@ -634,14 +634,22 @@ static void apply_raster_state(const struct gpu_viewport *viewport, const struct
 	{
 		GLenum source = gl_blend_factor(blend->source);
 		GLenum destination = gl_blend_factor(blend->destination);
+		GLenum alpha_source = blend->alpha_separate ? gl_blend_factor(blend->alpha_source) : source;
+		GLenum alpha_destination = blend->alpha_separate ? gl_blend_factor(blend->alpha_destination) : destination;
 		GLenum equation = gl_blend_equation(blend->operation);
 		float blend_color[4];
 
-		if (gl_state.blend_source != source || gl_state.blend_destination != destination)
+		if (gl_state.blend_source != source || gl_state.blend_destination != destination ||
+			gl_state.blend_alpha_source != alpha_source || gl_state.blend_alpha_destination != alpha_destination)
 		{
 			gl_state.blend_source = source;
 			gl_state.blend_destination = destination;
-			glBlendFunc(source, destination);
+			gl_state.blend_alpha_source = alpha_source;
+			gl_state.blend_alpha_destination = alpha_destination;
+			if (blend->alpha_separate)
+				glBlendFuncSeparate(source, destination, alpha_source, alpha_destination);
+			else
+				glBlendFunc(source, destination);
 		}
 		if (gl_state.blend_equation != equation)
 		{
@@ -2001,7 +2009,9 @@ static uint32_t gpu_gl_present_stereo(const struct gpu_stereo_present *present)
 		glDisable(GL_CULL_FACE);
 		glDisable(GL_STENCIL_TEST);
 		glEnable(GL_BLEND);
-		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+		/* premultiplied color over the picture by the layer's alpha, the
+		picture's transmittance (d3d8_device.c, hud_layer_blend) */
+		glBlendFuncSeparate(GL_ONE, GL_SRC_ALPHA, GL_ZERO, GL_ONE);
 		glUseProgram(overlay.program);
 		glBindVertexArray(overlay.vertex_array);
 		glActiveTexture(GL_TEXTURE0);

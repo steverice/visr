@@ -294,13 +294,13 @@ static NSString *const shader_source =
 	"}\n"
 	/* stereo on the screen: the HUD over the eye's picture, both display-
 	encoded, as the game would have blended it into its back buffer. The HUD
-	layer clears to 0,0,0,0, so what the game draws into it is premultiplied
-	(host_stereo.m) */
+	layer holds premultiplied color and, in alpha, how much of the picture
+	still shows (d3d8_device.c, hud_layer_blend) */
 	"fragment float4 theater_hud_fragment(screen_vertex in [[stage_in]], texture2d<float> picture [[texture(0)]],\n"
 	"	texture2d<float> hud [[texture(1)]], sampler linear [[sampler(0)]], constant screen_uniforms &u [[buffer(0)]])\n"
 	"{\n"
 	"	float4 over = hud.sample(linear, in.coordinate);\n"
-	"	float3 color = saturate(over.rgb + picture.sample(linear, in.coordinate).rgb * (1 - over.a));\n"
+	"	float3 color = saturate(over.rgb + picture.sample(linear, in.coordinate).rgb * over.a);\n"
 	"	if (u.decode_srgb)\n"
 	"		color = select(pow((color + 0.055) / 1.055, 2.4), color / 12.92, color <= 0.04045);\n"
 	"	return float4(color * u.brightness, 1);\n"

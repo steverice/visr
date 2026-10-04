@@ -412,10 +412,6 @@ void cinematic_render(
 			real bar_height;
 			real viewport_height;
 
-			/* port: in stereo the bars go in the HUD layer, where they must
-			write alpha to hide the picture (halo_stereo_set_covering) */
-			halo_stereo_set_covering(halo_stereo_frame()->eye_count == 2);
-
 			bar_height = bar_amount * 0.125f;
 			viewport_height = (real)(
 				render.camera.viewport_bounds.y1 -
@@ -435,7 +431,6 @@ void cinematic_render(
 				(real)render.camera.viewport_bounds.y1 - bar_height);
 			bar.y1 = (short)fast_ftol((real)render.camera.viewport_bounds.y1);
 			draw_quad(&bar, 0xFF000000);
-			halo_stereo_set_covering(FALSE);
 		}
 	}
 

@@ -730,6 +730,8 @@ static unsigned long render_target_write_serial;
 
 /* the pixels per unit of the bound targets (render_target_get) */
 static float target_scale[2] = { 1.0f, 1.0f };
+/* the bound color target is stereo's HUD layer (draw_targets) */
+static BOOL target_hud_layer;
 
 /* the pixel edge of a coordinate in the bound targets' units */
 static int32_t target_pixel(float coordinate, int axis)
@@ -752,6 +754,7 @@ static BOOL draw_targets(gpu_texture *color_texture, gpu_texture *depth_texture)
 		color->last_rendered = device.frame + 1;
 		color->target.written = ++render_target_write_serial;
 	}
+	target_hud_layer = color && color->layer == HALO_STEREO_LAYER_HUD;
 	/* viewports and clears are in the targets' units (render_target_get) */
 	target_scale[0] = color ? color->target.scale[0] : depth->target.scale[0];
 	target_scale[1] = color ? color->target.scale[1] : depth->target.scale[1];
@@ -2627,6 +2630,70 @@ static uint8_t gpu_blend_operation(DWORD operation)
 	}
 }
 
+/* draws into stereo's HUD layer since the last debug.gpu_stats line: those
+whose transmittance is exact, and those whose blend has none (the picture
+under them is left as it was) */
+static unsigned long hud_layer_exact, hud_layer_inexact;
+
+/* Stereo's HUD layer (render.c's HUD pass) is drawn once and put over each
+eye's picture by the presenters, so it holds what the game draws over the
+picture: premultiplied color, and in alpha the picture's transmittance, how
+much of the picture still shows (1 where nothing drew). The presenters
+composite rgb + picture * alpha, and the layer clears to color 0, alpha 1
+(D3DDevice_Clear).
+
+Mono blends each draw into the picture: P' = src * S + P * D, for the
+operation's sign. With the layer standing for C + P * T, the same draw makes
+C' = src * S + C * D (the game's own blend, on the color) and T' = T * D,
+exact whenever D is the same for every channel and S doesn't read the
+destination: alpha then blends by ZERO and D. Blending off is D = ZERO.
+That covers the HUD's alpha-blended draws (INVSRCALPHA), its additive ones
+(ONE: the picture still shows) and the meters (SRCALPHA, hud_hires.h). The
+game's own alpha writes there (scratch, in mono) are replaced. Other blends
+(a destination factor per channel, MIN and MAX) keep the game's write mask:
+they change the color alone, as before; debug.gpu_stats counts them. The
+port's screen flash in the layer reads the transmittance itself
+(rasterizer_xbox_screen_effect.c, D3DBLEND_INVDESTALPHA) and writes color
+only: it is left alone. Mono never draws here */
+static void hud_layer_blend(struct gpu_blend_state *blend)
+{
+	uint8_t destination = blend->enable ? blend->destination : GPU_BLEND_ZERO;
+	uint8_t source = blend->source;
+	BOOL source_reads_destination = blend->enable && (source == GPU_BLEND_DESTINATION_ALPHA ||
+		source == GPU_BLEND_ONE_MINUS_DESTINATION_ALPHA || source == GPU_BLEND_DESTINATION_COLOR ||
+		source == GPU_BLEND_ONE_MINUS_DESTINATION_COLOR || source == GPU_BLEND_SOURCE_ALPHA_SATURATE);
+	BOOL scalar = destination == GPU_BLEND_ZERO || destination == GPU_BLEND_ONE ||
+		destination == GPU_BLEND_SOURCE_ALPHA || destination == GPU_BLEND_ONE_MINUS_SOURCE_ALPHA ||
+		destination == GPU_BLEND_CONSTANT_ALPHA || destination == GPU_BLEND_ONE_MINUS_CONSTANT_ALPHA;
+	/* SUBTRACT would subtract the transmittance; ADD and REVERSE_SUBTRACT
+	keep it at T * D */
+	BOOL operation = !blend->enable || blend->operation == GPU_BLEND_OP_ADD ||
+		blend->operation == GPU_BLEND_OP_REVERSE_SUBTRACT;
+
+	/* a draw that writes no color (depth or stencil only) leaves it */
+	if (!(blend->color_write_mask & 7))
+		return;
+	if (source_reads_destination || !scalar || !operation)
+	{
+		/* (the flash reads the transmittance by design: not counted) */
+		if (source != GPU_BLEND_ONE_MINUS_DESTINATION_ALPHA)
+			hud_layer_inexact++;
+		return;
+	}
+	if (!blend->enable)
+	{
+		blend->enable = 1;
+		blend->source = GPU_BLEND_ONE;
+		blend->destination = GPU_BLEND_ZERO;
+		blend->operation = GPU_BLEND_OP_ADD;
+	}
+	blend->alpha_separate = 1;
+	blend->alpha_source = GPU_BLEND_ZERO;
+	blend->alpha_destination = destination;
+	blend->color_write_mask |= 8;
+	hud_layer_exact++;
+}
+
 /* fills the packet's raster state from the render states and the viewport */
 static void raster_state_fill(BOOL has_depth, struct gpu_viewport *viewport, struct gpu_rect *scissor,
 	struct gpu_depth_stencil_state *depth_stencil, struct gpu_blend_state *blend, struct gpu_raster_state *raster)
@@ -2674,6 +2741,8 @@ static void raster_state_fill(BOOL has_depth, struct gpu_viewport *viewport, str
 	blend->color_write_mask = (uint8_t)(((write & D3DCOLORWRITEENABLE_RED) ? 1 : 0) |
 		((write & D3DCOLORWRITEENABLE_GREEN) ? 2 : 0) | ((write & D3DCOLORWRITEENABLE_BLUE) ? 4 : 0) |
 		((write & D3DCOLORWRITEENABLE_ALPHA) ? 8 : 0));
+	if (target_hud_layer)
+		hud_layer_blend(blend);
 
 	/* the cull mode names the winding to discard; FRONTFACE names the
 	front winding */
@@ -3652,6 +3721,11 @@ void WINAPI D3DDevice_Clear(DWORD count, CONST D3DRECT *rectangles, DWORD flags,
 			((flags & D3DCLEAR_TARGET_B) ? GPU_CHANNEL_BLUE : 0) |
 			((flags & D3DCLEAR_TARGET_A) ? GPU_CHANNEL_ALPHA : 0);
 		clear.color = (uint32_t)color;
+		/* stereo's HUD layer keeps the picture's transmittance in alpha
+		(hud_layer_blend): the game's alpha is coverage, so its clear to 0
+		leaves the layer empty */
+		if (target_hud_layer)
+			clear.color = (clear.color & 0x00ffffffu) | ((0xffu - (clear.color >> 24)) << 24);
 	}
 	if (clear.depth_target && (flags & D3DCLEAR_ZBUFFER))
 	{
@@ -3707,7 +3781,16 @@ void WINAPI D3DDevice_Clear(DWORD count, CONST D3DRECT *rectangles, DWORD flags,
 /* ---------- presentation */
 
 /* suffix: "" for the usual frameNNNNN.bmp, else e.g. "-left" */
+static void write_screenshot_channel(struct render_target_entry *target, const char *suffix, int alpha);
+
 static void write_screenshot(struct render_target_entry *target, const char *suffix)
+{
+	write_screenshot_channel(target, suffix, 0);
+}
+
+/* the target's color, or with alpha its alpha channel as gray (stereo's HUD
+layer: the picture's transmittance, hud_layer_blend) */
+static void write_screenshot_channel(struct render_target_entry *target, const char *suffix, int alpha)
 {
 	const char *directory = *config_string("debug.screenshot_directory") ?
 		config_string("debug.screenshot_directory") : NULL;
@@ -3730,7 +3813,11 @@ static void write_screenshot(struct render_target_entry *target, const char *suf
 	/* the display ignores destination alpha, which the game uses as scratch;
 	image viewers would show it as transparency */
 	for (row = 0; row < width * height; row++)
+	{
+		if (alpha)
+			pixels[row * 4] = pixels[row * 4 + 1] = pixels[row * 4 + 2] = pixels[row * 4 + 3];
 		pixels[row * 4 + 3] = 0xff;
+	}
 	snprintf(path, sizeof(path), "%s/frame%05lu%s.bmp", directory, device.frame, suffix);
 	file = fopen(path, "wb");
 	if (file)
@@ -3938,7 +4025,10 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 				write_screenshot(render_target_get_layer(&device.back_buffer, 1), "-right");
 				write_depth_screenshot(render_target_get_layer(&device.depth_buffer, 0), "-left-depth");
 				if (hud)
+				{
 					write_screenshot(hud, "-hud");
+					write_screenshot_channel(hud, "-hud-alpha", 1);
+				}
 			}
 		}
 		if (stereo_frame)
@@ -4013,6 +4103,11 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 			stats.mirrored_bytes / stats.presents / 1024, stats.streamed_bytes / stats.presents / 1024,
 			calls / stats.presents);
 		memset(&stats, 0, sizeof(stats));
+		/* and how stereo's HUD layer took its draws (hud_layer_blend) */
+		if (hud_layer_exact || hud_layer_inexact)
+			platform_log("stereo: the HUD layer's last 60 frames: %lu draws with exact transmittance, %lu without",
+				hud_layer_exact, hud_layer_inexact);
+		hud_layer_exact = hud_layer_inexact = 0;
 	}
 	platform_pump_events();
 
