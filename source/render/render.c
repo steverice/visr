@@ -148,6 +148,9 @@ static boolean render_invalid_fog_warning_displayed;
 
 /* port: TRUE once render_player_frame_stereo drew the eyes this frame */
 static boolean render_stereo_eyes_drawn;
+/* port: in a stereo eye's render_window, the camera whose apex is the culling
+frustum's (render_player_frame_stereo), else NULL */
+static const struct render_camera *render_stereo_visibility_camera;
 
 extern short global_screenshot_count;
 
@@ -331,7 +334,23 @@ static void render_window(
 	parameters.window_index = render.window_index;
 	parameters.fog = render.fog;
 
-	structure_visibility_compute();
+	/* port: in stereo, render.frustum is the culling frustum, whose apex sits
+	behind the camera so that it holds both eyes (far behind it, on the
+	theater screen); the portal traversal and the clusters' frusta project
+	with render.camera and render.frustum together, so they take the culling
+	frustum's camera too. The cluster stays the camera's own
+	(structure_visibility_find_camera), and render.camera is the camera again
+	for the rest */
+	if (render_stereo_visibility_camera)
+	{
+		struct render_camera saved_camera = render.camera;
+
+		render.camera = *render_stereo_visibility_camera;
+		structure_visibility_compute();
+		render.camera = saved_camera;
+	}
+	else
+		structure_visibility_compute();
 	player_effect_get_screen_flash(local_player_index, &parameters.screen_flash);
 	rasterizer_window_begin(&parameters);
 
@@ -594,6 +613,7 @@ static void render_player_frame_stereo(
 			has_mirror = TRUE;
 		}
 
+		render_stereo_visibility_camera = &cull_camera;
 		render_window(
 			window->local_player_index,
 			camera,
@@ -602,6 +622,7 @@ static void render_player_frame_stereo(
 			&eye_frustum,
 			_render_target_primary,
 			has_mirror);
+		render_stereo_visibility_camera = NULL;
 	}
 	render.time_delta_since_tick_sec = time_delta_since_tick_sec;
 
