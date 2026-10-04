@@ -373,7 +373,20 @@ void cinematic_render(
 		(gameplay, as the bars slide out after a cutscene) have none */
 		bar_amount = cinematic_globals->letterbox_amount;
 		if (halo_stereo_frame()->eye_count == 2)
+		{
+			static boolean bars_shown = FALSE;
+			void platform_log(char const *format, ...);
+
 			bar_amount = halo_stereo_film() ? halo_cinematic_title_bars() : 0.0f;
+			/* once each time a title brings them in, and as they leave */
+			if ((bar_amount > 0.0f) != bars_shown)
+			{
+				bars_shown = bar_amount > 0.0f;
+				platform_log(bars_shown
+					? "stereo: a title brings the cutscene screen's bars in (tick %ld)"
+					: "stereo: the cutscene screen's bars are out (tick %ld)", game_time);
+			}
+		}
 
 		if (bar_amount > 0.0f)
 		{
