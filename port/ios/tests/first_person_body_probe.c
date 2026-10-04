@@ -1,14 +1,17 @@
 /* The first-person body's render-only node matrices
 (port/linux/game/first_person_body.c, included, not linked): on a synthetic
-node list in the cyborg's shape, the head collapses to its parent's
-position, the torso from the spine up collapses to the pelvis when asked
-(or, with no spine node, each arm from the upper arm down to the upper
-arm), everything else is left bit-identical, the input is never written,
-nothing past node_count is read or written (the matrices are allocated
-exactly, under the address sanitizer), and a model whose names aren't a
-biped's comes back unchanged. And the predicate: only the local player's
-unit, in the director's first person, in an eye layer of a stereo frame in
-HEAD mode or the side-by-side view, never the film or SCREEN gameplay. */
+node list in the cyborg's shape, the torso (the spine's subtree) collapses
+to the spine node's own position, every node is set back along the facing
+made horizontal, the shadow's copy is the whole silhouette set back the
+same way in its own array, the input is never written, nothing past
+node_count is read or written (the matrices are allocated exactly, under
+the address sanitizer), a model with no spine collapses only its head, and
+one whose names aren't a biped's comes back unchanged. The pose guard skips
+a pelvis away from under the camera. And the predicate: only the local
+player's unit, in the director's first person, in an eye layer of a stereo
+frame in HEAD mode or the side-by-side view, never the film or SCREEN
+gameplay, and only in a pose that takes a body, logging the first skip of
+each stretch. */
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,6 +50,7 @@ static struct model *probe_models[8];
 #define model_definition_get(index) (probe_models[(index)])
 
 /* first_person_body.c's imports */
+#define PROBE_OFFSET 0.08f
 static int logs, setting_on = 1, gpu_stats = 1;
 static char last_log[512];
 int config_boolean(const char *name)
@@ -56,6 +60,10 @@ int config_boolean(const char *name)
 	if (!strcmp(name, "debug.gpu_stats"))
 		return gpu_stats;
 	return 0;
+}
+double config_real(const char *name)
+{
+	return !strcmp(name, "display.first_person_body_offset") ? PROBE_OFFSET : 0.0;
 }
 void platform_log(const char *format, ...)
 {
@@ -71,20 +79,26 @@ void platform_log(const char *format, ...)
 
 static struct halo_stereo_frame probe_frame;
 static int probe_layer, probe_film, probe_screen_gameplay;
-static long probe_unit = 7;
-static int probe_first_person = 1;
 const struct halo_stereo_frame *halo_stereo_frame(void) { return &probe_frame; }
 int halo_stereo_current_layer(void) { return probe_layer; }
 int halo_stereo_film(void) { return probe_film; }
 int halo_stereo_screen_gameplay(void) { return probe_screen_gameplay; }
 
 #define FIRST_PERSON_BODY_PROBE
+#include "../../linux/game/first_person_body.c"
+
+static long probe_unit = 7;
+static int probe_first_person = 1;
+static enum body_skip probe_pose = BODY_DRAWS;
 static int first_person_body_local_unit(long object_index)
 {
 	return probe_first_person && object_index == probe_unit;
 }
-
-#include "../../linux/game/first_person_body.c"
+static enum body_skip first_person_body_pose(long object_index)
+{
+	(void)object_index;
+	return probe_pose;
+}
 
 static int failures;
 
@@ -140,16 +154,20 @@ static real_matrix4x3 *make_matrices(short count)
 	return matrices;
 }
 
-static int same_matrix(const real_matrix4x3 *a, const real_matrix4x3 *b)
+static int near(real a, real b)
 {
-	return !memcmp(a, b, sizeof(*a));
+	return a - b < 1e-5f && b - a < 1e-5f;
 }
 
-/* collapsed: scale 0 at the target's position, the rotation untouched */
-static int collapsed_to(const real_matrix4x3 *result, const real_matrix4x3 *original, const real_matrix4x3 *target)
+/* the result is original's rotation at target's position set back by
+back, with the given scale */
+static int placed(const real_matrix4x3 *result, const real_matrix4x3 *original, const real_matrix4x3 *target,
+	const float back[2], real scale)
 {
-	return result->scale == 0.0f &&
-		!memcmp(&result->position, &target->position, sizeof(result->position)) &&
+	return result->scale == scale &&
+		near(result->position.x, target->position.x + back[0]) &&
+		near(result->position.y, target->position.y + back[1]) &&
+		near(result->position.z, target->position.z) &&
 		!memcmp(&result->forward, &original->forward, sizeof(result->forward)) &&
 		!memcmp(&result->left, &original->left, sizeof(result->left)) &&
 		!memcmp(&result->up, &original->up, sizeof(result->up));
@@ -165,7 +183,7 @@ enum
 };
 static const char *const cyborg_names[CYBORG_NODES] = {
 	"bip01 pelvis", "bip01 l thigh", "bip01 l calf", "bip01 l foot", "bip01 r thigh", "bip01 r calf",
-	"bip01 r foot", "bip01 spine", "bip01 spine1", "bip01 neck", "Bip01 Head",
+	"bip01 r foot", "Bip01 Spine", "bip01 spine1", "bip01 neck", "Bip01 Head",
 	"bip01 l clavicle", "bip01 l upperarm", "bip01 l forearm", "bip01 l hand", "bip01 l finger0",
 	"bip01 l finger1",
 	"bip01 r clavicle", "bip01 r UpperArm", "bip01 r forearm", "bip01 r hand", "bip01 r finger0",
@@ -177,101 +195,134 @@ static const short cyborg_parents[CYBORG_NODES] = {
 	NECK, R_CLAVICLE, R_UPPERARM, R_FOREARM, R_HAND, R_HAND,
 };
 
-/* the spine's subtree: everything above the pelvis but the legs */
-static int in_torso(int node)
-{
-	return node >= SPINE;
-}
-
 static void check_cyborg(void)
 {
+	/* a facing with a vertical part: the set-back is horizontal, 0.08 long */
+	static const float facing[3] = { 0.6f, 0.8f, 0.5f };
+	const float back[2] = { -PROBE_OFFSET * 0.6f, -PROBE_OFFSET * 0.8f };
 	long model = add_model(0xC1B0u, cyborg_names, cyborg_parents, CYBORG_NODES);
 	real_matrix4x3 *input = make_matrices(CYBORG_NODES);
 	real_matrix4x3 saved[CYBORG_NODES];
-	const real_matrix4x3 *result;
-	int arms, node;
+	const real_matrix4x3 *body, *shadow;
+	int node;
+
+	/* the torso's cap: the spine node raised along the pelvis's up (+z here) */
+	real_matrix4x3 cap;
 
 	memcpy(saved, input, sizeof(saved));
-	for (arms = 1; arms >= 0; arms--) {
+	cap = input[SPINE];
+	cap.position.z += BODY_WAIST_RAISE;
+	logs = 0;
+	body = halo_first_person_body_matrices(model, input, CYBORG_NODES, facing, 0);
+	check(logs > 0 && strstr(last_log, "first_person_body") != NULL, "the node names log on the first lookup");
+	check(body != input, "the cyborg gets a copy");
+	for (node = 0; node < CYBORG_NODES; node++) {
 		char what[160];
 
-		logs = 0;
-		result = halo_first_person_body_matrices(model, input, CYBORG_NODES, arms);
-		check(result != input, "the cyborg gets a copy");
-		check(!memcmp(saved, input, sizeof(saved)), "the input is never written");
-		for (node = 0; node < CYBORG_NODES; node++) {
-			snprintf(what, sizeof(what), "%s, collapse_arms %d: node %s", "cyborg", arms, cyborg_names[node]);
-			if (arms && in_torso(node))
-				check(collapsed_to(&result[node], &input[node], &input[PELVIS]), what);
-			else if (node == HEAD)
-				check(collapsed_to(&result[node], &input[node], &input[NECK]),
-					"the head collapses to its parent's (the neck's) position, scale 0");
-			else
-				check(same_matrix(&result[node], &input[node]), what);
-		}
+		snprintf(what, sizeof(what), "the body: node %s", cyborg_names[node]);
+		if (node >= SPINE)
+			check(placed(&body[node], &input[node], &cap, back, 0.0f), what);
+		else
+			check(placed(&body[node], &input[node], &input[node], back, 1.0f), what);
 	}
+	shadow = halo_first_person_body_matrices(model, input, CYBORG_NODES, facing, 1);
+	check(shadow != body && shadow != input, "the shadow has its own copy");
+	for (node = 0; node < CYBORG_NODES; node++) {
+		char what[160];
+
+		snprintf(what, sizeof(what), "the shadow: node %s, whole, set back", cyborg_names[node]);
+		check(placed(&shadow[node], &input[node], &input[node], back, 1.0f), what);
+	}
+	check(placed(&body[HEAD], &input[HEAD], &cap, back, 0.0f), "the shadow's call leaves the body's copy");
+	check(!memcmp(saved, input, sizeof(saved)), "the input is never written");
+
 	/* a second call doesn't log the node names again */
 	logs = 0;
-	(void)halo_first_person_body_matrices(model, input, CYBORG_NODES, 1);
+	(void)halo_first_person_body_matrices(model, input, CYBORG_NODES, facing, 0);
 	check(logs == 0, "the node names log once per model");
+
+	/* a vertical facing: no set-back */
+	{
+		static const float up[3] = { 0.0f, 0.0f, 1.0f };
+		const float none[2] = { 0.0f, 0.0f };
+
+		body = halo_first_person_body_matrices(model, input, CYBORG_NODES, up, 0);
+		check(placed(&body[L_FOOT], &input[L_FOOT], &input[L_FOOT], none, 1.0f), "a vertical facing: no set-back");
+	}
 
 	/* the object has fewer node matrices than the model: nothing past them is
 	read or written (the allocation is exact, under the address sanitizer) */
 	{
 		real_matrix4x3 *fewer = make_matrices(R_CLAVICLE);
+		real_matrix4x3 fewer_cap = fewer[SPINE];
 
-		result = halo_first_person_body_matrices(model, fewer, R_CLAVICLE, 1);
-		check(collapsed_to(&result[L_HAND], &fewer[L_HAND], &fewer[PELVIS]), "fewer nodes: the left hand collapses");
-		check(same_matrix(&result[R_FOOT], &fewer[R_FOOT]), "fewer nodes: the right foot stays");
-		result = halo_first_person_body_matrices(model, fewer, R_CLAVICLE, 0);
-		check(same_matrix(&result[L_HAND], &fewer[L_HAND]) && same_matrix(&result[NECK], &fewer[NECK]),
-			"fewer nodes, collapse_arms 0: the arms and neck stay");
+		fewer_cap.position.z += BODY_WAIST_RAISE;
+		body = halo_first_person_body_matrices(model, fewer, R_CLAVICLE, facing, 0);
+		check(placed(&body[L_HAND], &fewer[L_HAND], &fewer_cap, back, 0.0f), "fewer nodes: the left hand collapses");
+		check(placed(&body[R_FOOT], &fewer[R_FOOT], &fewer[R_FOOT], back, 1.0f), "fewer nodes: the right foot stays");
+		shadow = halo_first_person_body_matrices(model, fewer, R_CLAVICLE, facing, 1);
+		check(placed(&shadow[L_HAND], &fewer[L_HAND], &fewer[L_HAND], back, 1.0f), "fewer nodes: the shadow's hand");
 		free(fewer);
+	}
+
+	/* the pose guard: the pelvis within 0.15 of the camera horizontally,
+	at any height */
+	{
+		float camera[3] = { input[PELVIS].position.x + 0.1f, input[PELVIS].position.y + 0.1f,
+			input[PELVIS].position.z + 0.6f };
+
+		check(body_pose_skip(model, input, CYBORG_NODES, camera) == BODY_DRAWS, "the pelvis 0.14 away: draws");
+		camera[1] += 0.02f;
+		check(body_pose_skip(model, input, CYBORG_NODES, camera) == BODY_SKIP_PELVIS_FAR,
+			"the pelvis 0.156 away: skipped");
+		camera[0] = input[PELVIS].position.x;
+		camera[1] = input[PELVIS].position.y;
+		camera[2] = input[PELVIS].position.z + 5.0f;
+		check(body_pose_skip(model, input, CYBORG_NODES, camera) == BODY_DRAWS, "the height doesn't count");
 	}
 	free(input);
 }
 
-/* a chain with no neck (the head's parent is the spine) and no node named
-spine: with collapse_arms, only the arms collapse, each to its upper arm */
-static void check_no_neck(void)
+/* a chain with no node named spine and no neck (the head's parent is
+spine1): only the head collapses, to its parent */
+static void check_no_spine(void)
 {
 	static const char *const names[] = {
 		"bip01 pelvis", "bip01 l thigh", "bip01 spine1", "bip01 head", "bip01 l upperarm", "bip01 l forearm",
 		"bip01 r upperarm", "bip01 r forearm",
 	};
 	static const short parents[] = { NONE, 0, 0, 2, 2, 4, 2, 6 };
+	static const float facing[3] = { 1.0f, 0.0f, 0.0f };
+	const float back[2] = { -PROBE_OFFSET, 0.0f };
 	long model = add_model(0x5E1Fu, names, parents, 8);
 	real_matrix4x3 *input = make_matrices(8);
-	const real_matrix4x3 *result = halo_first_person_body_matrices(model, input, 8, 0);
+	const real_matrix4x3 *result = halo_first_person_body_matrices(model, input, 8, facing, 0);
+	short node;
 
-	check(collapsed_to(&result[3], &input[3], &input[2]), "no neck: the head collapses to the spine");
-	check(same_matrix(&result[4], &input[4]) && same_matrix(&result[5], &input[5]),
-		"no neck, collapse_arms 0: the arms stay");
-	check(same_matrix(&result[0], &input[0]) && same_matrix(&result[2], &input[2]),
-		"no neck: the pelvis and spine stay");
-	result = halo_first_person_body_matrices(model, input, 8, 1);
-	check(collapsed_to(&result[3], &input[3], &input[2]), "no spine, collapse_arms 1: the head collapses to its parent");
-	check(collapsed_to(&result[4], &input[4], &input[4]) && collapsed_to(&result[5], &input[5], &input[4]) &&
-		collapsed_to(&result[6], &input[6], &input[6]) && collapsed_to(&result[7], &input[7], &input[6]),
-		"no spine, collapse_arms 1: each arm collapses to its upper arm");
-	check(same_matrix(&result[0], &input[0]) && same_matrix(&result[1], &input[1]) && same_matrix(&result[2], &input[2]),
-		"no spine, collapse_arms 1: the pelvis, leg and spine1 stay");
+	check(placed(&result[3], &input[3], &input[2], back, 0.0f), "no spine: the head collapses to its parent");
+	for (node = 0; node < 8; node++)
+		if (node != 3)
+			check(placed(&result[node], &input[node], &input[node], back, 1.0f),
+				"no spine: everything else stays, set back");
 	free(input);
 }
 
-/* a Warthog's names: no head, no arms, so the input comes back */
+/* a Warthog's names: no spine, no head, so the input comes back */
 static void check_vehicle(void)
 {
 	static const char *const names[] = {
 		"frame", "front axle", "left front tire", "right front tire", "rear axle", "gun mount",
 	};
 	static const short parents[] = { NONE, 0, 1, 1, 0, 0 };
+	static const float facing[3] = { 1.0f, 0.0f, 0.0f };
+	static const float camera[3] = { 0.0f, 0.0f, 0.0f };
 	long model = add_model(0x3A47u, names, parents, 6);
 	real_matrix4x3 *input = make_matrices(6);
 
 	logs = 0;
-	check(halo_first_person_body_matrices(model, input, 6, 1) == input, "a Warthog's nodes: the input comes back");
-	check(logs >= 1 && strstr(last_log, "first_person_body") != NULL, "an unrecognized model is logged");
+	check(halo_first_person_body_matrices(model, input, 6, facing, 0) == input, "a Warthog's nodes: the input comes back");
+	check(logs >= 1 && strstr(last_log, "no spine or head") != NULL, "an unrecognized model is logged");
+	check(body_pose_skip(model, input, 6, camera) == BODY_SKIP_MODEL, "an unrecognized model: no body");
 	free(input);
 }
 
@@ -308,13 +359,27 @@ static void check_predicate(void)
 	probe_first_person = 0;
 	check(!halo_first_person_body(probe_unit), "not out of the director's first person");
 	probe_first_person = 1;
+
+	/* a pose that takes no body: skipped, logged once for the stretch */
+	logs = 0;
+	probe_pose = BODY_SKIP_CUSTOM_ANIMATION;
+	check(!halo_first_person_body(probe_unit) && !halo_first_person_body(probe_unit), "not in a custom animation");
+	check(logs == 1 && strstr(last_log, "custom animation") != NULL, "the skip logs once");
+	probe_pose = BODY_SKIP_SEATED;
+	check(!halo_first_person_body(probe_unit), "not in a seat");
+	check(logs == 2 && strstr(last_log, "seat") != NULL, "a new reason logs again");
+	probe_pose = BODY_DRAWS;
 	check(halo_first_person_body(probe_unit), "back on");
+	probe_pose = BODY_SKIP_SEATED;
+	check(!halo_first_person_body(probe_unit) && logs == 3, "a new stretch logs again");
+	probe_pose = BODY_DRAWS;
+	check(halo_first_person_body(probe_unit), "back on again");
 }
 
 int main(void)
 {
 	check_cyborg();
-	check_no_neck();
+	check_no_spine();
 	check_vehicle();
 	check_predicate();
 	if (failures) {

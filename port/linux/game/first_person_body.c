@@ -1,52 +1,59 @@
 /*
 FIRST_PERSON_BODY.C
 
-The Master Chief's body below the view in head-tracked stereo
+The Master Chief's legs below the view in head-tracked stereo
 (port/linux/src/halo_stereo.h; the stereo spec's "The first-person body in
 head-tracked stereo"). The game hides the player's own unit in first person
 (render_objects.c's object_is_first_person_camera); looking down in HEAD
 mode then shows no feet. With display.first_person_body, the eye passes
-draw that unit anyway, with a render-only copy of its node matrices:
+draw that unit anyway, after the first-person weapon and under its stencil
+(render_objects.c), with a render-only copy of its node matrices:
 
-- the head collapsed to its parent's position (the neck in the usual
-  naming, a spine node if the chain has none), scale 0, so nothing sits
-  inside the view;
-- while the first-person weapon shows, the torso from the spine up (the
-  spine, the chest, the neck and head, the shoulders and arms) collapsed to
-  the spine's parent's position, the pelvis, scale 0, so the legs and
-  pelvis are left: the stereo spec's fallback. The first-person arms carry
-  the aiming, so the third-person arms would only hold a second weapon below
-  the first; and the torso bends forward under the camera as the look
-  pitches down (the aiming pose), so looking down put the eyes inside the
-  chest (Task 7f's Mac captures: a30 looking down showed the chest plate
-  and the backpack torn by the near plane, not the feet; a10's cryo pod,
-  where the Chief leans back, put the chest across the lower half of a level
-  view). The waist then ends in a cone where vertices are weighted across
-  the pelvis and the spine. A model with no node named spine collapses only
-  each arm from the upper arm down through the fingers, to the upper arm's
-  position. In a first-person seat or zoomed, no first-person weapon draws,
-  and the torso and arms stay, with only the head collapsed.
+- the torso is gone: the subtree of the node named spine (the spine, the
+  chest, the neck and head, the shoulders and arms) collapsed to the spine
+  node's own position, scale 0, so only the legs and pelvis draw, armed or
+  not. The aiming pose bends the torso forward under the camera as the look
+  pitches down, so a drawn chest put the eyes inside it (Task 7f's Mac
+  captures). The spine node sits at the top of the hips, driven by the
+  pelvis, so the belly pinches to a cap there, raised BODY_WAIST_RAISE
+  along the pelvis's up to close it. A model with no spine node
+  collapses only its head, to its parent's position;
+- the whole copy set back along the unit's horizontal facing by
+  display.first_person_body_offset (world units): the game's camera sits
+  on the body's axis, where the pelvis hides the feet straight down; set
+  back, the feet show past the front of the hips, as a person's do past
+  their belly.
+
+The shadow takes a second copy, the full silhouette (head and arms
+included) set back the same way, so the feet's shadow lies under the drawn
+feet.
+
+The body draws only while the unit stands in a pose the game drives under
+the camera: on foot (no seat), no custom animation (a10's cryo pod leans
+the Chief back with the camera in front of his chest), not dead, and its
+pelvis within BODY_PELVIS_MAXIMUM_DISTANCE of the camera horizontally.
+debug.gpu_stats logs the first skip of each stretch, and once a second the
+camera and the drawn pelvis and feet in the camera's frame.
 
 Scale 0 is enough: render_model multiplies each matrix by the node's
 runtime_default_inverse_matrix, which keeps the position and the zero
 scale, and the GPU's constants fold the scale into the 3x3.
 
 The node matrices themselves are never changed, because markers,
-attachments and collision read them; the copy is handed only to
-render_model. It lives in one static array, never a stack array and never
-reused for the shadow call (which takes the real matrices): transparent
-geometry keeps the node matrices' pointer until the eye's transparent pass
-(rasterizer_xbox_transparent_geometry.c), and the body draws once per eye
-pass, on one thread.
+attachments and collision read them; the copies are handed only to
+render_model. Each lives in its own static array, never a stack array:
+transparent geometry keeps the node matrices' pointer until the eye's
+transparent pass (rasterizer_xbox_transparent_geometry.c), and the body and
+its shadow draw once each per eye pass, on one thread.
 
 The nodes are found by name, case-insensitively on the name's last word
-("bip01 head", "bip01 l upperarm"), and the subtrees through the parent
-links. The lookup is cached by the model's node_list_checksum (a tag index
-is only valid for one map), and on the first lookup of each model its node
-names are logged under debug.gpu_stats, to confirm the cyborg's on the
-device.
+("bip01 spine", "bip01 head", "bip01 l foot"), and the subtrees through
+the parent links. The lookup is cached by the model's node_list_checksum (a
+tag index is only valid for one map), and on the first lookup of each model
+its node names are logged under debug.gpu_stats.
 */
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -56,12 +63,17 @@ device.
 #include "tag_files/tag_groups.h"
 #include "models/model_definitions.h"
 #include "camera/director.h"
+#include "game/game.h"
 #include "game/players.h"
+#include "objects/objects.h"
+#include "objects/object_definitions.h"
 #include "render/render.h"
+#include "units/units.h"
 #include "../src/halo_stereo.h"
 
 /* port/linux/src/port_config.c */
 int config_boolean(const char *name);
+double config_real(const char *name);
 /* port/linux/src/sdl_platform.c (the host's on iOS) */
 void platform_log(const char *format, ...);
 #endif
@@ -69,22 +81,55 @@ void platform_log(const char *format, ...);
 /* models cached at once: in practice the player's one biped, and another
 after a map with another (the Elite's or a marine's in a scripted swap) */
 #define BODY_CACHE_SIZE 8
+/* display.first_person_body_offset's default and range, world units */
+#define BODY_OFFSET_DEFAULT 0.08f
+#define BODY_OFFSET_MAXIMUM 0.2f
+/* the farthest the pelvis may sit from the camera horizontally, world
+units: walking it stays within about 0.05; in the cryo pod it's 0.175 */
+#define BODY_PELVIS_MAXIMUM_DISTANCE 0.15f
+/* how far the collapsed torso's cap sits above the spine node, along the
+pelvis's up, world units: at the spine node itself the Mac's captures
+looked down into the hips through an open waist */
+#define BODY_WAIST_RAISE 0.03f
+
+enum body_skip
+{
+	BODY_DRAWS,
+	BODY_SKIP_SEATED,
+	BODY_SKIP_CUSTOM_ANIMATION,
+	BODY_SKIP_DEAD,
+	BODY_SKIP_PELVIS_FAR,
+	BODY_SKIP_MODEL,
+	NUMBER_OF_BODY_SKIPS
+};
+
+static const char *const body_skip_names[NUMBER_OF_BODY_SKIPS] = {
+	"draws",
+	"the unit is in a seat",
+	"the unit plays a custom animation",
+	"the unit is dead",
+	"the unit's pelvis is too far from under the camera",
+	"the unit's model nodes aren't recognized",
+};
 
 struct body_model
 {
 	unsigned long checksum;
 	long node_count;              /* 0: an empty slot */
-	int recognized;               /* a head and at least one upper arm */
+	int recognized;               /* a spine, or failing that a head */
+	short spine;                  /* NONE if not found */
+	short pelvis;                 /* the spine's parent, or the root */
+	short feet[2];                /* NONE if not found */
 	/* per node: the node whose position it collapses to, or NONE */
-	signed char head_target[MAXIMUM_NODES_PER_MODEL];
-	signed char arm_target[MAXIMUM_NODES_PER_MODEL];
-	signed char torso_target[MAXIMUM_NODES_PER_MODEL];
+	signed char target[MAXIMUM_NODES_PER_MODEL];
 };
 
 static struct body_model body_cache[BODY_CACHE_SIZE];
 static int body_cache_next;
 static int body_setting = -1; /* display.first_person_body, read once */
+static float body_offset = -1.0f; /* display.first_person_body_offset, read once */
 static real_matrix4x3 body_matrices[MAXIMUM_NODES_PER_MODEL];
+static real_matrix4x3 body_shadow_matrices[MAXIMUM_NODES_PER_MODEL];
 
 /* the name's last word ("bip01 l upperarm": "upperarm") is word (lower
 case), ignoring the name's case */
@@ -132,14 +177,34 @@ static void log_node_names(const struct model *model, long model_index)
 		platform_log("first_person_body:   %s", line);
 }
 
-/* the model's collapse targets, from its node names and parent links */
+/* the nearest ancestor of node_index named word, the node itself included,
+or NONE */
+static short body_ancestor_named(const struct model *model, short node_index, const char *word)
+{
+	short count = (short)model->nodes.count;
+	short ancestor = node_index;
+	short steps;
+
+	for (steps = 0; steps < count && ancestor >= 0 && ancestor < count; steps++) {
+		const struct model_node *node = TAG_BLOCK_GET_ELEMENT(&model->nodes, ancestor, struct model_node);
+
+		if (node_name_is(node->name, word))
+			return ancestor;
+		ancestor = node->parent_node_index;
+	}
+	return NONE;
+}
+
+/* the model's collapse targets, pelvis and feet, from its node names and
+parent links */
 static const struct body_model *body_model_get(long model_index)
 {
 	const struct model *model = model_definition_get(model_index);
 	struct body_model *body;
 	short count = (short)model->nodes.count;
 	short node_index;
-	int heads = 0, arms = 0;
+	short spine = NONE, head = NONE;
+	int feet = 0;
 	int slot;
 
 	for (slot = 0; slot < BODY_CACHE_SIZE; slot++) {
@@ -152,8 +217,10 @@ static const struct body_model *body_model_get(long model_index)
 	memset(body, 0, sizeof(*body));
 	body->checksum = model->node_list_checksum;
 	body->node_count = count;
+	body->feet[0] = body->feet[1] = NONE;
+	body->spine = NONE;
 	if (count <= 0 || count > MAXIMUM_NODES_PER_MODEL) {
-		platform_log("first_person_body: model %ld has %d nodes (at most %d); the body draws whole",
+		platform_log("first_person_body: model %ld has %d nodes (at most %d); no body",
 			model_index, (int)count, MAXIMUM_NODES_PER_MODEL);
 		return body;
 	}
@@ -161,59 +228,67 @@ static const struct body_model *body_model_get(long model_index)
 	if (config_boolean("debug.gpu_stats"))
 		log_node_names(model, model_index);
 	for (node_index = 0; node_index < count; node_index++) {
-		short ancestor = node_index;
-		short steps;
+		const struct model_node *node = TAG_BLOCK_GET_ELEMENT(&model->nodes, node_index, struct model_node);
 
-		body->head_target[node_index] = body->arm_target[node_index] = body->torso_target[node_index] = NONE;
-		/* the nearest head or upper arm up the chain, the node itself
-		included: everything below it collapses with it */
-		for (steps = 0; steps < count && ancestor >= 0 && ancestor < count; steps++) {
+		if (spine == NONE && node_name_is(node->name, "spine"))
+			spine = node_index;
+		if (head == NONE && node_name_is(node->name, "head"))
+			head = node_index;
+		if (feet < 2 && node_name_is(node->name, "foot"))
+			body->feet[feet++] = node_index;
+	}
+	for (node_index = 0; node_index < count; node_index++) {
+		short ancestor;
+
+		body->target[node_index] = NONE;
+		if (spine != NONE) {
+			/* the torso, to the spine node's own position */
+			if (body_ancestor_named(model, node_index, "spine") == spine)
+				body->target[node_index] = (signed char)spine;
+		} else if ((ancestor = body_ancestor_named(model, node_index, "head")) != NONE) {
+			/* no spine: the head, to its parent's position (where it is, if it
+			has none) */
 			const struct model_node *node = TAG_BLOCK_GET_ELEMENT(&model->nodes, ancestor, struct model_node);
+			short parent = node->parent_node_index;
 
-			if (node_name_is(node->name, "head")) {
-				short parent = node->parent_node_index;
-
-				/* to the head's parent's position; a head with no parent
-				collapses where it is */
-				body->head_target[node_index] = (signed char)(parent >= 0 && parent < count ? parent : ancestor);
-				if (ancestor == node_index)
-					heads++;
-				break;
-			}
-			if (node_name_is(node->name, "upperarm")) {
-				body->arm_target[node_index] = (signed char)ancestor;
-				if (ancestor == node_index)
-					arms++;
-				break;
-			}
-			ancestor = node->parent_node_index;
-		}
-		/* the spine up the chain, the node itself included: the torso
-		collapses to the spine's parent */
-		for (ancestor = node_index, steps = 0; steps < count && ancestor >= 0 && ancestor < count; steps++) {
-			const struct model_node *node = TAG_BLOCK_GET_ELEMENT(&model->nodes, ancestor, struct model_node);
-
-			if (node_name_is(node->name, "spine")) {
-				short parent = node->parent_node_index;
-
-				body->torso_target[node_index] = (signed char)(parent >= 0 && parent < count ? parent : ancestor);
-				break;
-			}
-			ancestor = node->parent_node_index;
+			body->target[node_index] = (signed char)(parent >= 0 && parent < count ? parent : ancestor);
 		}
 	}
-	body->recognized = heads > 0 && arms > 0;
+	body->spine = spine;
+	if (spine != NONE) {
+		const struct model_node *node = TAG_BLOCK_GET_ELEMENT(&model->nodes, spine, struct model_node);
+
+		body->pelvis = node->parent_node_index >= 0 && node->parent_node_index < count ? node->parent_node_index : 0;
+	}
+	body->recognized = spine != NONE || head != NONE;
 	if (!body->recognized)
-		platform_log("first_person_body: model %ld (node list checksum 0x%08lx) has %d head and %d upper arm "
-			"nodes by name; the body draws whole", model_index, (unsigned long)model->node_list_checksum,
-			heads, arms);
+		platform_log("first_person_body: model %ld (node list checksum 0x%08lx) has no spine or head node by "
+			"name; no body", model_index, (unsigned long)model->node_list_checksum);
 	return body;
 }
 
+/* display.first_person_body_offset, clamped, read once */
+static float body_offset_get(void)
+{
+	if (body_offset < 0.0f) {
+		double offset = config_real("display.first_person_body_offset");
+
+		body_offset = offset == offset ? (float)offset : BODY_OFFSET_DEFAULT;
+		if (body_offset < 0.0f)
+			body_offset = 0.0f;
+		if (body_offset > BODY_OFFSET_MAXIMUM)
+			body_offset = BODY_OFFSET_MAXIMUM;
+	}
+	return body_offset;
+}
+
 const real_matrix4x3 *halo_first_person_body_matrices(long model_index, const real_matrix4x3 *matrices,
-	short node_count, int collapse_arms)
+	short node_count, const float facing[3], int shadow)
 {
 	const struct body_model *body;
+	real_matrix4x3 *copy = shadow ? body_shadow_matrices : body_matrices;
+	float length = sqrtf(facing[0] * facing[0] + facing[1] * facing[1]);
+	float back[2] = { 0.0f, 0.0f };
 	short node_index;
 
 	if (model_index == NONE || !matrices || node_count <= 0)
@@ -223,21 +298,51 @@ const real_matrix4x3 *halo_first_person_body_matrices(long model_index, const re
 		return matrices;
 	if (node_count > body->node_count)
 		node_count = (short)body->node_count;
-
-	memcpy(body_matrices, matrices, (size_t)node_count * sizeof(*matrices));
-	for (node_index = 0; node_index < node_count; node_index++) {
-		short target = collapse_arms ? body->torso_target[node_index] : NONE;
-
-		if (target == NONE)
-			target = body->head_target[node_index];
-		if (target == NONE && collapse_arms)
-			target = body->arm_target[node_index];
-		if (target != NONE && target < node_count) {
-			body_matrices[node_index].scale = 0.0f;
-			body_matrices[node_index].position = matrices[target].position;
-		}
+	/* the set-back: the offset backward along the facing made horizontal
+	(none if the facing is vertical) */
+	if (length > 1e-4f) {
+		back[0] = -body_offset_get() * facing[0] / length;
+		back[1] = -body_offset_get() * facing[1] / length;
 	}
-	return body_matrices;
+
+	memcpy(copy, matrices, (size_t)node_count * sizeof(*matrices));
+	for (node_index = 0; node_index < node_count; node_index++) {
+		short target = shadow ? NONE : body->target[node_index];
+
+		if (target != NONE && target < node_count) {
+			copy[node_index].scale = 0.0f;
+			copy[node_index].position = matrices[target].position;
+			if (body->spine != NONE && body->pelvis < node_count) {
+				copy[node_index].position.x += BODY_WAIST_RAISE * matrices[body->pelvis].up.i;
+				copy[node_index].position.y += BODY_WAIST_RAISE * matrices[body->pelvis].up.j;
+				copy[node_index].position.z += BODY_WAIST_RAISE * matrices[body->pelvis].up.k;
+			}
+		}
+		copy[node_index].position.x += back[0];
+		copy[node_index].position.y += back[1];
+	}
+	return copy;
+}
+
+/* why the body doesn't draw for its pose, from its node matrices and the
+camera's position: its model, or its pelvis's horizontal distance from the
+camera */
+static enum body_skip body_pose_skip(long model_index, const real_matrix4x3 *matrices, short node_count,
+	const float camera[3])
+{
+	const struct body_model *body;
+	float dx, dy;
+
+	if (model_index == NONE || !matrices || node_count <= 0)
+		return BODY_SKIP_MODEL;
+	body = body_model_get(model_index);
+	if (!body->recognized || body->pelvis >= node_count)
+		return BODY_SKIP_MODEL;
+	dx = matrices[body->pelvis].position.x - camera[0];
+	dy = matrices[body->pelvis].position.y - camera[1];
+	if (dx * dx + dy * dy > BODY_PELVIS_MAXIMUM_DISTANCE * BODY_PELVIS_MAXIMUM_DISTANCE)
+		return BODY_SKIP_PELVIS_FAR;
+	return BODY_DRAWS;
 }
 
 #ifndef FIRST_PERSON_BODY_PROBE
@@ -255,11 +360,117 @@ static int first_person_body_local_unit(long object_index)
 	return player_get(player_index)->unit_index == object_index &&
 		director_get_perspective(render.local_player_index) == _director_perspective_first_person;
 }
+
+static long body_model_index(long object_index)
+{
+	return object_definition_get(object_get(object_index)->definition_index)->object.model.index;
+}
+
+static short body_node_count(long object_index, long model_index)
+{
+	struct object_datum *object = object_get(object_index);
+	short count = (short)(object->object.node_matrices.size / (short)sizeof(real_matrix4x3));
+	short model_count = (short)model_definition_get(model_index)->nodes.count;
+
+	return count < model_count ? count : model_count;
+}
+
+/* why the unit's pose doesn't take a body: a seat, a custom animation
+(a10's pod), death, or its pelvis away from under the camera */
+static enum body_skip first_person_body_pose(long object_index)
+{
+	struct object_datum *object = object_get(object_index);
+	long model_index = body_model_index(object_index);
+	float camera[3] = { render.camera.position.x, render.camera.position.y, render.camera.position.z };
+
+	if (object->object.parent_object_index != NONE)
+		return BODY_SKIP_SEATED;
+	if (unit_is_playing_custom_animation(object_index))
+		return BODY_SKIP_CUSTOM_ANIMATION;
+	if (TEST_FLAG(object->object.flags, _object_dead_bit))
+		return BODY_SKIP_DEAD;
+	if (model_index == NONE)
+		return BODY_SKIP_MODEL;
+	return body_pose_skip(model_index, object_get_node_matrices(object_index),
+		body_node_count(object_index, model_index), camera);
+}
+
+/* debug.gpu_stats, once a second of game time: the camera, and the drawn
+pelvis and feet in the camera's frame (forward, right, down), and the
+pelvis's forward against the facing */
+void halo_first_person_body_log(long object_index, const struct real_matrix4x3 *drawn, short node_count)
+{
+	static long last_tick = -1;
+	static int stats = -1;
+	struct object_datum *object = object_get(object_index);
+	const struct render_camera *camera = &render.camera;
+	const struct body_model *body;
+	real_vector3d right;
+	char line[384];
+	size_t length;
+	long tick = game_time_get();
+	long model_index;
+	int i;
+
+	if (stats < 0)
+		stats = config_boolean("debug.gpu_stats") != 0;
+	if (!stats || (last_tick >= 0 && tick >= last_tick && tick - last_tick < 30))
+		return;
+	model_index = body_model_index(object_index);
+	if (model_index == NONE)
+		return;
+	last_tick = tick;
+	body = body_model_get(model_index);
+	/* right = forward x up */
+	right.i = camera->forward.j * camera->up.k - camera->forward.k * camera->up.j;
+	right.j = camera->forward.k * camera->up.i - camera->forward.i * camera->up.k;
+	right.k = camera->forward.i * camera->up.j - camera->forward.j * camera->up.i;
+	length = (size_t)snprintf(line, sizeof(line), "first_person_body: camera (%.3f %.3f %.3f) pitch %.1f,"
+		" offset %.3f; in the camera's frame (forward, right, down):", camera->position.x, camera->position.y,
+		camera->position.z, asinf(camera->forward.k > 1.0f ? 1.0f : camera->forward.k < -1.0f ? -1.0f :
+		camera->forward.k) * 57.29578f, body_offset_get());
+	for (i = 0; i < 3 && length < sizeof(line); i++) {
+		short node = i == 0 ? body->pelvis : body->feet[i - 1];
+		float dx, dy, dz;
+
+		if (node == NONE || node >= node_count)
+			continue;
+		dx = drawn[node].position.x - camera->position.x;
+		dy = drawn[node].position.y - camera->position.y;
+		dz = drawn[node].position.z - camera->position.z;
+		length += (size_t)snprintf(line + length, sizeof(line) - length, " %s (%.3f %.3f %.3f)",
+			i == 0 ? "pelvis" : "foot",
+			dx * camera->forward.i + dy * camera->forward.j + dz * camera->forward.k,
+			dx * right.i + dy * right.j + dz * right.k,
+			-(dx * camera->up.i + dy * camera->up.j + dz * camera->up.k));
+	}
+	if (body->pelvis < node_count && length < sizeof(line)) {
+		const real_vector3d *pelvis_forward = &drawn[body->pelvis].forward;
+		float facing_length = sqrtf(object->object.forward.i * object->object.forward.i +
+			object->object.forward.j * object->object.forward.j);
+		float pelvis_length = sqrtf(pelvis_forward->i * pelvis_forward->i + pelvis_forward->j * pelvis_forward->j);
+
+		if (facing_length > 1e-4f && pelvis_length > 1e-4f) {
+			float cosine = (object->object.forward.i * pelvis_forward->i +
+				object->object.forward.j * pelvis_forward->j) / (facing_length * pelvis_length);
+
+			snprintf(line + length, sizeof(line) - length, "; pelvis forward %.1f degrees from the facing",
+				acosf(cosine > 1.0f ? 1.0f : cosine < -1.0f ? -1.0f : cosine) * 57.29578f);
+		}
+	}
+	platform_log("%s", line);
+}
+#else
+/* the probe's (port/ios/tests/first_person_body_probe.c) */
+static int first_person_body_local_unit(long object_index);
+static enum body_skip first_person_body_pose(long object_index);
 #endif
 
 int halo_first_person_body(long object_index)
 {
+	static enum body_skip last_skip = BODY_DRAWS;
 	const struct halo_stereo_frame *frame = halo_stereo_frame();
+	enum body_skip skip;
 	int layer;
 
 	if (object_index == NONE || frame->eye_count != 2 ||
@@ -276,5 +487,13 @@ int halo_first_person_body(long object_index)
 		return 0;
 	if (body_setting < 0)
 		body_setting = config_boolean("display.first_person_body") != 0;
-	return body_setting;
+	if (!body_setting)
+		return 0;
+	skip = first_person_body_pose(object_index);
+	if (skip != last_skip) {
+		if (skip != BODY_DRAWS && config_boolean("debug.gpu_stats"))
+			platform_log("first_person_body: no body: %s", body_skip_names[skip]);
+		last_skip = skip;
+	}
+	return skip == BODY_DRAWS;
 }

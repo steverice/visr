@@ -572,37 +572,6 @@ void first_person_weapon_draw(
 	return;
 }
 
-/* port: whether the local player's first-person weapon draws this frame,
-the test first_person_weapon_draw makes: hidden in a first-person seat and
-while zoomed (first_person_weapon_render_update). Head-tracked stereo's body
-keeps its third-person arms while it is hidden
-(port/linux/game/first_person_body.c) */
-boolean first_person_weapon_visible(
-	short local_player_index)
-{
-	struct first_person_weapon *first_person_weapon;
-	long unit_index;
-
-	if (local_player_index==NONE ||
-		local_player_get_player_index(local_player_index)==NONE)
-	{
-		return FALSE;
-	}
-
-	first_person_weapon= first_person_weapon_get(local_player_index);
-	unit_index= player_get(local_player_get_player_index(local_player_index))->unit_index;
-	if (unit_index==NONE ||
-		!first_person_weapon->visible ||
-		first_person_weapon->unit_index==NONE ||
-		first_person_weapon->weapon_index==NONE)
-	{
-		return FALSE;
-	}
-
-	return weapon_definition_get(weapon_get(first_person_weapon->weapon_index)->definition_index)->
-		weapon.interface_definition.first_person_animations.index!=NONE;
-}
-
 short first_person_weapon_get_marker_by_name(
 	long weapon_index,
 	char const *name,
