@@ -96,8 +96,10 @@ SCREEN gameplay, the director's first person (not a scripted camera),
 display.first_person_body */
 int halo_first_person_body(long object_index);
 /* the render-only node matrices for that body: the head collapsed to its
-parent's position; with collapse_arms, each arm from the upper arm down
-collapsed to the upper arm; node_count is the smaller of the model's nodes
+parent's position; with collapse_arms (while the first-person weapon
+shows), the torso from the spine up collapsed to the pelvis, so only the
+legs and pelvis draw (a model with no spine node: each arm from the upper
+arm down collapsed to the upper arm); node_count is the smaller of the model's nodes
 and the object's node matrices; returns the copy (one static array, valid
 until the next call), or matrices unchanged if the model's nodes aren't
 recognized */

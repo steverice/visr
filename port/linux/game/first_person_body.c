@@ -11,13 +11,21 @@ draw that unit anyway, with a render-only copy of its node matrices:
 - the head collapsed to its parent's position (the neck in the usual
   naming, a spine node if the chain has none), scale 0, so nothing sits
   inside the view;
-- while the first-person weapon shows, each arm from the upper arm down
-  through the fingers collapsed to the upper arm's position, scale 0: the
-  first-person arms carry the aiming, so the third-person arms would only
-  hold a second weapon below the first. The shoulders then end in stumps,
-  pinched into cones where vertices are weighted across a kept and a
-  collapsed node. In a first-person seat or zoomed, no first-person weapon
-  draws, and the arms stay.
+- while the first-person weapon shows, the torso from the spine up (the
+  spine, the chest, the neck and head, the shoulders and arms) collapsed to
+  the spine's parent's position, the pelvis, scale 0, so the legs and
+  pelvis are left: the stereo spec's fallback. The first-person arms carry
+  the aiming, so the third-person arms would only hold a second weapon below
+  the first; and the torso bends forward under the camera as the look
+  pitches down (the aiming pose), so looking down put the eyes inside the
+  chest (Task 7f's Mac captures: a30 looking down showed the chest plate
+  and the backpack torn by the near plane, not the feet; a10's cryo pod,
+  where the Chief leans back, put the chest across the lower half of a level
+  view). The waist then ends in a cone where vertices are weighted across
+  the pelvis and the spine. A model with no node named spine collapses only
+  each arm from the upper arm down through the fingers, to the upper arm's
+  position. In a first-person seat or zoomed, no first-person weapon draws,
+  and the torso and arms stay, with only the head collapsed.
 
 Scale 0 is enough: render_model multiplies each matrix by the node's
 runtime_default_inverse_matrix, which keeps the position and the zero
@@ -70,6 +78,7 @@ struct body_model
 	/* per node: the node whose position it collapses to, or NONE */
 	signed char head_target[MAXIMUM_NODES_PER_MODEL];
 	signed char arm_target[MAXIMUM_NODES_PER_MODEL];
+	signed char torso_target[MAXIMUM_NODES_PER_MODEL];
 };
 
 static struct body_model body_cache[BODY_CACHE_SIZE];
@@ -155,7 +164,7 @@ static const struct body_model *body_model_get(long model_index)
 		short ancestor = node_index;
 		short steps;
 
-		body->head_target[node_index] = body->arm_target[node_index] = NONE;
+		body->head_target[node_index] = body->arm_target[node_index] = body->torso_target[node_index] = NONE;
 		/* the nearest head or upper arm up the chain, the node itself
 		included: everything below it collapses with it */
 		for (steps = 0; steps < count && ancestor >= 0 && ancestor < count; steps++) {
@@ -175,6 +184,19 @@ static const struct body_model *body_model_get(long model_index)
 				body->arm_target[node_index] = (signed char)ancestor;
 				if (ancestor == node_index)
 					arms++;
+				break;
+			}
+			ancestor = node->parent_node_index;
+		}
+		/* the spine up the chain, the node itself included: the torso
+		collapses to the spine's parent */
+		for (ancestor = node_index, steps = 0; steps < count && ancestor >= 0 && ancestor < count; steps++) {
+			const struct model_node *node = TAG_BLOCK_GET_ELEMENT(&model->nodes, ancestor, struct model_node);
+
+			if (node_name_is(node->name, "spine")) {
+				short parent = node->parent_node_index;
+
+				body->torso_target[node_index] = (signed char)(parent >= 0 && parent < count ? parent : ancestor);
 				break;
 			}
 			ancestor = node->parent_node_index;
@@ -204,8 +226,10 @@ const real_matrix4x3 *halo_first_person_body_matrices(long model_index, const re
 
 	memcpy(body_matrices, matrices, (size_t)node_count * sizeof(*matrices));
 	for (node_index = 0; node_index < node_count; node_index++) {
-		short target = body->head_target[node_index];
+		short target = collapse_arms ? body->torso_target[node_index] : NONE;
 
+		if (target == NONE)
+			target = body->head_target[node_index];
 		if (target == NONE && collapse_arms)
 			target = body->arm_target[node_index];
 		if (target != NONE && target < node_count) {

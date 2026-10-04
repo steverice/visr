@@ -1,8 +1,9 @@
 /* The first-person body's render-only node matrices
 (port/linux/game/first_person_body.c, included, not linked): on a synthetic
 node list in the cyborg's shape, the head collapses to its parent's
-position, each arm from the upper arm down collapses to the upper arm when
-asked, everything else is left bit-identical, the input is never written,
+position, the torso from the spine up collapses to the pelvis when asked
+(or, with no spine node, each arm from the upper arm down to the upper
+arm), everything else is left bit-identical, the input is never written,
 nothing past node_count is read or written (the matrices are allocated
 exactly, under the address sanitizer), and a model whose names aren't a
 biped's comes back unchanged. And the predicate: only the local player's
@@ -176,13 +177,10 @@ static const short cyborg_parents[CYBORG_NODES] = {
 	NECK, R_CLAVICLE, R_UPPERARM, R_FOREARM, R_HAND, R_HAND,
 };
 
-static int arm_upper(int node)
+/* the spine's subtree: everything above the pelvis but the legs */
+static int in_torso(int node)
 {
-	if (node >= L_UPPERARM && node <= L_FINGER1)
-		return L_UPPERARM;
-	if (node >= R_UPPERARM && node <= R_FINGER1)
-		return R_UPPERARM;
-	return NONE;
+	return node >= SPINE;
 }
 
 static void check_cyborg(void)
@@ -203,11 +201,11 @@ static void check_cyborg(void)
 		check(!memcmp(saved, input, sizeof(saved)), "the input is never written");
 		for (node = 0; node < CYBORG_NODES; node++) {
 			snprintf(what, sizeof(what), "%s, collapse_arms %d: node %s", "cyborg", arms, cyborg_names[node]);
-			if (node == HEAD)
+			if (arms && in_torso(node))
+				check(collapsed_to(&result[node], &input[node], &input[PELVIS]), what);
+			else if (node == HEAD)
 				check(collapsed_to(&result[node], &input[node], &input[NECK]),
 					"the head collapses to its parent's (the neck's) position, scale 0");
-			else if (arms && arm_upper(node) != NONE)
-				check(collapsed_to(&result[node], &input[node], &input[arm_upper(node)]), what);
 			else
 				check(same_matrix(&result[node], &input[node]), what);
 		}
@@ -223,14 +221,18 @@ static void check_cyborg(void)
 		real_matrix4x3 *fewer = make_matrices(R_CLAVICLE);
 
 		result = halo_first_person_body_matrices(model, fewer, R_CLAVICLE, 1);
-		check(collapsed_to(&result[L_HAND], &fewer[L_HAND], &fewer[L_UPPERARM]), "fewer nodes: the left hand collapses");
-		check(same_matrix(&result[NECK], &fewer[NECK]), "fewer nodes: the neck stays");
+		check(collapsed_to(&result[L_HAND], &fewer[L_HAND], &fewer[PELVIS]), "fewer nodes: the left hand collapses");
+		check(same_matrix(&result[R_FOOT], &fewer[R_FOOT]), "fewer nodes: the right foot stays");
+		result = halo_first_person_body_matrices(model, fewer, R_CLAVICLE, 0);
+		check(same_matrix(&result[L_HAND], &fewer[L_HAND]) && same_matrix(&result[NECK], &fewer[NECK]),
+			"fewer nodes, collapse_arms 0: the arms and neck stay");
 		free(fewer);
 	}
 	free(input);
 }
 
-/* a chain with no neck: the head's parent is the spine */
+/* a chain with no neck (the head's parent is the spine) and no node named
+spine: with collapse_arms, only the arms collapse, each to its upper arm */
 static void check_no_neck(void)
 {
 	static const char *const names[] = {
@@ -247,6 +249,13 @@ static void check_no_neck(void)
 		"no neck, collapse_arms 0: the arms stay");
 	check(same_matrix(&result[0], &input[0]) && same_matrix(&result[2], &input[2]),
 		"no neck: the pelvis and spine stay");
+	result = halo_first_person_body_matrices(model, input, 8, 1);
+	check(collapsed_to(&result[3], &input[3], &input[2]), "no spine, collapse_arms 1: the head collapses to its parent");
+	check(collapsed_to(&result[4], &input[4], &input[4]) && collapsed_to(&result[5], &input[5], &input[4]) &&
+		collapsed_to(&result[6], &input[6], &input[6]) && collapsed_to(&result[7], &input[7], &input[6]),
+		"no spine, collapse_arms 1: each arm collapses to its upper arm");
+	check(same_matrix(&result[0], &input[0]) && same_matrix(&result[1], &input[1]) && same_matrix(&result[2], &input[2]),
+		"no spine, collapse_arms 1: the pelvis, leg and spine1 stay");
 	free(input);
 }
 

@@ -473,8 +473,8 @@ static void render_object_list(
 	{
 		struct object_datum *object = object_get(object_index);
 		/* port: in head-tracked stereo the player's own unit draws as a body
-		below the view, without its head, and without its third-person arms and
-		children while the first-person weapon shows
+		below the view, without its head, and while the first-person weapon
+		shows, only its legs and pelvis, without its children
 		(port/linux/game/first_person_body.c) */
 		boolean first_person_body = halo_first_person_body(object_index) && !render.camera.mirrored;
 		boolean first_person_body_arms_hidden = first_person_body &&
@@ -610,7 +610,7 @@ static void render_object_list(
 						}
 					}
 
-					/* port: the body's render-only copy, the head (and the arms)
+					/* port: the body's render-only copy, the head (and the torso)
 					collapsed; the shadow below keeps the real matrices */
 					if (first_person_body && definition->object.model.index != NONE)
 					{
@@ -664,7 +664,7 @@ static void render_object_list(
 			}
 
 			/* port: the body's widgets and children (the third-person weapon)
-			go with its hidden arms */
+			go with its hidden torso and arms */
 			if (!data->shadow && object->object.first_widget_index != NONE && !first_person_body_arms_hidden)
 			{
 				struct render_animation animation;
