@@ -298,15 +298,24 @@ static void place_screen(simd_float4x4 origin_from_device)
 		{ sinf(yaw), 0.0f, cosf(yaw), 0.0f },
 		{ position.x + forward.x * screen_distance, position.y, position.z + forward.z * screen_distance, 1.0f },
 	} };
-	screen_placed = YES;
 }
 
-/* the screen's pose for the open frame's drawable: placed in front of the
-device the first time, and every frame where nothing tracks the room */
+/* the screen's pose for the open frame's drawable: placed once in the room,
+in front of the device the first time ARKit places it, and then left there;
+until then (world tracking starts a few frames after the space opens, and
+without it the device's pose is the identity) and where nothing tracks the
+room, in front of the device every frame. A screen placed from an unplaced
+device would stand where the room's origin is, and stay there */
 static simd_float4x4 screen_pose(size_t index)
 {
-	if (!screen_placed || (!open_anchored[index] && !world_tracking))
+	if (!screen_placed)
+	{
 		place_screen(open_origin_from_device[index]);
+		screen_placed = world_tracking && open_anchored[index];
+		if (screen_placed)
+			host_logf(HOST_LOG_INFO, "theater: the screen stands in the room, %.1f m in front of where the head was",
+				screen_distance);
+	}
 	return origin_from_screen;
 }
 
