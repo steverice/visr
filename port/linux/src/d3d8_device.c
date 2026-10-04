@@ -3983,9 +3983,10 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 			present.hud_aspect = (float)halo_screen_width() / (float)SCREEN_HEIGHT;
 			/* a cutscene: the 3D film on the screen, whatever the mode; the
 			script fade the eyes drew (render.c), which tints the space around
-			the screen in step with the picture */
+			the screen in step with the picture; and whether it covers a cut */
 			present.cinematic = halo_stereo_film();
 			halo_stereo_fade(present.fade);
+			present.cut_covered = halo_stereo_cut_covered();
 			/* input.comfort_vignette, while the stick turns the look */
 			present.vignette = halo_stereo_vignette();
 			render_interpolation_next_frame_due(gpu_present_stereo(&present));

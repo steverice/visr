@@ -3300,11 +3300,10 @@ A cutscene (present->cinematic, the 3D film) is on the screen in any mode,
 and the script fade (present->fade) tints the space around the screen. A cut
 between the full view and the screen (a cutscene starting or ending in HEAD
 mode) goes to black and fades back in over STEREO_CUT_FRAMES frames, unless
-a script fade already covers it. */
+a script fade already covers it (present->cut_covered, stereo.c's
+halo_stereo_cut_covered). */
 #if TARGET_OS_VISION
 #define STEREO_CUT_FRAMES 6
-/* a script fade this far in covers a cut */
-#define STEREO_CUT_COVERED 0.99f
 /* what the last stereo frame showed: -1 none (mono), 0 the full view, 1 the
 screen; and the frames of the cut's fade still to come */
 static int stereo_shown = -1;
@@ -3316,7 +3315,7 @@ static float stereo_cut_brightness(int shown, const struct gpu_stereo_present *p
 {
 	float brightness;
 
-	if (stereo_shown >= 0 && shown != stereo_shown && !(present->fade[3] >= STEREO_CUT_COVERED))
+	if (stereo_shown >= 0 && shown != stereo_shown && !present->cut_covered)
 	{
 		stereo_cut_frames = STEREO_CUT_FRAMES;
 		platform_log("stereo: from %s to %s through black", stereo_shown ? "the screen" : "the full view",

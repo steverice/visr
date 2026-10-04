@@ -369,15 +369,16 @@ void cinematic_render(
 
 		/* port: stereo's 3D film (port/linux/game/stereo.c) fills its 16:9
 		screen with the letterbox's inside, so its bars come in only while a
-		title shows, as far as the title has faded in; other stereo frames
-		(gameplay, as the bars slide out after a cutscene) have none */
+		title shows, as far as the title has faded in, through the film's
+		hold too; other stereo frames (gameplay, as the bars slide out after
+		a cutscene) have none */
 		bar_amount = cinematic_globals->letterbox_amount;
 		if (halo_stereo_frame()->eye_count == 2)
 		{
 			static boolean bars_shown = FALSE;
 			void platform_log(char const *format, ...);
 
-			bar_amount = halo_stereo_film() && halo_cinematic_screen() ? halo_cinematic_title_bars() : 0.0f;
+			bar_amount = halo_stereo_film_letterbox() ? halo_cinematic_title_bars() : 0.0f;
 			/* once each time a title brings them in, and as they leave */
 			if ((bar_amount > 0.0f) != bars_shown)
 			{

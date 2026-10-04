@@ -13,7 +13,9 @@ check can read the settings afresh.
 
 And the film's (a cutscene on the screen): the mapping it shares with the
 3D TV (halo_stereo_tv_eyes) puts infinity a share of the eye separation
-behind the screen and the convergence distance on its surface. */
+behind the screen and the convergence distance on its surface, and the
+held reason keeps the cutscene's framing through the hold; any script fade
+over the picture covers the cut. */
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -32,8 +34,10 @@ static double setting_snap_angle = 30.0, setting_smooth_turn_speed = 120.0;
 static int setting_comfort_vignette;
 static int unrecognized_logged;
 static char last_log[256];
-/* the film's settings */
+/* the film's settings, and what the game shows: the letterbox, a scripted
+camera */
 static double setting_film_depth_share = 0.25, setting_film_convergence = 1.75;
+static int game_letterbox, game_scripted_camera;
 
 /* stereo.c's imports */
 const char *config_string(const char *name)
@@ -66,8 +70,8 @@ void platform_log(const char *format, ...)
 	if (strstr(last_log, "is not recognized; using snap"))
 		unrecognized_logged++;
 }
-int halo_cinematic_screen(void) { return 0; }
-int halo_scripted_camera(void) { return 0; }
+int halo_cinematic_screen(void) { return game_letterbox; }
+int halo_scripted_camera(void) { return game_scripted_camera; }
 int halo_third_person_camera(void) { return 0; }
 void halo_screen_commit_stereo_scale(void) {}
 
@@ -85,6 +89,23 @@ void host_stereo_frame(struct halo_stereo_frame *frame)
 	frame->eye_count = 2;
 	frame->head_yaw = frame->head_pitch = frame->head_roll = 0.0f;
 	host_stereo_head_turn(&head, pose[0], pose[1], pose[2], frame);
+	/* SCREEN eyes (the film in HEAD mode): 64 mm apart, 4 m behind the
+	camera, frusta through the edges of a screen 4.6 m wide */
+	if (frame->mode == HALO_STEREO_SCREEN) {
+		int eye;
+
+		for (eye = 0; eye < 2; eye++) {
+			struct halo_stereo_eye *e = &frame->eyes[eye];
+			float x = (eye == 0 ? -0.032f : 0.032f) / 3.048f, distance = 4.0f / 3.048f, half = 2.309f / 3.048f;
+
+			e->offset[0] = x;
+			e->offset[1] = 0.0f;
+			e->offset[2] = distance;
+			e->left = (half + x) / distance;
+			e->right = (half - x) / distance;
+			e->up = e->down = 0.75f * half / distance;
+		}
+	}
 }
 
 static void rotate_axis(float v[3], int axis, float angle)
@@ -525,6 +546,70 @@ static void film_mapping(void)
 		fabsf(eyes[1].left - (horizontal + eyes[1].offset[0] / c)) < 1e-6f, "the lean's signs");
 }
 
+/* frames of the game after the letterbox goes, each with a script fade of
+this intensity over the picture (render.c's halo_stereo_set_fade); returns
+how many frames the film's letterbox reason held, and whether every one of
+them covered the cut */
+static int frames_held(float fade_intensity, int *covered)
+{
+	const float fade[4] = { 1.0f, 1.0f, 1.0f, fade_intensity };
+	int frame;
+
+	*covered = 1;
+	game_letterbox = 0;
+	for (frame = 0; frame < 3 * FILM_HOLD_FRAMES; frame++) {
+		halo_stereo_frame_begin();
+		halo_stereo_set_fade(fade);
+		if (!halo_stereo_film_letterbox())
+			break;
+		*covered &= halo_stereo_cut_covered();
+	}
+	return frame;
+}
+
+static void film_hold_reason(void)
+{
+	int held, covered;
+
+	printf("the film's held reason:\n");
+	restart("snap", 30.0, 120.0, 0);
+	game_letterbox = 1;
+	halo_stereo_frame_begin();
+	check(halo_stereo_film() && halo_stereo_film_letterbox() && halo_stereo_frame()->mode == HALO_STEREO_SCREEN,
+		"the letterbox puts the film on the screen, for a cutscene");
+	check(!halo_stereo_cut_covered(), "no script fade: a cut isn't covered");
+	held = frames_held(0.0f, &covered);
+	printf("  held %d frames after the letterbox went\n", held);
+	check(held == FILM_HOLD_FRAMES, "the cutscene's framing holds through the hold");
+	check(!halo_stereo_film() && halo_stereo_frame()->mode == HALO_STEREO_HEAD, "then the full view, head-tracked");
+	check(!halo_stereo_cut_covered(), "a fade at zero covers no cut");
+
+	/* a10's two-tick gap between cutscenes, under a white fade: the framing
+	doesn't change */
+	game_letterbox = 1;
+	halo_stereo_frame_begin();
+	game_letterbox = 0;
+	halo_stereo_frame_begin();
+	halo_stereo_frame_begin();
+	held = halo_stereo_film_letterbox();
+	game_letterbox = 1;
+	halo_stereo_frame_begin();
+	check(held && halo_stereo_film_letterbox(), "a two-frame gap in the letterbox keeps the cutscene's framing");
+
+	/* a colored fade-in still under way when the hold ends: no black inside it */
+	held = frames_held(0.3f, &covered);
+	check(held == FILM_HOLD_FRAMES && covered && halo_stereo_cut_covered(),
+		"a fade over the picture holds the film as long, and covers the cut");
+
+	/* a scripted camera is the film, without the cutscene's framing */
+	game_scripted_camera = 1;
+	halo_stereo_frame_begin();
+	check(halo_stereo_film() && !halo_stereo_film_letterbox(), "a scripted camera's film has no letterbox reason");
+	game_scripted_camera = 0;
+	for (held = 0; held < 2 * FILM_HOLD_FRAMES; held++)
+		halo_stereo_frame_begin();
+}
+
 int main(void)
 {
 	pole_crossing();
@@ -539,6 +624,7 @@ int main(void)
 	vignette_easing();
 	vignette_binocular();
 	film_mapping();
+	film_hold_reason();
 	if (failures)
 	{
 		printf("stereo head probe: %d failed\n", failures);

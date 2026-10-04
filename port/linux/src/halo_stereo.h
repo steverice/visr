@@ -92,6 +92,15 @@ int halo_stereo_film(void);
 /* the film's frusta, from the camera's own vertical tangent (render.c's eye
 loop, before it reads the eyes); nothing unless this frame is the film */
 void halo_stereo_film_frusta(float vertical_tangent);
+/* 1 when this frame is the film for a cutscene: the letterbox, held
+through the film's hold after it drops. The 16:9 narrowing (main.c) and the
+title bars (cinematics.c) follow this, not the letterbox flag itself, so the
+framing doesn't change in the frames before the cut */
+int halo_stereo_film_letterbox(void);
+/* 1 while a script fade shows over the picture this frame (any intensity;
+halo_stereo_set_fade): a cut between the full view and the screen then needs
+no fade through black, which would otherwise dip a colored fade to black */
+int halo_stereo_cut_covered(void);
 /* the script fade the eyes draw this frame, with the picture's tick
 fraction (render.c sets it before the eyes; zero until then), which the
 host's room tint takes as well, so the two move in step */

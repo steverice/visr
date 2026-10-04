@@ -435,6 +435,7 @@ struct gpu_stereo_present
 	float fade[4];                     /* RGB and intensity of the script fade */
 	float hud_aspect;                  /* the HUD's width over its height as laid out */
 	float vignette;                    /* 0 to 1: how much HEAD mode darkens the eyes' edges */
+	int32_t cut_covered;               /* 1 while the script fade covers a cut (no fade through black) */
 };
 
 /* presents a stereo frame as gpu_present does a mono one (and returns the

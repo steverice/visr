@@ -15,7 +15,9 @@ scripted camera and no letterbox (the script's camera_control), and a
 third-person camera (third_person_on_screen): a camera the head doesn't
 steer is easier to watch on a screen. Only the letterbox narrows the view to
 its inside (main.c) and brings bars in for titles (cinematics.c); the others
-keep the game's 16:9 framing. The film is not the window's true 1:1: the cinematic
+keep the game's 16:9 framing. Both follow the held film (halo_stereo_film_
+letterbox), not the letterbox flag itself, so the framing stays put through
+the film's hold. The film is not the window's true 1:1: the cinematic
 camera's own field of view, framed on the letterbox's inside (main.c's
 set_window_camera_values), fills the screen, and the head neither steers it
 nor moves its eyes. Its depth is the mapping the film shares with SCREEN
@@ -146,9 +148,10 @@ static int third_person_on_screen = 1;
 third-person camera; logged as it changes */
 static const char *const film_reasons[] = {"none", "a cutscene", "a scripted camera", "a third-person camera"};
 static int film_reason, film_reason_logged;
-/* the view leaves the screen only once nothing has put it there for this
-many frames: a10 drops its letterbox for two ticks between two cutscenes,
-which would otherwise flip the view to the full view and back */
+/* the film is held through this many frames with nothing putting the view
+on the screen, and leaves on the next: a10 drops its letterbox for two
+ticks between two cutscenes (under a white fade), which would otherwise flip
+the view to the full view and back */
 #define FILM_HOLD_FRAMES 10
 static int film_hold;
 
@@ -346,6 +349,16 @@ void halo_stereo_frame_begin(void)
 int halo_stereo_film(void)
 {
 	return film_frame && stereo_frame.eye_count == 2;
+}
+
+int halo_stereo_film_letterbox(void)
+{
+	return halo_stereo_film() && film_reason == 1;
+}
+
+int halo_stereo_cut_covered(void)
+{
+	return frame_fade[3] > 0.0f;
 }
 
 void halo_stereo_set_fade(const float rgb_intensity[4])
