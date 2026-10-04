@@ -242,6 +242,8 @@ int host_sdl_poll_event(void *event)
 	static unsigned long polls;
 
 	host_extra_scene_poll();
+#if TARGET_OS_VISION
+	/* (host_config.c is visionOS's) */
 	if (test_extra_scene < 0)
 	{
 		char value[16];
@@ -252,6 +254,10 @@ int host_sdl_poll_event(void *event)
 	/* a few seconds in, once the game's window is up */
 	if (test_extra_scene && ++polls == 600)
 		host_extra_scene_test();
+#else
+	(void)test_extra_scene;
+	(void)polls;
+#endif
 	if (!SDL_PollEvent(&host_event))
 		return 0;
 	/* the layouts agree except for the pointers of text, drop and user
