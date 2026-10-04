@@ -16,6 +16,7 @@ to read the eyes' poses and presents it full view. */
 #include <simd/simd.h>
 #include "host_config.h"
 #include "host_theater.h"
+#include "host_stereo.h"
 #include "host.h"
 #include <math.h>
 #include <string.h>
@@ -43,6 +44,8 @@ static MTLPixelFormat pipeline_color, pipeline_depth;
 static id<MTLDepthStencilState> depth_state, depth_fade;
 static id<MTLSamplerState> sampler;
 static unsigned long theater_frames;
+/* stereo frames on the screen since the space opened (the once-only log) */
+static unsigned long screen_presents;
 
 /* The Compositor's frame, open from host_theater_frame_begin (at the game's
 frame begin in head-tracked stereo, host_stereo.m; else at the present) to
@@ -210,6 +213,10 @@ void host_theater_attach(void *renderer)
 	screen_placed = NO;
 	reopen_button_shown(NO);
 	window_hidden(YES);
+	/* the once-only logs, theater's and stereo's, repeat for each opening */
+	theater_frames = 0;
+	screen_presents = 0;
+	host_stereo_space_opened();
 	host_logf(HOST_LOG_INFO, "theater: the immersive space is open");
 	if (!session && ar_world_tracking_provider_is_supported())
 	{
@@ -664,10 +671,9 @@ void host_theater_present(id<MTLCommandQueue> queue, id<MTLTexture> picture)
 void host_theater_present_eyes(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLTexture> right,
 	id<MTLTexture> hud, const float fade[4], float brightness)
 {
-	static unsigned long presents;
 	static BOOL fading;
 
-	if (presents++ == 0)
+	if (screen_presents++ == 0)
 		host_logf(HOST_LOG_INFO, "theater: first stereo frame on the screen: eyes %lux%lu, %s",
 			(unsigned long)left.width, (unsigned long)left.height, hud ? "a HUD" : "no HUD");
 	/* each script fade that reaches the room, once as it starts */

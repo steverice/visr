@@ -12,6 +12,8 @@ void host_stereo_frame(struct halo_stereo_frame *frame);
 /* the eyes' picture size in pixels while the head drives the view (the view's
 size in the Compositor's texture); 0 otherwise */
 int host_stereo_picture_size(int *width, int *height);
+/* the immersive space opened (again): the once-only stereo logs repeat */
+void host_stereo_space_opened(void);
 
 #ifdef __OBJC__
 #import <Metal/Metal.h>

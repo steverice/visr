@@ -51,6 +51,11 @@ static int picture_width, picture_height;
 /* the head's last pose, while ARKit places it */
 static struct host_stereo_head head;
 static unsigned long stereo_frames;
+/* frames on the screen, presents, and whether the depth range warning was
+logged, since the space opened: the once-only logs repeat for each opening
+(host_stereo_space_opened) */
+static unsigned long screen_frames, stereo_presents;
+static int depth_reported;
 
 static id<MTLRenderPipelineState> eye_pipeline, hud_pipeline;
 static MTLPixelFormat pipeline_color, pipeline_depth;
@@ -238,11 +243,10 @@ nearer than twice the near would put the floor above 1; it is kept below. */
 static simd_float2 stereo_depth_range(float near_meters, float far_meters, float *scale, float *floor)
 {
 	float near = fmaxf(near_meters, host_theater_minimum_near());
-	static int reported;
 
 	if (!(near_meters > 0.0f) || !(far_meters > near * 1.001f) || !isfinite(far_meters))
 	{
-		if (!reported++)
+		if (!depth_reported++)
 			host_logf(HOST_LOG_WARN, "stereo: depth range %.3f to %.1f m isn't usable; depth is written as far",
 				near_meters, far_meters);
 		*scale = 0.0f;
@@ -295,7 +299,6 @@ static void screen_eyes(struct halo_stereo_frame *frame, cp_drawable_t drawable,
 	size_t views = cp_drawable_get_view_count(drawable);
 	int width, height;
 	int eye;
-	static unsigned long screen_frames;
 	static int screen_stats = -1;
 
 	if (views == 0)
@@ -431,6 +434,16 @@ static void stereo_frame(struct halo_stereo_frame *frame) API_AVAILABLE(visionos
 }
 #endif
 
+void host_stereo_space_opened(void)
+{
+#if TARGET_OS_VISION
+	stereo_frames = 0;
+	screen_frames = 0;
+	stereo_presents = 0;
+	depth_reported = 0;
+#endif
+}
+
 void host_stereo_frame(struct halo_stereo_frame *frame)
 {
 	/* no eyes and no turn unless this frame supplies them, whatever the guest
@@ -483,9 +496,8 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 		size_t count = host_theater_drawable_count();
 		float depth_scale, depth_floor;
 		simd_float2 depth_range = stereo_depth_range(near_meters, far_meters, &depth_scale, &depth_floor);
-		static unsigned long presents;
 
-		if (presents++ == 0)
+		if (stereo_presents++ == 0)
 			host_logf(HOST_LOG_INFO, "stereo: first present: eyes %lux%lu, %s (laid out at %.3f:1, a %.2f by %.2f m "
 				"quad %.1f m ahead), depth range %.3f to %.1f m, %zu drawable%s", (unsigned long)left.width,
 				(unsigned long)left.height, hud ? "a HUD" : "no HUD", hud_aspect, HUD_WIDTH,
