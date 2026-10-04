@@ -108,6 +108,8 @@ before the next */
 #define SNAP_RELEASE 0.3f
 /* the game's own pitch limit (player_control_modify_desired_angles) */
 #define PITCH_LIMIT (85.5f * 3.14159265f / 180.0f)
+/* the smallest change of pitch the head hands the look: 0.03 degrees */
+#define HEAD_PITCH_DEADBAND 0.0005f
 
 static float z_near_world, z_far_world;
 
@@ -432,6 +434,11 @@ float halo_stereo_vignette(void)
 	return stereo_frame.mode == HALO_STEREO_HEAD && stereo_frame.eye_count == 2 ? vignette_strength : 0.0f;
 }
 
+int halo_stereo_head_drives_look(short gamepad_index)
+{
+	return head_tracking(gamepad_index);
+}
+
 /* the head's pitch inside the game's limit */
 static float head_pitch_limited(void)
 {
@@ -447,8 +454,15 @@ int halo_stereo_head_look(short gamepad_index, float current_pitch, float *yaw, 
 	*yaw = head_pending_yaw + snap_pending + smooth_yaw;
 	/* the look's pitch is the head's, whatever moved it meanwhile (the game
 	levels it as the player walks, a script sets it) */
+	/* changes under a few hundredths of a degree are noise: they would set
+	the look's up and down action flags every frame, which scripts test
+	(player_action_test_look_relative_up, a10's look lesson) */
 	if (head_pitch_known)
+	{
 		*pitch = head_pitch_limited() - current_pitch;
+		if (fabsf(*pitch) < HEAD_PITCH_DEADBAND)
+			*pitch = 0.0f;
+	}
 	head_pending_yaw = 0.0f;
 	snap_pending = 0.0f;
 	smooth_yaw = 0.0f;

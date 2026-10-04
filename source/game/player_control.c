@@ -753,7 +753,11 @@ static void handle_one_player_input(
 
 		if (unit->object.parent_object_index == NONE)
 		{
+			/* port: not while the head drives the look: its pitch is the
+			head's (port/linux/game/stereo.c), and leveling it each tick would
+			only pull the aim off the view until the head put it back */
 			if (player_ui_autolevel_enabled(local_player_index) &&
+				!halo_stereo_head_drives_look(local_player_index) &&
 				fabs(player->throttle.i) > 0.5 &&
 				input.facing_delta.pitch < 0.0001f &&
 				player->magnetism_level < 0.0001f)

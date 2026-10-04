@@ -2,6 +2,9 @@
 #include "host_stereo_head.h"
 #include <math.h>
 
+/* past this pitch the head's yaw isn't read: 85 degrees */
+#define HEAD_YAW_PITCH_LIMIT (85.0f * (float)M_PI / 180.0f)
+
 /* angle wrapped into -pi..pi */
 static float wrapped(float angle)
 {
@@ -27,7 +30,10 @@ void host_stereo_head_turn(struct host_stereo_head *head, const float right[3], 
 	camera's up stays the room's: a pitch kept as turns drifts from the
 	head's (the game starts level, levels itself, clamps), and the yaw about
 	the room's up then rolls the world as the head pans */
-	if (head->known)
+	/* near straight up or down the yaw is ill-conditioned (forward's
+	horizontal part vanishes) and can swing by pi in a frame while the camera
+	is held at the game's pitch limit: no turn there */
+	if (head->known && fabsf(pitch) < HEAD_YAW_PITCH_LIMIT)
 		frame->head_yaw = wrapped(yaw - head->yaw);
 	frame->head_pitch = pitch;
 	frame->head_roll = roll;

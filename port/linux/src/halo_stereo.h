@@ -60,6 +60,9 @@ the zoom, and the pitch that brings the look's (current_pitch) to the head's.
 Both do nothing unless the head drives the view. */
 void halo_stereo_stick_look(short gamepad_index, float yaw_response, float time_delta, float *yaw, float *pitch);
 int halo_stereo_head_look(short gamepad_index, float current_pitch, float *yaw, float *pitch);
+/* 1 while the head drives the look (HEAD mode with the Compositor's eyes),
+for the look's autolevel */
+int halo_stereo_head_drives_look(short gamepad_index);
 /* input.comfort_vignette: how strongly (0 to 1) the HEAD-mode presenter
 darkens the eyes' edges this frame, while the stick turns the look smoothly;
 0 otherwise */

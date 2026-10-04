@@ -342,8 +342,29 @@ static void vignette_easing(void)
 	check(halo_stereo_vignette_ease(0.0f, 2.0f, 1.0f) == 1.0f, "a share over 1: full");
 }
 
+/* straight up the yaw can't be read: a head at 89.9 degrees whose
+ill-conditioned yaw swings by 170 degrees in a frame must not turn the look */
+static void pole(void)
+{
+	struct halo_stereo_frame frame;
+
+	memset(&head, 0, sizeof(head));
+	memset(&frame, 0, sizeof(frame));
+	set_pose(0.0f, 89.9f * DEGREES, 0.0f);
+	host_stereo_head_turn(&head, pose[0], pose[1], pose[2], &frame);
+	set_pose(170.0f * DEGREES, 89.9f * DEGREES, 0.0f);
+	host_stereo_head_turn(&head, pose[0], pose[1], pose[2], &frame);
+	printf("%-36s head yaw %.3f deg\n", "a swing at 89.9 deg pitch", frame.head_yaw / DEGREES);
+	if (fabsf(frame.head_yaw) > 1e-6f)
+	{
+		printf("  FAIL: the head turned the look at the pole\n");
+		failures++;
+	}
+}
+
 int main(void)
 {
+	pole();
 	pan("level pan at 0 deg pitch", 0.0f, 0.0f);
 	pan("level pan at -10 deg pitch", -10.0f * DEGREES, 0.0f);
 	/* the views' forward (0.005, 0.009, -1) from the session-1 log */
