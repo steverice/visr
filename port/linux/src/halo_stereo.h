@@ -89,18 +89,34 @@ depth (d3d8_device.c), set by the eye loop each stereo frame */
 void halo_stereo_set_depth_range(float z_near, float z_far);
 void halo_stereo_depth_range(float *z_near, float *z_far);
 
-/* The cutscene screen. In stereo, while the letterbox is in, the game plays
-as a 3D film on a 16:9 screen (stereo.c): the cinematic camera rendered
-twice, framed on the letterbox's inside with no bars except while a title
-shows. A scripted camera without the letterbox, and a third-person camera,
-go on the screen the same way, at the game's own 16:9 framing. */
-/* 1 when this frame is the 3D film: stereo with eyes, and the letterbox in,
-the camera scripted or (by default) third person */
+/* The screen. In stereo, while the letterbox is in, the game plays as a 3D
+film on a 16:9 screen (stereo.c): the cinematic camera rendered twice,
+framed on the letterbox's inside with no bars except while a title shows.
+A director's scripted camera goes on the screen the same way, and in HEAD
+mode a third-person camera and the player's camera under a script. In
+SCREEN mode the rest is gameplay as a 3D TV: the player's camera rendered
+twice, by the same mapping with gameplay's own depth, leaning with the
+head. */
+/* 1 when this frame is the 3D film: stereo with eyes, and the letterbox in
+or a camera the head doesn't steer (above) */
 int halo_stereo_film(void);
-/* the film's frusta from the camera's vertical half tangent, after
-set_window_camera_values (render.c's eye loop, before it reads the eyes);
-nothing unless this frame is the film. SCREEN gameplay is to share it */
+/* 1 while this frame's eyes are SCREEN gameplay's: SCREEN mode (or the
+side-by-side view with debug.side_by_side_screen), not the film */
+int halo_stereo_screen_gameplay(void);
+/* the film's or SCREEN gameplay's frusta from the camera's vertical half
+tangent, after set_window_camera_values (render.c's eye loop, before it
+reads the eyes); nothing unless the frame is one of them */
 void halo_stereo_screen_frusta(float vertical_tangent);
+/* 1 while the screen's framing applies: the letterbox's film, or SCREEN
+mode (or debug.side_by_side_screen) with display.screen_framing = "band",
+in either case only while the frame has two eyes (held across the film's
+hold); main.c then narrows the vertical view by 0.75, so the screen shows
+the game's horizontal view across 16:9. With the immersive space closed,
+SCREEN mode's window keeps mono's Hor+ view */
+int halo_stereo_screen_framing(void);
+/* debug.gpu_stats: logs the culling camera's distance back behind the
+center camera (render.c), once for each mode and mapping */
+void halo_stereo_log_culling(float distance_back);
 /* 1 when this frame is the film for a cutscene: the letterbox, held
 through the film's hold after it drops. The 16:9 narrowing (main.c) and the
 title bars (cinematics.c) follow this, not the letterbox flag itself, so the
@@ -124,10 +140,12 @@ units, right and up), each eye's offset and frustum */
 void halo_stereo_tv_eyes(float depth_share, float convergence_meters, float viewer_separation, float half_width,
 	float vertical_tangent, const float lean[2], struct halo_stereo_eye eyes[2]);
 /* port/linux/game/cinematic_screen.c: 1 while the letterbox is in; while
-the camera is scripted (the script's camera_control); while it's third
-person */
+the camera is scripted (the script's camera_control, or the player's camera
+with its look taken away); while the director's scripted camera alone is
+(camera_control, the scripted perspective); while it's third person */
 int halo_cinematic_screen(void);
 int halo_scripted_camera(void);
+int halo_scripted_director_camera(void);
 int halo_third_person_camera(void);
 /* the script fade (fade_in, fade_out; never a screen flash) at the picture's
 time: the game's tick before this one plus tick_fraction (the render's

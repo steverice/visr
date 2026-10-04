@@ -145,6 +145,23 @@ static const struct config_setting config_settings[] =
 		"With display.stereo: in a cutscene, what lies this many meters ahead of\n"
 		"the camera sits on the screen's surface; nearer comes out in front of it\n"
 		"(0.3 to 10; less pushes faces back behind the screen). Read at start." },
+	{ "display.screen_depth_share", _config_real, "0.3", "HALO_SCREEN_DEPTH_SHARE", _environment_value, _platform_ios,
+		"With display.stereo = \"screen\": how deep the game looks on the screen (a\n"
+		"3D TV): how far behind the screen the far distance sits, as a share of\n"
+		"your eye separation (0.05 to 0.9; more is deeper, less keeps the reticle\n"
+		"from doubling on far targets). Read at start." },
+	{ "display.screen_convergence", _config_real, "1.0", "HALO_SCREEN_CONVERGENCE", _environment_value, _platform_ios,
+		"With display.stereo = \"screen\": what lies this many meters ahead of the\n"
+		"player sits on the screen's surface; nearer comes out in front of it\n"
+		"(0.3 to 10; 0.6 to 0.7 brings only walls you nearly touch in front).\n"
+		"Read at start." },
+	{ "display.screen_framing", _config_string, "\"band\"", "HALO_SCREEN_FRAMING", _environment_value, _platform_ios,
+		"With display.stereo = \"screen\": \"band\" (default) shows the game's\n"
+		"horizontal view across the 16:9 screen, so things look their natural\n"
+		"size, and the screen's bottom edge cuts the weapon like a window frame;\n"
+		"\"wide\" shows the flat game's wider view, everything a quarter smaller\n"
+		"and the whole weapon in view. Cutscenes fill the screen either way.\n"
+		"Read at start." },
 	{ "input.turn", _config_string, "\"snap\"", "HALO_TURN", _environment_value, _platform_ios,
 		"With display.stereo = \"head\": how the right stick turns the view: \"snap\"\n"
 		"(default; a flick turns input.snap_angle at once), \"smooth\" (steadily, at\n"
@@ -470,6 +487,14 @@ static const struct config_setting config_settings[] =
 		"\"bot:<seed>\" plays controller 1 with a scripted pattern (automated\n"
 		"network tests); \"look:<seed>\" stands still, only turning and looking\n"
 		"up and down; empty for none." },
+	{ "debug.side_by_side_screen", _config_boolean, "false", "HALO_SIDE_BY_SIDE_SCREEN", _environment_set_is_true,
+		_platform_ios,
+		"With display.stereo = \"side_by_side\": show the eyes SCREEN mode's\n"
+		"gameplay would have (a 3D TV on the default screen, 64 mm eyes) in place\n"
+		"of head-tracked ones." },
+	{ "debug.screen_lean", _config_real, "0.0", "HALO_SCREEN_LEAN", _environment_value, _platform_ios,
+		"With debug.side_by_side_screen: a fixed lean of the head, in meters to the\n"
+		"right (up to 0.25), as if you leaned in front of the screen." },
 	{ "debug.update_answer", _config_string, "\"\"", "HALO_UPDATE_ANSWER", _environment_value, _platform_desktop,
 		"The answer to the new version question, for automated tests: \"yes\",\n"
 		"\"no\" or \"never\" (do not ask again, confirmed); empty asks." },

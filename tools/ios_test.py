@@ -98,8 +98,8 @@ run('xcrun', 'clang', '-O2', '-fsanitize=address,undefined', '-DHALO_IOS=1', '-I
     'port/ios/tests/stereo_head_probe.c', 'port/ios/host/host_stereo_head.c',
     '-o', BUILD/'stereo-head-probe')
 run(BUILD/'stereo-head-probe')
-# the film's and SCREEN mode's 3D TV: the one mapping and its ease (the probe includes
-# port/linux/game/stereo.c)
+# SCREEN mode's 3D TV and the film: the one mapping, its ease, the reasons and the framing (the
+# probe includes port/linux/game/stereo.c)
 run('xcrun', 'clang', '-O2', '-fsanitize=address,undefined', '-DHALO_IOS=1', '-Iport/linux/src', '-Iport/ios/host',
     'port/ios/tests/stereo_screen_probe.c', 'port/ios/host/host_stereo_head.c',
     '-o', BUILD/'stereo-screen-probe')

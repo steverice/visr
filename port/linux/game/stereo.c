@@ -5,34 +5,43 @@ The frame's stereo state (port/linux/src/halo_stereo.h): which stereo mode
 display.stereo asks for, and, in stereo, where the two eyes are. In HEAD
 mode the host's Compositor frame supplies the eyes and the head's turn
 (port/ios/host/host_stereo.m), which drives the player's look: the head turns
-the view, the right stick turns the body. In SCREEN mode it supplies the
-eyes alone, through the theater screen as a window: the look stays the
-stick's, as in mono, and the render moves each eye's near and far planes out
-to the screen.
+the view, the right stick turns the body. In SCREEN mode the look stays the
+stick's, as in mono, and the game is a 3D TV on the theater screen.
 
-Cutscenes, in any stereo mode, are a 3D film on the 16:9 screen while the
-letterbox is in (halo_stereo_film), and so, for comfort, are moments with a
-scripted camera and no letterbox (the script's camera_control), and a
-third-person camera (third_person_on_screen): a camera the head doesn't
-steer is easier to watch on a screen. Only the letterbox narrows the view to
-its inside (main.c) and brings bars in for titles (cinematics.c); the others
-keep the game's 16:9 framing. Both follow the held film (halo_stereo_film_
-letterbox), not the letterbox flag itself, so the framing stays put through
-the film's hold. HEAD mode asks the host for SCREEN eyes meanwhile, so the
+Everything on the screen is a 3D TV: the game's camera rendered twice, the
+eyes a short way apart along its right at the camera itself (so the game's
+own near plane and culling apply), with frusta skewed so a chosen distance
+lies on the screen's surface. One mapping sets the depth of all of it
+(screen_mapping_eyes, the stereo spec's "One mapping for the film and the
+3D TV"): how far behind the screen infinity sits, as a share of the viewer's
+eye separation, and the convergence, the distance ahead of the camera that
+lies on the surface. The host reports the viewer's eyes against the screen
+(host_stereo.m's screen_eyes); the guest takes from them only the eye
+separation, the screen's half width and the head's offset, and maps them.
+
+Cutscenes, in any stereo mode, are the 3D film while the letterbox is in
+(halo_stereo_film), and so are moments with a director's scripted camera
+(camera_control, the scripted perspective). In HEAD mode so, for comfort, is
+a third-person camera (third_person_on_screen), and the player's own camera
+while a script holds its look: a camera the head doesn't steer is easier to
+watch on a screen. HEAD mode asks the host for SCREEN eyes meanwhile, so the
 frame is SCREEN for everyone downstream: the host draws it on the screen,
-and the head's turn stays out of the look and the camera.
+and the head's turn stays out of the look and the camera. The film has
+display.film_depth_share and display.film_convergence, and doesn't lean.
 
-The film is a 3D TV: the cinematic camera rendered twice, the eyes a short
-way apart along its right at the camera itself (so the render keeps its
-planes), with frusta skewed so a chosen distance lies on the screen's
-surface. One mapping sets its depth (screen_mapping_eyes, the stereo spec's
-"One mapping for the film and the 3D TV"), which SCREEN gameplay is to share
-with its own values: how far behind the screen infinity sits, as a share of
-the viewer's eye separation (display.film_depth_share), and the
-convergence, the distance ahead of the camera that lies on the surface
-(display.film_convergence). From the host's eyes the film takes only the
-viewer's eye separation and the screen's half width; the head neither
-steers it nor moves its eyes.
+SCREEN mode's gameplay is the same picture from the player's camera, with
+display.screen_depth_share and display.screen_convergence, and the head's
+offset from the screen's axis moves the eyes, as through a small window
+(the lean). In SCREEN mode the film's scripted reason counts
+only the director's camera, so the player's own camera under a script and a
+third-person camera stay gameplay; when the frame's mapping changes, it
+eases over MAPPING_EASE_SECONDS rather than popping (no cut covers it).
+
+The screen shows the game's horizontal view across 16:9: main.c narrows
+the view by 0.75 while halo_stereo_screen_framing says so, which is the
+letterbox's film (held through the film's hold) and, with
+display.screen_framing = "band", everything in SCREEN mode. The letterbox
+brings bars in for titles (cinematics.c), following the held film.
 */
 
 #include <math.h>
@@ -70,10 +79,10 @@ void host_stereo_frame(struct halo_stereo_frame *frame);
 #define METERS_PER_UNIT 3.048f
 /* the mappings (screen_mapping_eyes): infinity's depth behind the screen as
 a share of the viewer's eye separation, and the convergence, the meters
-ahead of the camera on the screen's surface. The film's are settings
-(display.film_depth_share, display.film_convergence), whose defaults in
-port_config.c are these; SCREEN gameplay's are the spec's; the
-first-person weapon's are fixed, its
+ahead of the camera on the screen's surface. The film's and SCREEN
+gameplay's are settings (display.film_depth_share, display.film_convergence,
+display.screen_depth_share, display.screen_convergence), whose defaults in
+port_config.c are these; the first-person weapon's are fixed, its
 convergence the nearest point of its arms and weapon on the surface: Task
 7g measured the animation nodes in view along the camera's forward, 0.233 m
 for the assault rifle and 0.315 m for the sniper rifle (the pistol wasn't
@@ -175,28 +184,39 @@ struct screen_mapping_easing
 	float elapsed;             /* seconds since the target changed */
 };
 
-/* this frame (and the last) is the 3D film */
+/* this frame (and the last) is the 3D film; this frame (and the last) is
+SCREEN gameplay's 3D TV */
 static int film_frame, film_last;
+static int gameplay_frame, gameplay_last;
 /* what this frame's mapping takes: the viewer's eye separation and the
 screen's half width (meters), the head's offset from the screen's axis
 (meters, right and up, not yet clamped) and the picture's vertical half
 tangent (halo_stereo_screen_frusta) */
 static float screen_viewer_separation, screen_half_width, screen_head_offset[2], screen_vertical_tangent;
-/* the mapping in effect, easing toward the frame's; whether the last frame
-was on the screen at all (a frame that wasn't takes its mapping at once) */
+/* the mapping in effect, easing toward the frame's reason's; whether the
+last frame was on the screen at all (film or gameplay: a frame that wasn't
+takes its mapping at once); which mapping the ease was last logged going to
+(0 the film, 1 gameplay; -1 none yet) */
 static struct screen_mapping_easing mapping_easing;
-static int mapping_on_screen_last;
+static int mapping_on_screen_last, mapping_target_logged = -1;
 /* the frame clock's last reading, in seconds (negative: none yet) */
 static double mapping_clock = -1.0;
-/* the film's mapping, read once (mapping_settings); its depth share is
+/* the settings, read once (mapping_settings): the film's and gameplay's
+mappings; display.screen_framing = "band"; debug.side_by_side_screen and
+debug.screen_lean (meters); debug.gpu_stats. film_mapping.depth_share is
 negative until read */
-static struct screen_mapping film_mapping = { -1.0f, 0.0f, 0.0f };
+static struct screen_mapping film_mapping = { -1.0f, 0.0f, 0.0f }, gameplay_mapping;
+static int screen_framing_band = 1, side_by_side_screen, stereo_stats;
+static float side_by_side_lean;
+/* the culling camera's distance back, logged under debug.gpu_stats once
+for each mode and mapping (halo_stereo_log_culling) */
+static unsigned culling_logged;
 /* the script fade the eyes draw and the room takes this frame
 (halo_stereo_set_fade) */
 static float frame_fade[4];
-/* a third-person camera (a vehicle seat's) goes on the screen as the film
-does, the stick still driving it as in mono; the one switch for a later
-setting */
+/* in HEAD mode a third-person camera (a vehicle seat's) goes on the screen
+as the film does, the stick still driving it as in mono; the one switch for
+a later setting. In SCREEN mode it's gameplay */
 static int third_person_on_screen = 1;
 /* why the view is on the screen: none, the letterbox, a scripted camera, a
 third-person camera; logged as it changes */
@@ -248,9 +268,11 @@ static void turn_settings(void)
 	comfort_vignette = config_boolean("input.comfort_vignette") != 0;
 }
 
-/* reads the film's mapping settings, once */
+/* reads the mappings' settings and the screen's framing, once */
 static void mapping_settings(void)
 {
+	const char *framing;
+
 	if (film_mapping.depth_share >= 0.0f)
 		return;
 	film_mapping.depth_share = clamped_setting("display.film_depth_share",
@@ -258,6 +280,29 @@ static void mapping_settings(void)
 	film_mapping.convergence_meters = clamped_setting("display.film_convergence",
 		(float)config_real("display.film_convergence"), CONVERGENCE_MIN, CONVERGENCE_MAX, "meters");
 	film_mapping.lean = 0.0f;
+	gameplay_mapping.depth_share = clamped_setting("display.screen_depth_share",
+		(float)config_real("display.screen_depth_share"), DEPTH_SHARE_MIN, DEPTH_SHARE_MAX, "of the eye separation");
+	gameplay_mapping.convergence_meters = clamped_setting("display.screen_convergence",
+		(float)config_real("display.screen_convergence"), CONVERGENCE_MIN, CONVERGENCE_MAX, "meters");
+	gameplay_mapping.lean = SCREEN_LEAN_SCALE;
+	framing = config_string("display.screen_framing");
+	screen_framing_band = 1;
+	if (framing && strcmp(framing, "wide") == 0)
+		screen_framing_band = 0;
+	else if (!framing || strcmp(framing, "band") != 0)
+		platform_log("stereo: display.screen_framing \"%s\" is not recognized; using band", framing ? framing : "(none)");
+	side_by_side_screen = config_boolean("debug.side_by_side_screen") != 0;
+	side_by_side_lean = (float)config_real("debug.screen_lean");
+	if (side_by_side_lean != side_by_side_lean)
+		side_by_side_lean = 0.0f;
+	stereo_stats = config_boolean("debug.gpu_stats") != 0;
+}
+
+/* SCREEN gameplay's eyes rather than HEAD-like ones: SCREEN mode, or the
+side-by-side view with debug.side_by_side_screen */
+static int screen_mode(void)
+{
+	return stereo_mode == HALO_STEREO_SCREEN || (stereo_mode == HALO_STEREO_SIDE_BY_SIDE && side_by_side_screen);
 }
 
 /* the frame clock's time since its last reading, in seconds, at most a
@@ -341,38 +386,55 @@ static void screen_frusta(float vertical_tangent)
 		screen_head_offset, stereo_frame.eyes);
 }
 
-/* the film's eyes for this frame, from the viewer's separation and the
-screen's half width (meters): level, at the camera, by the film's mapping
-(eased from the last frame's if that was on the screen too, which for now
-is always the same). The camera's own tangent sets them at the render
-(halo_stereo_screen_frusta), the default camera's until then */
-static void screen_begin(float viewer_separation, float half_width, float time_delta)
+/* the screen's eyes for this frame, the film's or SCREEN gameplay's, from
+the viewer's separation and the screen's half width (meters) and the head's
+offset (meters, or NULL): level, at the camera, by the mapping, which eases
+from the last frame's if that was on the screen too. The camera's own
+tangent sets them at the render (halo_stereo_screen_frusta), the default
+camera's until then */
+static void screen_begin(int gameplay, float viewer_separation, float half_width, const float head_offset[2],
+	float time_delta)
 {
-	const struct screen_mapping *target = &film_mapping;
+	static const char *const mapping_names[] = {"film", "gameplay"};
+	const struct screen_mapping *target = gameplay ? &gameplay_mapping : &film_mapping;
 	struct halo_stereo_eye target_eyes[2];
+	float separation_mm, infinity_mm;
 
 	screen_viewer_separation = viewer_separation > 0.001f ? viewer_separation : FILM_DEFAULT_SEPARATION;
 	screen_half_width = half_width > 0.0f ? half_width : FILM_DEFAULT_HALF_WIDTH;
-	screen_head_offset[0] = screen_head_offset[1] = 0.0f;
+	screen_head_offset[0] = head_offset ? head_offset[0] : 0.0f;
+	screen_head_offset[1] = head_offset ? head_offset[1] : 0.0f;
 	if (!mapping_on_screen_last) {
 		mapping_easing.from = mapping_easing.to = mapping_easing.now = *target;
 		mapping_easing.elapsed = MAPPING_EASE_SECONDS;
 	} else {
+		if (mapping_target_logged >= 0 && mapping_target_logged != gameplay)
+			platform_log("stereo: the screen's mapping easing from %s to %s", mapping_names[mapping_target_logged],
+				mapping_names[gameplay]);
 		screen_mapping_ease(&mapping_easing, target, time_delta);
 	}
-	film_frame = 1;
+	mapping_target_logged = gameplay;
+	film_frame = !gameplay;
+	gameplay_frame = gameplay;
 	screen_frusta(FILM_DEFAULT_VERTICAL_TANGENT);
-	/* the log gives the target's eyes at the default camera, not a moment
-	of an ease */
+	/* the logs give the target's eyes at the default camera, not a moment
+	of the ease */
 	screen_mapping_eyes(target, FILM_DEFAULT_VERTICAL_TANGENT, screen_viewer_separation, screen_half_width, NULL,
 		target_eyes);
-	if (!film_last || film_reason != film_reason_logged)
+	separation_mm = (target_eyes[1].offset[0] - target_eyes[0].offset[0]) * METERS_PER_UNIT * 1000.0f;
+	infinity_mm = target->depth_share * screen_viewer_separation * 1000.0f;
+	if (!gameplay && (!film_last || film_reason != film_reason_logged))
 		platform_log("stereo: %s, as a 3D film on the screen: eyes %.1f mm apart (of the viewer's %.1f mm), "
 			"converged at %.2f m, infinity %.1f mm behind the screen; the screen %.2f m wide",
-			film_reasons[film_reason], (target_eyes[1].offset[0] - target_eyes[0].offset[0]) * METERS_PER_UNIT *
-			1000.0f, screen_viewer_separation * 1000.0f, target->convergence_meters,
-			target->depth_share * screen_viewer_separation * 1000.0f, 2.0f * screen_half_width);
-	film_reason_logged = film_reason;
+			film_reasons[film_reason], separation_mm, screen_viewer_separation * 1000.0f, target->convergence_meters,
+			infinity_mm, 2.0f * screen_half_width);
+	if (gameplay && !gameplay_last)
+		platform_log("stereo: SCREEN gameplay as a 3D TV: eyes %.1f mm apart (of the viewer's %.1f mm), converged "
+			"at %.2f m, infinity %.1f mm behind the screen; the weapon converged at %.2f m; framing %s",
+			separation_mm, screen_viewer_separation * 1000.0f, target->convergence_meters, infinity_mm,
+			FIRST_PERSON_CONVERGENCE_METERS, screen_framing_band ? "band" : "wide");
+	if (!gameplay)
+		film_reason_logged = film_reason;
 }
 
 /* the mode a display.stereo string names; sets *recognized to 0 for an unknown string */
@@ -391,7 +453,7 @@ static int mode_from_name(const char *name, int *recognized)
 
 void halo_stereo_frame_begin(void)
 {
-	int film;
+	int film, screen, on_screen;
 	float time_delta;
 
 	if (stereo_mode < 0) {
@@ -419,13 +481,18 @@ void halo_stereo_frame_begin(void)
 	stereo_frame.mode = stereo_mode;
 	stereo_layer = HALO_STEREO_LAYER_MONO;
 	memset(frame_fade, 0, sizeof(frame_fade));
+	/* why the view is the film. In SCREEN mode everything is on the screen
+	already, so only the director's own cameras are the film: the player's
+	camera with its look taken away (a10's pod) and a third-person camera
+	stay gameplay, which no change of mapping interrupts */
+	screen = screen_mode();
 	film_reason = 0;
 	if (stereo_mode != HALO_STEREO_OFF) {
 		if (halo_cinematic_screen())
 			film_reason = 1;
-		else if (halo_scripted_camera())
+		else if (screen ? halo_scripted_director_camera() : halo_scripted_camera())
 			film_reason = 2;
-		else if (third_person_on_screen && halo_third_person_camera())
+		else if (!screen && third_person_on_screen && halo_third_person_camera())
 			film_reason = 3;
 	}
 	if (film_reason != 0)
@@ -436,7 +503,8 @@ void halo_stereo_frame_begin(void)
 	}
 	film = film_reason != 0;
 	film_last = film_frame;
-	film_frame = 0;
+	gameplay_last = gameplay_frame;
+	film_frame = gameplay_frame = 0;
 	/* the film's on the screen: in HEAD mode the frame asks for SCREEN eyes */
 	if (film && stereo_mode == HALO_STEREO_HEAD)
 		stereo_frame.mode = HALO_STEREO_SCREEN;
@@ -459,9 +527,12 @@ void halo_stereo_frame_begin(void)
 			e->offset[0] = eye == 0 ? -SIDE_BY_SIDE_OFFSET : SIDE_BY_SIDE_OFFSET;
 			e->left = e->right = e->up = e->down = SIDE_BY_SIDE_TANGENT;
 		}
-		/* the default screen and typical eyes */
-		if (film)
-			screen_begin(FILM_DEFAULT_SEPARATION, FILM_DEFAULT_HALF_WIDTH, time_delta);
+		/* the default screen and typical eyes; debug.screen_lean leans */
+		if (film || screen) {
+			const float lean[2] = { side_by_side_lean, 0.0f };
+
+			screen_begin(!film, FILM_DEFAULT_SEPARATION, FILM_DEFAULT_HALF_WIDTH, lean, time_delta);
+		}
 	} else if (stereo_mode == HALO_STEREO_HEAD || stereo_mode == HALO_STEREO_SCREEN) {
 		int mode = stereo_frame.mode;
 
@@ -472,18 +543,23 @@ void halo_stereo_frame_begin(void)
 		if (stereo_frame.eye_count != 2) {
 			memset(&stereo_frame, 0, sizeof(stereo_frame));
 			stereo_frame.mode = mode;
-		} else if (film) {
+		} else if (film || screen) {
 			/* the viewer's eyes as the host found them (SCREEN eyes: where they
-			are, and frusta through the screen's edges): their separation, and
-			the screen's half width from the frusta (the tangents add to the
-			width over the distance) */
+			are against the screen, and frusta through its edges): their
+			separation, the screen's half width from the frusta (the tangents
+			add to the width over the distance) and the head's offset from
+			the screen's axis, the eyes' midpoint */
 			const struct halo_stereo_eye *eyes = stereo_frame.eyes;
 			float dx = eyes[1].offset[0] - eyes[0].offset[0];
 			float dy = eyes[1].offset[1] - eyes[0].offset[1];
 			float dz = eyes[1].offset[2] - eyes[0].offset[2];
+			float head_offset[2] = {
+				0.5f * (eyes[0].offset[0] + eyes[1].offset[0]) * METERS_PER_UNIT,
+				0.5f * (eyes[0].offset[1] + eyes[1].offset[1]) * METERS_PER_UNIT,
+			};
 
-			screen_begin(sqrtf(dx * dx + dy * dy + dz * dz) * METERS_PER_UNIT,
-				eyes[0].offset[2] * (eyes[0].left + eyes[0].right) * 0.5f * METERS_PER_UNIT, time_delta);
+			screen_begin(!film, sqrtf(dx * dx + dy * dy + dz * dz) * METERS_PER_UNIT,
+				eyes[0].offset[2] * (eyes[0].left + eyes[0].right) * 0.5f * METERS_PER_UNIT, head_offset, time_delta);
 		}
 		/* HEAD mode: the look takes this frame's yaw in next frame
 		(player_control runs before the render), and a turn it never took is
@@ -493,7 +569,10 @@ void halo_stereo_frame_begin(void)
 		head_pitch_known = stereo_frame.mode == HALO_STEREO_HEAD;
 		head_pitch_now = stereo_frame.head_pitch;
 	}
-	mapping_on_screen_last = film_frame;
+	on_screen = film_frame || gameplay_frame;
+	mapping_on_screen_last = on_screen;
+	if (!on_screen)
+		mapping_target_logged = -1;
 	/* the eyes' picture size from this frame on, not the next */
 	if (stereo_mode != HALO_STEREO_OFF)
 		halo_screen_commit_stereo_scale();
@@ -509,10 +588,37 @@ int halo_stereo_film_letterbox(void)
 	return halo_stereo_film() && film_reason == 1;
 }
 
+int halo_stereo_screen_gameplay(void)
+{
+	return gameplay_frame && stereo_frame.eye_count == 2;
+}
+
+int halo_stereo_screen_framing(void)
+{
+	if (stereo_frame.eye_count != 2)
+		return 0;
+	return halo_stereo_film_letterbox() || (screen_mode() && screen_framing_band);
+}
+
 void halo_stereo_screen_frusta(float vertical_tangent)
 {
-	if (halo_stereo_film() && vertical_tangent > 0.0f)
+	if ((halo_stereo_film() || halo_stereo_screen_gameplay()) && vertical_tangent > 0.0f)
 		screen_frusta(vertical_tangent);
+}
+
+void halo_stereo_log_culling(float distance_back)
+{
+	unsigned key;
+
+	if (!stereo_stats || stereo_frame.eye_count != 2)
+		return;
+	key = 1u << ((unsigned)stereo_frame.mode * 3u + (halo_stereo_film() ? 1u : halo_stereo_screen_gameplay() ? 2u : 0u));
+	if (culling_logged & key)
+		return;
+	culling_logged |= key;
+	platform_log("stereo: the culling camera %.4f units (%.1f mm) behind the camera, display.stereo %s, %s",
+		distance_back, distance_back * METERS_PER_UNIT * 1000.0f, mode_names[stereo_frame.mode],
+		halo_stereo_film() ? "the film" : halo_stereo_screen_gameplay() ? "SCREEN gameplay" : "the full view");
 }
 
 int halo_stereo_cut_covered(void)

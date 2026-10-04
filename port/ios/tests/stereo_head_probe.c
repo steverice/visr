@@ -46,6 +46,8 @@ const char *config_string(const char *name)
 		return "head";
 	if (!strcmp(name, "input.turn"))
 		return setting_turn;
+	if (!strcmp(name, "display.screen_framing"))
+		return "band";
 	return "";
 }
 double config_real(const char *name)
@@ -56,9 +58,15 @@ double config_real(const char *name)
 		return setting_film_depth_share;
 	if (!strcmp(name, "display.film_convergence"))
 		return setting_film_convergence;
+	if (!strcmp(name, "display.screen_depth_share"))
+		return 0.3;
+	if (!strcmp(name, "display.screen_convergence"))
+		return 1.0;
+	if (!strcmp(name, "debug.screen_lean"))
+		return 0.0;
 	return setting_snap_angle;
 }
-int config_boolean(const char *name) { (void)name; return setting_comfort_vignette; }
+int config_boolean(const char *name) { return !strcmp(name, "input.comfort_vignette") && setting_comfort_vignette; }
 void platform_video_drawable_size(int *width, int *height) { *width = *height = 0; }
 void platform_log(const char *format, ...)
 {
@@ -72,6 +80,7 @@ void platform_log(const char *format, ...)
 }
 int halo_cinematic_screen(void) { return game_letterbox; }
 int halo_scripted_camera(void) { return game_scripted_camera; }
+int halo_scripted_director_camera(void) { return 0; }
 int platform_fixed_timestep(void) { return 1; }
 unsigned long platform_clock_frames(void) { return 0; }
 double halo_frame_trace_milliseconds(void) { return 0.0; }

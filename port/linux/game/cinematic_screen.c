@@ -4,8 +4,9 @@ CINEMATIC_SCREEN.C
 What stereo's cutscene screen reads from the game (port/linux/src/halo_stereo.h):
 whether the letterbox is in, which makes a cutscene the 3D film on a 16:9
 screen (stereo.c); whether the camera is scripted or third person, which
-put the view on the screen too; and the script fade, which tints the immersive space
-around the screen (port/ios/host/gpu_metal.m).
+make the film too (in SCREEN mode only the director's scripted camera); and
+the script fade, which tints the immersive space around the screen
+(port/ios/host/gpu_metal.m).
 
 The letterbox, not cinematic_in_progress, marks the cutscene: the bars are
 what frame Bungie's 16:9 composition, and scripts toggle them on their own
@@ -38,8 +39,16 @@ where the player still looks through their own eyes (a10's "use the right
 stick to look around" in the pod, with camera control on). */
 int halo_scripted_camera(void)
 {
-	return player_control_camera_control_disabled() ||
-		(director_camera_scripted && *director_camera_scripted) ||
+	return player_control_camera_control_disabled() || halo_scripted_director_camera();
+}
+
+/* The director's own scripted camera, without the player's camera with its
+look taken away: SCREEN mode's film (stereo.c), where the player's camera
+under a script stays gameplay. a10's pod toggles player_camera_control with
+no cut, and the director's cameras begin and end on cuts. */
+int halo_scripted_director_camera(void)
+{
+	return (director_camera_scripted && *director_camera_scripted) ||
 		director_peek_perspective(0) == _director_perspective_scripted;
 }
 

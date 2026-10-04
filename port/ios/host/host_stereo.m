@@ -12,9 +12,10 @@ with the game's depth (already reverse-Z, gpu_metal.m's reversed_depth) for
 the Compositor's reprojection, and the HUD floats head-locked in front.
 
 Stereo on the theater screen (display.stereo = "screen") reads the same frame
-for the eyes' positions only: the look stays on the stick, and the head moves
-each eye's frustum through the screen, as through a window (screen_eyes).
-host_theater_present_eyes puts each eye's picture on the screen for its view.
+for the eyes' positions only: the look stays on the stick, and screen_eyes
+reports where the viewer's eyes are against the screen, from which the guest
+maps the game as a 3D TV (stereo.c). host_theater_present_eyes puts each
+eye's picture on the screen for its view.
 
 Elsewhere host_stereo_frame leaves the frame mono. */
 #import <Foundation/Foundation.h>
@@ -269,28 +270,20 @@ static void head_turn(struct halo_stereo_frame *frame, simd_float4x4 origin_from
 	host_stereo_head_turn(&head, right, up, back, frame);
 }
 
-/* Stereo on the screen: the eyes from where the viewer's eyes are in the
+/* Stereo on the screen: the viewer's eyes against the screen, in the
 screen's frame (its center the origin, x right, y up, z toward the viewer).
 
-The screen is a window, and the game's camera sits in it: the screen's
-center is the player's eye in the game, and the game's world lies behind
-the screen at its true scale (one world unit is 3.048 m). An eye at
-(ex, ey, d) in meters, d in front of the screen, is therefore offset from
-the game's camera by (ex, ey, d) / 3.048 world units right, up and back,
-and its frustum passes through the screen's edges:
+For an eye at (ex, ey, d) in meters, d in front of the screen, the frame
+reports the offset (ex, ey, d) / 3.048 (world units: right, up, back) and
+the frustum through the screen's edges:
 	left = (half_width + ex) / d     right = (half_width - ex) / d
 	up = (half_height - ey) / d      down = (half_height + ey) / d
-So the eye's picture fills the screen exactly as that eye sees it, and what
-the game shows at a distance z ahead of its camera appears z behind the
-screen: a point straight ahead on the screen's surface has no parallax, and
-the parallax rises toward the eyes' separation with distance (at 64 mm and
-a 4 m screen, a quarter of it 1.3 m behind the screen, half of it 4 m
-behind). Nothing in front of the game's camera comes out of the screen; the
-eye loop moves each eye's near plane out to the screen (render.c), so what
-is behind the game's camera, between it and the eye, isn't drawn. The game's
-field of view becomes the screen's angle (display.theater_width), and
-leaning or stepping moves the frusta as a window would. The orientation of
-the head plays no part. */
+The guest doesn't render these eyes: it takes from them the viewer's eye
+separation, the screen's half width (the tangents add to the width over the
+distance) and the head's offset from the screen's axis (the eyes' midpoint),
+and maps the game onto the screen as a 3D TV, the eyes at the game's camera
+(stereo.c's screen_mapping_eyes; the film and SCREEN gameplay). The
+orientation of the head plays no part. */
 static void screen_eyes(struct halo_stereo_frame *frame, cp_drawable_t drawable, simd_float4x4 origin_from_device,
 	int anchored) API_AVAILABLE(visionos(26.0))
 {

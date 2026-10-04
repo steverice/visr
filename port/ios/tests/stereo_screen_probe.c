@@ -1,8 +1,8 @@
-/* The film's and SCREEN mode's 3D TV (port/linux/game/stereo.c): the one
-mapping both use (screen_mapping_eyes), with the film's, gameplay's and the
-first-person weapon's values, and the ease between two mappings. stereo.c
-is included, not linked, as stereo_head_probe.c does, so the checks reach
-its static functions.
+/* SCREEN mode's 3D TV and the film (port/linux/game/stereo.c): the one
+mapping both use (screen_mapping_eyes), the ease between them, the reasons
+that pick one in SCREEN mode, and the screen's framing. stereo.c is
+included, not linked, as stereo_head_probe.c does, so the checks reach its
+static functions.
 
 A point z ahead of the camera, x to its right, lands on a screen of half
 width w at w ((x - x_eye) / z + x_eye / C_w) / T for an eye of the mapping
@@ -260,6 +260,107 @@ static void ease_at(float rate)
 	check(reached && !reached_early, "and the mapping reaches gameplay's at 0.3 s");
 }
 
+static void frames(int count)
+{
+	int frame;
+
+	for (frame = 0; frame < count; frame++) {
+		clock_frames++;
+		halo_stereo_frame_begin();
+	}
+}
+
+/* a fresh SCREEN mode game, gameplay with nothing scripted */
+static void reset_game(void)
+{
+	game_letterbox = game_director_camera = game_camera_disabled = game_third_person = 0;
+	host_eyes = 1;
+	host_head[0] = host_head[1] = 0.0f;
+	frames(3 * FILM_HOLD_FRAMES);
+}
+
+static void reasons(void)
+{
+	float midpoint;
+	int logs;
+
+	printf("SCREEN mode's reasons:\n");
+	stereo_mode = -1;
+	frames(1);
+	check(halo_stereo_screen_gameplay() && !halo_stereo_film() && halo_stereo_screen_framing(),
+		"gameplay is the 3D TV, framed as the band");
+	check(strstr(gameplay_log, "SCREEN gameplay as a 3D TV: eyes 5.0 mm apart (of the viewer's 64.0 mm), converged "
+		"at 1.00 m, infinity 19.2 mm behind the screen; the weapon converged at") != NULL &&
+		strstr(gameplay_log, "framing band") != NULL, "its log line");
+	printf("    %s\n", gameplay_log);
+	game_camera_disabled = 1;
+	logs = easing_logs;
+	frames(20);
+	check(halo_stereo_screen_gameplay() && easing_logs == logs,
+		"the player's camera under a script stays gameplay, with no change of mapping");
+	game_camera_disabled = 0;
+	game_third_person = 1;
+	frames(20);
+	check(halo_stereo_screen_gameplay() && easing_logs == logs, "so does a third-person camera");
+	game_third_person = 0;
+	game_director_camera = 1;
+	frames(1);
+	check(halo_stereo_film() && !halo_stereo_screen_gameplay() && easing_logs == logs + 1 &&
+		halo_stereo_screen_framing(), "a director's scripted camera is the film, eased into, framed the same");
+	game_director_camera = 0;
+	game_letterbox = 1;
+	frames(20);
+	check(halo_stereo_film_letterbox() && halo_stereo_screen_framing(), "the letterbox is the film");
+	check(strstr(film_log, "a cutscene, as a 3D film on the screen: eyes 7.2 mm apart (of the viewer's 64.0 mm), "
+		"converged at 1.75 m, infinity 16.0 mm behind the screen; the screen 4.62 m wide") != NULL,
+		"the film's log line");
+	printf("    %s\n", film_log);
+	check(mapping_easing.now.depth_share == FILM_DEPTH_SHARE &&
+		mapping_easing.now.convergence_meters == FILM_CONVERGENCE_METERS, "the film's mapping, once eased");
+	game_letterbox = 0;
+	logs = easing_logs;
+	frames(FILM_HOLD_FRAMES);
+	check(halo_stereo_film() && easing_logs == logs, "held through the hold");
+	frames(1);
+	check(halo_stereo_screen_gameplay() && easing_logs == logs + 1 && halo_stereo_screen_framing() &&
+		mapping_easing.now.depth_share < SCREEN_DEPTH_SHARE, "then gameplay, easing, still framed as the band");
+	frames(9);
+	check(mapping_easing.now.depth_share == SCREEN_DEPTH_SHARE &&
+		mapping_easing.now.convergence_meters == SCREEN_CONVERGENCE_METERS &&
+		mapping_easing.now.lean == SCREEN_LEAN_SCALE, "and at gameplay's mapping 0.3 s later (9 frames at 30)");
+
+	/* the head's offset leans gameplay's eyes; the host's own eyes don't
+	survive into the frame */
+	host_head[0] = 0.1f;
+	host_head[1] = -0.05f;
+	frames(1);
+	halo_stereo_screen_frusta(VERTICAL);
+	midpoint = 0.5f * (halo_stereo_frame()->eyes[0].offset[0] + halo_stereo_frame()->eyes[1].offset[0]);
+	{
+		float s = halo_stereo_frame()->eyes[1].offset[0] - halo_stereo_frame()->eyes[0].offset[0];
+
+		check(fabsf(midpoint - 0.1f * s / SEPARATION) < 1e-7f && halo_stereo_frame()->eyes[0].offset[2] == 0.0f &&
+			halo_stereo_frame()->eyes[0].offset[1] < 0.0f, "the head's offset leans the eyes by h s / e, at the camera");
+	}
+	host_head[0] = host_head[1] = 0.0f;
+
+	/* the immersive space closed: mono, Hor+ */
+	host_eyes = 0;
+	frames(1);
+	check(!halo_stereo_screen_gameplay() && !halo_stereo_screen_framing(), "with no eyes, the window keeps Hor+");
+	host_eyes = 1;
+	frames(1);
+
+	/* "wide": gameplay unnarrowed, the letterbox still narrowed */
+	screen_framing_band = 0;
+	check(halo_stereo_screen_gameplay() && !halo_stereo_screen_framing(), "wide: gameplay keeps Hor+");
+	game_letterbox = 1;
+	frames(1);
+	check(halo_stereo_screen_framing(), "wide: the letterbox still narrows");
+	screen_framing_band = 1;
+	reset_game();
+}
+
 int main(void)
 {
 	const struct screen_mapping gameplay = { SCREEN_DEPTH_SHARE, SCREEN_CONVERGENCE_METERS, SCREEN_LEAN_SCALE };
@@ -277,6 +378,7 @@ int main(void)
 	printf("the ease:\n");
 	ease_at(90.0f);
 	ease_at(45.0f);
+	reasons();
 	if (failures) {
 		printf("stereo screen probe: %d failed\n", failures);
 		return 1;

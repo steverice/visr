@@ -338,12 +338,12 @@ static void render_window(
 	parameters.fog = render.fog;
 
 	/* port: in stereo, render.frustum is the culling frustum, whose apex sits
-	behind the camera so that it holds both eyes (far behind it, on the
-	theater screen); the portal traversal and the clusters' frusta project
-	with render.camera and render.frustum together, so they take the culling
-	frustum's camera too. The cluster stays the camera's own
-	(structure_visibility_find_camera), and render.camera is the camera again
-	for the rest */
+	behind the camera so that it holds both eyes (a little behind it: the
+	eyes sit beside the camera, within a few hundredths of a unit); the
+	portal traversal and the clusters' frusta project with render.camera and
+	render.frustum together, so they take the culling frustum's camera too.
+	The cluster stays the camera's own (structure_visibility_find_camera),
+	and render.camera is the camera again for the rest */
 	if (render_stereo_visibility_camera)
 	{
 		struct render_camera saved_camera = render.camera;
@@ -514,8 +514,8 @@ static void render_player_frame_stereo(
 	aspect = (real)(window->rasterizer_camera.viewport_bounds.x1 - window->rasterizer_camera.viewport_bounds.x0) /
 		(real)(window->rasterizer_camera.viewport_bounds.y1 - window->rasterizer_camera.viewport_bounds.y0);
 	field_of_view_tangent = tangent(window->rasterizer_camera.vertical_field_of_view * 0.5f);
-	/* the 3D film's eyes take their frusta from the cinematic camera's
-	field of view (stereo.c); nothing otherwise */
+	/* the screen's eyes (the 3D film's, SCREEN gameplay's) take their
+	frusta from the camera's field of view (stereo.c); nothing otherwise */
 	halo_stereo_screen_frusta(field_of_view_tangent);
 
 	/* culling: one frustum that contains both eyes' exactly. Its bounds are
@@ -548,6 +548,7 @@ static void render_player_frame_stereo(
 	cull_camera.position.z -= cull_camera.forward.k * cull_distance_back;
 	cull_camera.z_far += cull_distance_back;
 	render_camera_build_frustum(&cull_camera, &cull_bounds, &cull_frustum, TRUE);
+	halo_stereo_log_culling(cull_distance_back);
 
 	cross_product3d(&window->rasterizer_camera.forward, &window->rasterizer_camera.up, &right);
 	normalize3d(&right);
@@ -583,16 +584,6 @@ static void render_player_frame_stereo(
 			eye_camera.forward.j * stereo_eye->offset[2];
 		eye_camera.position.z += right.k * stereo_eye->offset[0] + up.k * stereo_eye->offset[1] -
 			eye_camera.forward.k * stereo_eye->offset[2];
-		/* port: stereo on the screen puts the eyes behind the camera, which
-		sits in the screen as in a window (host_stereo.m's screen_eyes):
-		each eye's near and far planes move out by its distance back, so the
-		near plane is the camera's and what is between the eye and the camera
-		isn't drawn */
-		if (stereo->mode == HALO_STEREO_SCREEN && stereo_eye->offset[2] > 0.0f)
-		{
-			eye_camera.z_near += stereo_eye->offset[2];
-			eye_camera.z_far += stereo_eye->offset[2];
-		}
 		eye_bounds.x0 = -stereo_eye->left / (aspect * field_of_view_tangent);
 		eye_bounds.x1 = stereo_eye->right / (aspect * field_of_view_tangent);
 		eye_bounds.y0 = -stereo_eye->down / field_of_view_tangent;
