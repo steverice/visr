@@ -66,7 +66,9 @@ yaw, without the diagonal boost the pitch gives *yaw (yaw_response)
 and the frame's time in seconds, and zeroes the game's own stick turn. And the
 head's yaw since the look last took it in, with the stick's turn, unscaled by
 the zoom, and the pitch that brings the look's (current_pitch) to the head's.
-Both do nothing unless the head drives the view. */
+Both do nothing unless the head drives the view, and nothing in a
+third-person camera (a vehicle seat's chase camera), where the stick turns
+and pitches the look as in mono and the head never turns it. */
 void halo_stereo_stick_look(short gamepad_index, float yaw_response, float time_delta, float *yaw, float *pitch);
 int halo_stereo_head_look(short gamepad_index, float current_pitch, float *yaw, float *pitch);
 /* 1 while the head drives the look (HEAD mode with the Compositor's eyes),
@@ -82,7 +84,10 @@ toward the share, in over 0.1 s and out over 0.2 s */
 float halo_stereo_vignette_ease(float strength, float turn_fraction, float time_delta);
 /* HEAD mode's render (source/render/render.c): turns a camera by the head's
 yaw the look hasn't taken in yet (it does next frame) and gives it the head's
-pitch and roll, so the camera's orientation is the head's this frame */
+pitch and roll, so the camera's orientation is the head's this frame. In a
+third-person camera (unless display.stereo_vehicle_screen puts it on the
+screen) it turns the game's camera by the head's yaw and change of pitch
+since that camera began, and gives it the head's roll: the picture only */
 void halo_stereo_head_orient(float forward[3], float up[3]);
 /* the eye cameras' near and far planes in world units, for the presenter's
 depth (d3d8_device.c), set by the eye loop each stereo frame */
@@ -93,7 +98,8 @@ void halo_stereo_depth_range(float *z_near, float *z_far);
 film on a 16:9 screen (stereo.c): the cinematic camera rendered twice,
 framed on the letterbox's inside with no bars except while a title shows.
 A director's scripted camera goes on the screen the same way, and in HEAD
-mode a third-person camera and the player's camera under a script. In
+mode the player's camera under a script, and a third-person camera with
+display.stereo_vehicle_screen. In
 SCREEN mode the rest is gameplay as a 3D TV: the player's camera rendered
 twice, by the same mapping with gameplay's own depth, leaning with the
 head. */

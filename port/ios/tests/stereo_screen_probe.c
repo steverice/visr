@@ -302,6 +302,11 @@ static void reasons(void)
 	game_third_person = 1;
 	frames(20);
 	check(halo_stereo_screen_gameplay() && easing_logs == logs, "so does a third-person camera");
+	vehicle_screen = 1;
+	frames(20);
+	check(halo_stereo_screen_gameplay() && easing_logs == logs,
+		"display.stereo_vehicle_screen (HEAD mode's) leaves it gameplay");
+	vehicle_screen = 0;
 	game_third_person = 0;
 	game_director_camera = 1;
 	frames(1);

@@ -21,13 +21,19 @@ separation, the screen's half width and the head's offset, and maps them.
 
 Cutscenes, in any stereo mode, are the 3D film while the letterbox is in
 (halo_stereo_film), and so are moments with a director's scripted camera
-(camera_control, the scripted perspective). In HEAD mode so, for comfort, is
-a third-person camera (third_person_on_screen), and the player's own camera
-while a script holds its look: a camera the head doesn't steer is easier to
-watch on a screen. HEAD mode asks the host for SCREEN eyes meanwhile, so the
-frame is SCREEN for everyone downstream: the host draws it on the screen,
-and the head's turn stays out of the look and the camera. The film has
-display.film_depth_share and display.film_convergence, and doesn't lean.
+(camera_control, the scripted perspective). In HEAD mode so is the
+player's own camera while a script holds its look: a camera the head doesn't
+steer is easier to watch on a screen. HEAD mode asks the host for SCREEN
+eyes meanwhile, so the frame is SCREEN for everyone downstream: the host
+draws it on the screen, and the head's turn stays out of the look and the
+camera. The film has display.film_depth_share and display.film_convergence,
+and doesn't lean.
+
+A third-person camera (a vehicle seat's chase camera) stays immersive in
+HEAD mode: the head turns the game's camera for the picture only, relative
+to its pose when the camera began, and never the player's facing, so the
+sticks drive and aim as in mono (halo_stereo_head_orient). With
+display.stereo_vehicle_screen it goes on the screen as the film instead.
 
 SCREEN mode's gameplay is the same picture from the player's camera, with
 display.screen_depth_share and display.screen_convergence, and the head's
@@ -216,10 +222,19 @@ static unsigned culling_logged;
 /* the script fade the eyes draw and the room takes this frame
 (halo_stereo_set_fade) */
 static float frame_fade[4];
-/* in HEAD mode a third-person camera (a vehicle seat's) goes on the screen
-as the film does, the stick still driving it as in mono; the one switch for
-a later setting. In SCREEN mode it's gameplay */
-static int third_person_on_screen = 1;
+/* display.stereo_vehicle_screen, read once (mapping_settings): in HEAD mode
+a third-person camera (a vehicle seat's) goes on the screen as the film
+does, the stick still driving it as in mono. Off, it stays head-tracked
+(third_person_head). In SCREEN mode it's gameplay either way */
+static int vehicle_screen;
+/* HEAD mode's third person, without display.stereo_vehicle_screen: this
+frame's camera is the game's third-person one, which the head turns for the
+picture only (halo_stereo_head_orient); the look takes none of the head's
+turn. The turn is the head's since the camera began: its yaw since then
+(radians, left positive) and its pitch then, so taking a seat doesn't move
+the view by however far the head was turned */
+static int third_person_head;
+static float third_person_yaw, third_person_pitch_from;
 /* why the view is on the screen: none, the letterbox, a scripted camera, a
 third-person camera; logged as it changes */
 static const char *const film_reasons[] = {"none", "a cutscene", "a scripted camera", "a third-person camera"};
@@ -294,6 +309,7 @@ static void mapping_settings(void)
 	else if (!framing || strcmp(framing, "band") != 0)
 		platform_log("stereo: display.screen_framing \"%s\" is not recognized; using band", framing ? framing : "(none)");
 	side_by_side_screen = config_boolean("debug.side_by_side_screen") != 0;
+	vehicle_screen = config_boolean("display.stereo_vehicle_screen") != 0;
 	side_by_side_lean = (float)config_real("debug.screen_lean");
 	if (side_by_side_lean != side_by_side_lean)
 		side_by_side_lean = 0.0f;
@@ -453,6 +469,35 @@ static int mode_from_name(const char *name, int *recognized)
 	return HALO_STEREO_OFF;
 }
 
+/* HEAD mode's third person, after the host's frame: whether this frame is
+one, and the head's turn since its camera began. The look last took the
+head's pose of the last frame if that frame was head-tracked first person
+(head_pitch_known), so the turn starts from there, this frame's yaw already
+in it; otherwise (after the film) from the head's pose now. The next
+first-person frame starts afresh the same way: the look's facing is where
+the stick left the camera, and the head turns from wherever it is then */
+static void third_person_begin(void)
+{
+	int third_person = stereo_frame.mode == HALO_STEREO_HEAD && stereo_frame.eye_count == 2 &&
+		!vehicle_screen && halo_third_person_camera();
+
+	if (third_person && !third_person_head) {
+		third_person_yaw = head_pitch_known ? stereo_frame.head_yaw : 0.0f;
+		third_person_pitch_from = fmaxf(-PITCH_LIMIT, fminf(PITCH_LIMIT,
+			head_pitch_known ? head_pitch_now : stereo_frame.head_pitch));
+		platform_log("stereo: a third-person camera, head-tracked: the head turns the picture, the sticks drive");
+	} else if (third_person) {
+		third_person_yaw = remainderf(third_person_yaw + stereo_frame.head_yaw, 2.0f * 3.14159265f);
+	}
+	if (!third_person && third_person_head)
+		platform_log("stereo: the head-tracked third-person camera ended");
+	/* a snap armed in third person (the stick swings the boom there) doesn't
+	fire when the look is the head's again: the stick comes back first */
+	if (third_person)
+		snap_armed = 0;
+	third_person_head = third_person;
+}
+
 void halo_stereo_frame_begin(void)
 {
 	int film, screen, on_screen;
@@ -494,7 +539,7 @@ void halo_stereo_frame_begin(void)
 			film_reason = 1;
 		else if (screen ? halo_scripted_director_camera() : halo_scripted_camera())
 			film_reason = 2;
-		else if (!screen && third_person_on_screen && halo_third_person_camera())
+		else if (!screen && vehicle_screen && halo_third_person_camera())
 			film_reason = 3;
 	}
 	if (film_reason != 0)
@@ -563,14 +608,16 @@ void halo_stereo_frame_begin(void)
 			screen_begin(!film, sqrtf(dx * dx + dy * dy + dz * dz) * METERS_PER_UNIT,
 				eyes[0].offset[2] * (eyes[0].left + eyes[0].right) * 0.5f * METERS_PER_UNIT, head_offset, time_delta);
 		}
+		third_person_begin();
 		/* HEAD mode: the look takes this frame's yaw in next frame
 		(player_control runs before the render), and a turn it never took is
-		dropped; the look's pitch follows the head's. SCREEN mode, and the
-		film, have neither */
-		head_pending_yaw = stereo_frame.mode == HALO_STEREO_HEAD ? stereo_frame.head_yaw : 0.0f;
-		head_pitch_known = stereo_frame.mode == HALO_STEREO_HEAD;
+		dropped; the look's pitch follows the head's. SCREEN mode, the film
+		and HEAD mode's third person have neither */
+		head_pending_yaw = stereo_frame.mode == HALO_STEREO_HEAD && !third_person_head ? stereo_frame.head_yaw : 0.0f;
+		head_pitch_known = stereo_frame.mode == HALO_STEREO_HEAD && !third_person_head;
 		head_pitch_now = stereo_frame.head_pitch;
-	}
+	} else
+		third_person_head = 0;
 	on_screen = film_frame || gameplay_frame;
 	mapping_on_screen_last = on_screen;
 	if (!on_screen)
@@ -729,11 +776,13 @@ int halo_stereo_covering(void)
 	return screen_geometry_covers;
 }
 
-/* whether the head drives the view: HEAD mode with the Compositor's eyes (the
-last frame's state, since the look runs before the frame begins) */
+/* whether the head drives the look: HEAD mode with the Compositor's eyes,
+not in third person, where the stick has the look as in mono (the last
+frame's state, since the look runs before the frame begins) */
 static int head_tracking(short gamepad_index)
 {
-	return gamepad_index == 0 && stereo_frame.mode == HALO_STEREO_HEAD && stereo_frame.eye_count == 2;
+	return gamepad_index == 0 && stereo_frame.mode == HALO_STEREO_HEAD && stereo_frame.eye_count == 2 &&
+		!third_person_head;
 }
 
 float halo_stereo_vignette_ease(float strength, float turn_fraction, float time_delta)
@@ -755,6 +804,9 @@ void halo_stereo_stick_look(short gamepad_index, float yaw_response, float time_
 		return;
 	vignette_stick_read = 1;
 	smooth_yaw = 0.0f;
+	/* not head-tracked, or HEAD mode's third person: the game's own turn and
+	pitch, which swing a vehicle's chase camera and aim its guns; no snaps,
+	no vignette */
 	if (!head_tracking(gamepad_index)) {
 		vignette_strength = 0.0f;
 		return;
@@ -864,12 +916,24 @@ void halo_stereo_head_orient(float forward[3], float up[3])
 
 	if (stereo_frame.mode != HALO_STEREO_HEAD || stereo_frame.eye_count != 2)
 		return;
-	/* the camera's yaw (the look's, which has the head's turns up to the last
-	frame) turned about the world's up by this frame's, left positive as the
-	game's yaw; then the head's own pitch, inside the game's limit, so the
-	camera is level when the head is, whatever the look's pitch was */
-	yaw = atan2f(forward[1], forward[0]) + stereo_frame.head_yaw;
-	pitch = head_pitch_limited();
+	if (third_person_head) {
+		/* the game's third-person camera turned by the head since it began:
+		its yaw about the world's up, and its pitch by the head's change of
+		pitch, inside the game's limit. The roll is the head's own, as in
+		first person, so the camera's up is the room's whenever the camera
+		is level */
+		yaw = atan2f(forward[1], forward[0]) + third_person_yaw;
+		pitch = asinf(fmaxf(-1.0f, fminf(1.0f, forward[2]))) + head_pitch_limited() - third_person_pitch_from;
+		pitch = fmaxf(-PITCH_LIMIT, fminf(PITCH_LIMIT, pitch));
+	} else {
+		/* the camera's yaw (the look's, which has the head's turns up to the
+		last frame) turned about the world's up by this frame's, left
+		positive as the game's yaw; then the head's own pitch, inside the
+		game's limit, so the camera is level when the head is, whatever the
+		look's pitch was */
+		yaw = atan2f(forward[1], forward[0]) + stereo_frame.head_yaw;
+		pitch = head_pitch_limited();
+	}
 	forward[0] = cosf(pitch) * cosf(yaw);
 	forward[1] = cosf(pitch) * sinf(yaw);
 	forward[2] = sinf(pitch);

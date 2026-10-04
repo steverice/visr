@@ -15,7 +15,12 @@ And the film's (a cutscene on the screen): the mapping it shares with the
 3D TV (halo_stereo_tv_eyes) puts infinity a share of the eye separation
 behind the screen and the convergence distance on its surface, and the
 held reason keeps the cutscene's framing through the hold; any script fade
-over the picture covers the cut. */
+over the picture covers the cut.
+
+And a vehicle's third-person camera: the head turns the picture, relative
+to its pose when the camera began (no jump on taking a seat), and never the
+player's facing; the stick keeps the game's own turn and pitch. With
+display.stereo_vehicle_screen the camera goes on the screen instead. */
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -37,7 +42,7 @@ static char last_log[256];
 /* the film's settings, and what the game shows: the letterbox, a scripted
 camera */
 static double setting_film_depth_share = 0.25, setting_film_convergence = 1.75;
-static int game_letterbox, game_scripted_camera;
+static int game_letterbox, game_scripted_camera, game_third_person;
 
 /* stereo.c's imports */
 const char *config_string(const char *name)
@@ -84,7 +89,7 @@ int halo_scripted_director_camera(void) { return 0; }
 int platform_fixed_timestep(void) { return 1; }
 unsigned long platform_clock_frames(void) { return 0; }
 double halo_frame_trace_milliseconds(void) { return 0.0; }
-int halo_third_person_camera(void) { return 0; }
+int halo_third_person_camera(void) { return game_third_person; }
 void halo_screen_commit_stereo_scale(void) {}
 
 #include "../../linux/game/stereo.c"
@@ -622,6 +627,145 @@ static void film_hold_reason(void)
 		halo_stereo_frame_begin();
 }
 
+/* the yaw and pitch (degrees) of a camera facing (yaw, pitch) radians after
+the render orients it by the head */
+static void oriented(float yaw, float pitch, float *oriented_yaw, float *oriented_pitch)
+{
+	float forward[3] = { cosf(pitch) * cosf(yaw), cosf(pitch) * sinf(yaw), sinf(pitch) };
+	float up[3] = { -sinf(pitch) * cosf(yaw), -sinf(pitch) * sinf(yaw), cosf(pitch) };
+
+	halo_stereo_head_orient(forward, up);
+	*oriented_yaw = atan2f(forward[1], forward[0]) / DEGREES;
+	*oriented_pitch = asinf(fmaxf(-1.0f, fminf(1.0f, forward[2]))) / DEGREES;
+}
+
+/* one frame of the game's loop with the head at (yaw, pitch) degrees and the
+stick at (stick_yaw, stick_pitch): the stick, then the look (which adds to
+the facing what the head and stick hand it), then the frame and the render's
+camera, which faces the facing (the chase camera points along it). Returns
+the stick's yaw and pitch as the game keeps them, and the view's angles */
+struct loop_frame { float stick_yaw, stick_pitch, view_yaw, view_pitch; int look_turned; };
+
+static struct loop_frame loop(float *facing_yaw, float *facing_pitch, float yaw, float pitch, float stick)
+{
+	struct loop_frame result;
+	float look_yaw, look_pitch;
+
+	result.stick_yaw = stick;
+	result.stick_pitch = 0.3f;
+	halo_stereo_stick_look(0, response(stick), 1.0f / 90.0f, &result.stick_yaw, &result.stick_pitch);
+	result.look_turned = halo_stereo_head_look(0, *facing_pitch, &look_yaw, &look_pitch);
+	if (result.look_turned) {
+		*facing_yaw += look_yaw;
+		*facing_pitch += look_pitch;
+	}
+	set_pose(yaw * DEGREES, pitch * DEGREES, 0.0f);
+	halo_stereo_frame_begin();
+	oriented(*facing_yaw, *facing_pitch, &result.view_yaw, &result.view_pitch);
+	return result;
+}
+
+static float degrees_apart(float a, float b)
+{
+	return fabsf(remainderf(a - b, 360.0f));
+}
+
+static void third_person(void)
+{
+	float facing_yaw = 0.0f, facing_pitch = 0.0f, entry_yaw, entry_pitch, worst_jump = 0.0f, worst_facing = 0.0f;
+	struct loop_frame f;
+	int frame, passed, snapped;
+
+	printf("a vehicle's third-person camera:\n");
+	restart("smooth", 30.0, 120.0, 1);
+	game_third_person = 0;
+	/* first person: the head turns 40 degrees left and pitches 15 down, and
+	the look follows it */
+	for (frame = 1; frame <= 20; frame++)
+		loop(&facing_yaw, &facing_pitch, 2.0f * frame, -0.75f * frame, 0.0f);
+	f = loop(&facing_yaw, &facing_pitch, 40.0f, -15.0f, 0.0f);
+	printf("  first person, the head at 40 deg left, 15 deg down: facing %.3f, %.3f deg\n", facing_yaw / DEGREES,
+		facing_pitch / DEGREES);
+	check(fabsf(facing_yaw / DEGREES - 40.0f) < 0.01f && fabsf(facing_pitch / DEGREES + 15.0f) < 0.01f,
+		"first person: the look follows the head");
+
+	/* take a seat with the head still where it was */
+	game_third_person = 1;
+	entry_yaw = facing_yaw;
+	entry_pitch = facing_pitch;
+	f = loop(&facing_yaw, &facing_pitch, 40.0f, -15.0f, 0.0f);
+	worst_jump = fmaxf(degrees_apart(f.view_yaw, entry_yaw / DEGREES), fabsf(f.view_pitch - entry_pitch / DEGREES));
+	printf("  the seat's first frame: the view %.4f deg from the chase camera's\n", worst_jump);
+	check(worst_jump < 0.01f && halo_stereo_frame()->mode == HALO_STEREO_HEAD && !halo_stereo_film(),
+		"taking a seat with the head turned doesn't jump the view, and it stays head-tracked");
+
+	/* the head turns 30 degrees left and pitches 10 up over a third of a
+	second, with the stick held part way over */
+	passed = 1;
+	for (frame = 1; frame <= 30; frame++) {
+		f = loop(&facing_yaw, &facing_pitch, 40.0f + frame, -15.0f + frame / 3.0f, 0.5f);
+		worst_facing = fmaxf(worst_facing, fmaxf(fabsf(facing_yaw - entry_yaw), fabsf(facing_pitch - entry_pitch)));
+		passed &= !f.look_turned && f.stick_yaw == 0.5f && f.stick_pitch == 0.3f;
+	}
+	printf("  the head 30 deg left, 10 up: the view %.4f, %.4f deg from the chase camera's; the facing moved %.6f deg\n",
+		f.view_yaw - entry_yaw / DEGREES, f.view_pitch - entry_pitch / DEGREES, worst_facing / DEGREES);
+	check(fabsf(f.view_yaw - entry_yaw / DEGREES - 30.0f) < 0.01f, "a 30 degree head yaw turns the eye cameras 30 degrees");
+	check(fabsf(f.view_pitch - entry_pitch / DEGREES - 10.0f) < 0.01f, "a 10 degree head pitch pitches them 10 degrees");
+	check(worst_facing == 0.0f && passed, "the facing never moves: the look takes no turn from the head");
+	check(passed, "the stick keeps the game's own turn and pitch (it swings the boom)");
+	check(halo_stereo_vignette() == 0.0f, "no comfort vignette for the stick's turn");
+	check(!halo_stereo_head_drives_look(0), "the head doesn't drive the look (the autolevel is the game's)");
+
+	/* the stick swings the camera (the facing, which the chase camera
+	follows): the head's turn stays on top of it */
+	facing_yaw += 20.0f * DEGREES;
+	f = loop(&facing_yaw, &facing_pitch, 70.0f, -5.0f, 0.0f);
+	check(fabsf(f.view_yaw - facing_yaw / DEGREES - 30.0f) < 0.01f, "the head's turn rides on the stick's swing");
+
+	/* back in first person with the head still: the view is the facing (the
+	head's 30 degrees in the seat aren't handed to the look), and the look's
+	pitch is the head's own again */
+	game_third_person = 0;
+	f = loop(&facing_yaw, &facing_pitch, 70.0f, -5.0f, 0.0f);
+	printf("  first person again: the view %.4f deg from the facing\n", degrees_apart(f.view_yaw, facing_yaw / DEGREES));
+	check(degrees_apart(f.view_yaw, facing_yaw / DEGREES) < 0.01f && fabsf(f.view_pitch + 5.0f) < 0.01f,
+		"leaving: the view starts at the facing, the pitch the head's");
+	f = loop(&facing_yaw, &facing_pitch, 72.0f, -5.0f, 0.0f);
+	check(f.look_turned && fabsf(facing_pitch / DEGREES + 5.0f) < 0.01f &&
+		degrees_apart(facing_yaw / DEGREES, f.view_yaw - 2.0f) < 0.01f,
+		"then the look follows the head from there");
+
+	/* snaps: the stick held over in the seat doesn't snap on leaving it */
+	restart("snap", 30.0, 120.0, 0);
+	facing_yaw = facing_pitch = 0.0f;
+	game_third_person = 1;
+	/* (the stick's read before the frame begins: the seat's first frame
+	still has the first person's look) */
+	loop(&facing_yaw, &facing_pitch, 0.0f, 0.0f, 0.0f);
+	loop(&facing_yaw, &facing_pitch, 0.0f, 0.0f, 1.0f);
+	loop(&facing_yaw, &facing_pitch, 0.0f, 0.0f, 1.0f);
+	game_third_person = 0;
+	for (frame = 0; frame < 10; frame++)
+		loop(&facing_yaw, &facing_pitch, 0.0f, 0.0f, 1.0f);
+	snapped = facing_yaw != 0.0f;
+	loop(&facing_yaw, &facing_pitch, 0.0f, 0.0f, 0.0f);
+	loop(&facing_yaw, &facing_pitch, 0.0f, 0.0f, 1.0f);
+	loop(&facing_yaw, &facing_pitch, 0.0f, 0.0f, 1.0f);
+	check(!snapped && fabsf(facing_yaw / DEGREES - 30.0f) < 0.01f,
+		"a stick held over from the seat doesn't snap; a fresh flick does");
+
+	/* display.stereo_vehicle_screen: the camera goes on the screen */
+	vehicle_screen = 1;
+	game_third_person = 1;
+	halo_stereo_frame_begin();
+	check(halo_stereo_film() && film_reason == 3 && halo_stereo_frame()->mode == HALO_STEREO_SCREEN,
+		"display.stereo_vehicle_screen: the third-person camera is the film");
+	vehicle_screen = 0;
+	game_third_person = 0;
+	for (frame = 0; frame < 2 * FILM_HOLD_FRAMES; frame++)
+		halo_stereo_frame_begin();
+}
+
 int main(void)
 {
 	pole_crossing();
@@ -637,6 +781,7 @@ int main(void)
 	vignette_binocular();
 	film_mapping_check();
 	film_hold_reason();
+	third_person();
 	if (failures)
 	{
 		printf("stereo head probe: %d failed\n", failures);

@@ -162,6 +162,12 @@ static const struct config_setting config_settings[] =
 		"\"wide\" shows the flat game's wider view, everything a quarter smaller\n"
 		"and the whole weapon in view. Cutscenes fill the screen either way.\n"
 		"Read at start." },
+	{ "display.stereo_vehicle_screen", _config_boolean, "false", "HALO_STEREO_VEHICLE_SCREEN", _environment_value,
+		_platform_ios,
+		"With display.stereo = \"head\": put third-person cameras (a vehicle's chase\n"
+		"camera) on the theater screen, as cutscenes are. Off (default), they stay\n"
+		"around you: your head looks around from the camera, and the sticks drive\n"
+		"and aim. Read at start." },
 	{ "input.turn", _config_string, "\"snap\"", "HALO_TURN", _environment_value, _platform_ios,
 		"With display.stereo = \"head\": how the right stick turns the view: \"snap\"\n"
 		"(default; a flick turns input.snap_angle at once), \"smooth\" (steadily, at\n"

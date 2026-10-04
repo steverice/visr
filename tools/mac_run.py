@@ -100,6 +100,7 @@ DEFAULTS = {
     "display.screen_depth_share": "0.3",
     "display.screen_convergence": "1.0",
     "display.screen_framing": '"band"',
+    "display.stereo_vehicle_screen": "false",
     "input.turn": '"snap"',
     "input.snap_angle": "30.0",
     "input.smooth_turn_speed": "120.0",
