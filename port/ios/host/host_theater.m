@@ -528,10 +528,14 @@ void host_theater_frame_end(void)
 	frame_drop();
 }
 
-/* the script fade's tint for a target, premultiplied: its color (display-
-encoded, as the game's; decoded for an sRGB target) times its intensity, and
-the intensity; zero without a fade */
-static simd_float4 fade_tint(const float *fade, uint32_t decode_srgb)
+/* the script fade's tint for a target, premultiplied, with the intensity in
+alpha; zero without a fade. Over the room (passthrough) it is the fade's
+color (display-encoded, as the game's; decoded for an sRGB target) times its
+intensity, blended over the room at that opacity. Over the dark surroundings
+it is opaque, the game's own blend of the color over black: the color times
+the intensity in display space, then decoded, so mid-fade the surroundings
+are as bright as the picture's black faded toward the same color */
+static simd_float4 fade_tint(const float *fade, uint32_t decode_srgb, BOOL over_dark)
 {
 	simd_float3 color;
 	float intensity;
@@ -540,12 +544,16 @@ static simd_float4 fade_tint(const float *fade, uint32_t decode_srgb)
 		return (simd_float4){ 0.0f, 0.0f, 0.0f, 0.0f };
 	intensity = fminf(fade[3], 1.0f);
 	color = simd_clamp((simd_float3){ fade[0], fade[1], fade[2] }, 0.0f, 1.0f);
+	if (over_dark)
+		color *= intensity;
 	if (decode_srgb)
 	{
 		for (int channel = 0; channel < 3; channel++)
 			color[channel] = color[channel] <= 0.04045f ? color[channel] / 12.92f :
 				powf((color[channel] + 0.055f) / 1.055f, 2.4f);
 	}
+	if (over_dark)
+		return (simd_float4){ color.x, color.y, color.z, intensity };
 	return (simd_float4){ color.x * intensity, color.y * intensity, color.z * intensity, intensity };
 }
 
@@ -602,7 +610,7 @@ static void present_pictures(id<MTLCommandQueue> queue, id<MTLTexture> left, id<
 					color.pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB;
 				/* the fade's color as the target takes it: the game's colors are
 				display-encoded, an sRGB target encodes what it's given */
-				simd_float4 tint = fade_tint(fade, decode_srgb);
+				simd_float4 tint = fade_tint(fade, decode_srgb, environment_dark);
 
 				pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, environment_dark ? 1.0 : 0.0);
 				pass.depthAttachment.texture = depth;
@@ -629,7 +637,7 @@ static void present_pictures(id<MTLCommandQueue> queue, id<MTLTexture> left, id<
 				[encoder setViewport:cp_view_texture_map_get_viewport(map)];
 				/* the room is the fade's color over it at the fade's opacity,
 				premultiplied; the dark surroundings are its color times its
-				intensity, opaque. Either is a surface a little behind the
+				intensity in display space, opaque (fade_tint). Either is a surface a little behind the
 				screen, with that depth: the Compositor shows nothing where the
 				depth is the clear's 0, or shows it only in patches */
 				if (tint.w > 0.0f)
