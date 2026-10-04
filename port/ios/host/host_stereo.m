@@ -73,8 +73,11 @@ static NSString *const shader_source =
 	/* the game's colors are display-encoded; an sRGB target encodes what it's
 	given. Its depth is reverse-Z already, for its near and far planes, which
 	the drawable's depth range is set to; scaled when the near plane had to
-	move out to the Compositor's (stereo_depth_range) */
-	"struct eye_uniforms { uint decode_srgb; float depth_scale; float brightness; };\n"
+	move out to the Compositor's (stereo_depth_range). Never 0: the Compositor
+	takes depth 0 for nothing there (black, or the room), and the sky, the
+	clear and what only transparent effects drew all reach it as 0, so they
+	take the depth of something half way to the far plane */
+	"struct eye_uniforms { uint decode_srgb; float depth_scale; float depth_floor; float brightness; };\n"
 	"fragment eye_pixel eye_fragment(picture_vertex in [[stage_in]], texture2d<float> picture [[texture(0)]],\n"
 	"	depth2d<float> depth [[texture(1)]], sampler linear [[sampler(0)]], sampler nearest [[sampler(1)]],\n"
 	"	constant eye_uniforms &u [[buffer(0)]])\n"
@@ -84,7 +87,7 @@ static NSString *const shader_source =
 	"		color = select(pow((color + 0.055) / 1.055, 2.4), color / 12.92, color <= 0.04045);\n"
 	"	eye_pixel out;\n"
 	"	out.color = float4(color * u.brightness, 1);\n"
-	"	out.depth = min(depth.sample(nearest, in.coordinate) * u.depth_scale, 1.0);\n"
+	"	out.depth = clamp(depth.sample(nearest, in.coordinate) * u.depth_scale, u.depth_floor, 1.0);\n"
 	"	return out;\n"
 	"}\n"
 	"struct hud_uniforms { float4x4 clip_from_hud; float2 half_size; uint decode_srgb; float brightness; };\n"
@@ -113,10 +116,16 @@ static NSString *const shader_source =
 	"	return float4(color.rgb * u.brightness, color.a);\n"
 	"}\n";
 
+/* the eye depth's floor when the game's planes aren't usable: the
+Compositor's default range is about 0.1 m to infinity, where this is about
+1 km away */
+#define STEREO_DEPTH_FLOOR_DEFAULT 0.0001f
+
 struct eye_uniforms
 {
 	uint32_t decode_srgb;
 	float depth_scale;
+	float depth_floor;
 	float brightness;
 };
 
@@ -187,8 +196,11 @@ host_theater_minimum_near; cp_drawable_set_depth_range aborts on a nearer one),
 it's the game's times n' (f - n) / (n (f - n')), and what's nearer than n'
 pins to 1. Without usable planes (none, or the far not beyond the near) the
 Compositor keeps its default range and the depth is written as far: the
-picture is reprojected as if distant. */
-static simd_float2 stereo_depth_range(float near_meters, float far_meters, float *scale)
+picture is reprojected as if distant. The floor is the depth half way to the
+far plane, n' / (f - n'): far enough to reproject as distant, and not 0, which
+the Compositor takes for nothing there; without usable planes, a small depth
+in the Compositor's default range. */
+static simd_float2 stereo_depth_range(float near_meters, float far_meters, float *scale, float *floor)
 {
 	float near = fmaxf(near_meters, host_theater_minimum_near());
 	static int reported;
@@ -199,9 +211,11 @@ static simd_float2 stereo_depth_range(float near_meters, float far_meters, float
 			host_logf(HOST_LOG_WARN, "stereo: depth range %.3f to %.1f m isn't usable; depth is written as far",
 				near_meters, far_meters);
 		*scale = 0.0f;
+		*floor = STEREO_DEPTH_FLOOR_DEFAULT;
 		return (simd_float2){ 0.0f, 0.0f };
 	}
 	*scale = near * (far_meters - near_meters) / (near_meters * (far_meters - near));
+	*floor = near / (far_meters - near);
 	return (simd_float2){ far_meters, near };
 }
 
@@ -432,8 +446,8 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 	{
 		id<MTLTexture> colors[2] = { left, right }, depths[2] = { left_depth, right_depth };
 		size_t count = host_theater_drawable_count();
-		float depth_scale;
-		simd_float2 depth_range = stereo_depth_range(near_meters, far_meters, &depth_scale);
+		float depth_scale, depth_floor;
+		simd_float2 depth_range = stereo_depth_range(near_meters, far_meters, &depth_scale, &depth_floor);
 		static unsigned long presents;
 
 		if (presents++ == 0)
@@ -471,7 +485,7 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 				int eye = view_index == 0 ? 0 : 1;
 				uint32_t decode_srgb = color.pixelFormat == MTLPixelFormatBGRA8Unorm_sRGB ||
 					color.pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB;
-				struct eye_uniforms eye_uniforms = { decode_srgb, depth_scale, brightness };
+				struct eye_uniforms eye_uniforms = { decode_srgb, depth_scale, depth_floor, brightness };
 
 				pass.colorAttachments[0].texture = color;
 				pass.colorAttachments[0].slice = slice;
