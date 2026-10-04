@@ -10,10 +10,9 @@ The Home Screen name is **VISR**. The portable ILP32 runtime lives in
 The Android app, Gradle/NDK targets, Java activities, and Android host services
 have been removed from this branch.
 
-The icon adapts the user's supplied
-Master Chief artwork into an opaque square; iOS applies its rounded icon mask.
-The source is `Icon-Artwork.png`, with device sizes in
-`Assets.xcassets/AppIcon.appiconset`. See [icon notes](ICON.md) for the prompt.
+The icon is original vector art drawn by `tools/visr_icon.py`, which renders
+every size into `Assets.xcassets`, `Assets-tvOS.xcassets` and
+`Assets-visionOS.xcassets`. See [icon notes](ICON.md).
 
 ## Build
 
