@@ -1145,7 +1145,7 @@ void set_window_camera_values(
 					observer->field_of_view),
 				1.0f);
 		/* port: the cutscene screen shows the letterbox's inside, 640x360 of 640x480 */
-		if (halo_stereo_film())
+		if (halo_stereo_film() && halo_cinematic_screen())
 		{
 			window->rasterizer_camera.vertical_field_of_view =
 				2.0f * arctangent(

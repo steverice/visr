@@ -10,7 +10,12 @@ eyes alone, through the theater screen as a window: the look stays the
 stick's, as in mono.
 
 Cutscenes, in any stereo mode, are a 3D film on the 16:9 screen while the
-letterbox is in (halo_stereo_film). The film is not the window's true 1:1:
+letterbox is in (halo_stereo_film), and so, for comfort, are moments with a
+scripted camera and no letterbox (the script's camera_control), and a
+third-person camera (third_person_on_screen): a camera the head doesn't
+steer is easier to watch on a screen. Only the letterbox narrows the view to
+its inside (main.c) and brings bars in for titles (cinematics.c); the others
+keep the game's 16:9 framing. The film is not the window's true 1:1:
 the cinematic camera's own field of view, framed on the letterbox's inside
 (main.c's set_window_camera_values), fills the screen, and the head neither
 steers it nor moves its eyes (film_frusta below has the mapping). HEAD mode
@@ -85,6 +90,19 @@ static float z_near_world, z_far_world;
 world units */
 static int film_frame, film_last;
 static float film_half_width;
+/* a third-person camera (a vehicle seat's) goes on the screen as the film
+does, the stick still driving it as in mono; the one switch for a later
+setting */
+static int third_person_on_screen = 1;
+/* why the view is on the screen: none, the letterbox, a scripted camera, a
+third-person camera; logged as it changes */
+static const char *const film_reasons[] = {"none", "a cutscene", "a scripted camera", "a third-person camera"};
+static int film_reason, film_reason_logged;
+/* the view leaves the screen only once nothing has put it there for this
+many frames: a10 drops its letterbox for two ticks between two cutscenes,
+which would otherwise flip the view to the full view and back */
+#define FILM_HOLD_FRAMES 10
+static int film_hold;
 
 static void film_frusta(float vertical_tangent);
 
@@ -107,10 +125,11 @@ static void film_begin(float viewer_separation, float half_width)
 	}
 	film_frame = 1;
 	film_frusta(FILM_DEFAULT_VERTICAL_TANGENT);
-	if (!film_last)
-		platform_log("stereo: a cutscene, as a 3D film on the screen: eyes %.1f mm apart (of the viewer's %.1f mm), "
-			"the screen %.2f m wide", film_separation * METERS_PER_UNIT * 1000.0f,
+	if (!film_last || film_reason != film_reason_logged)
+		platform_log("stereo: %s, as a 3D film on the screen: eyes %.1f mm apart (of the viewer's %.1f mm), "
+			"the screen %.2f m wide", film_reasons[film_reason], film_separation * METERS_PER_UNIT * 1000.0f,
 			viewer_separation * METERS_PER_UNIT * 1000.0f, 2.0f * film_half_width * METERS_PER_UNIT);
+	film_reason_logged = film_reason;
 }
 
 /* the mode a display.stereo string names; sets *recognized to 0 for an unknown string */
@@ -146,7 +165,22 @@ void halo_stereo_frame_begin(void)
 	memset(&stereo_frame, 0, sizeof(stereo_frame));
 	stereo_frame.mode = stereo_mode;
 	stereo_layer = HALO_STEREO_LAYER_MONO;
-	film = stereo_mode != HALO_STEREO_OFF && halo_cinematic_screen();
+	film_reason = 0;
+	if (stereo_mode != HALO_STEREO_OFF) {
+		if (halo_cinematic_screen())
+			film_reason = 1;
+		else if (halo_scripted_camera())
+			film_reason = 2;
+		else if (third_person_on_screen && halo_third_person_camera())
+			film_reason = 3;
+	}
+	if (film_reason != 0)
+		film_hold = FILM_HOLD_FRAMES;
+	else if (film_hold > 0) {
+		film_hold--;
+		film_reason = film_reason_logged;
+	}
+	film = film_reason != 0;
 	film_last = film_frame;
 	film_frame = 0;
 	/* the film's on the screen: in HEAD mode the frame asks for SCREEN eyes */
@@ -215,7 +249,7 @@ with each other whatever the head does, and converged at the distance C
 where the camera's view is as wide as the screen at the world's scale:
 C = w / T, for the screen's half width w (world units) and the film's
 horizontal half tangent T (16:9 at the camera's vertical tangent, which
-main.c narrows to the letterbox's inside). An eye x to the side keeps its
+main.c narrows to the letterbox's inside during a cutscene). An eye x to the side keeps its
 frustum's edges on the center frustum's at that distance:
 	left = T (1 + x / w)   right = T (1 - x / w)   up = down = vertical
 So the film fills the screen exactly as the cinematic camera frames it, what

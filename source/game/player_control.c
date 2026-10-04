@@ -451,6 +451,16 @@ static boolean player_control_camera_control_is_active(
 		!game_time_get_paused());
 }
 
+/* port: whether the script has taken the camera from the player
+(player_camera_control false), for stereo's cutscene screen
+(port/linux/game/cinematic_screen.c) */
+boolean player_control_camera_control_disabled(
+	void)
+{
+	return player_control_globals &&
+		TEST_FLAG(player_control_globals->flags, _player_control_camera_control_disabled_bit);
+}
+
 boolean scripted_player_control_set_camera_control(
 	boolean camera_control)
 {

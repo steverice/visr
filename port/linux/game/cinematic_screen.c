@@ -3,7 +3,8 @@ CINEMATIC_SCREEN.C
 
 What stereo's cutscene screen reads from the game (port/linux/src/halo_stereo.h):
 whether the letterbox is in, which makes a cutscene the 3D film on a 16:9
-screen (stereo.c), and the script fade, which tints the immersive space
+screen (stereo.c); whether the camera is scripted or third person, which
+put the view on the screen too; and the script fade, which tints the immersive space
 around the screen (port/ios/host/gpu_metal.m).
 
 The letterbox, not cinematic_in_progress, marks the cutscene: the bars are
@@ -14,7 +15,9 @@ picture.
 */
 
 #include "cseries.h"
+#include "camera/director.h"
 #include "cutscene/cinematics.h"
+#include "game/players.h"
 #include "effects/player_effects.h"
 #include "game/game.h"
 #include "main/console.h"
@@ -24,6 +27,27 @@ picture.
 int halo_cinematic_screen(void)
 {
 	return cinematic_globals && cinematic_globals->show_letterbox;
+}
+
+/* A camera the script drives: the script has taken the camera from the
+player (player_camera_control false: a first-person moment the player can't
+look around in, as a10's Chief climbing out of the cryo pod), or it runs a
+scripted camera (camera_control, director_script_camera). The game's own
+flags, rather than whether the player's input is off: input is also off
+where the player still looks through their own eyes (a10's "use the right
+stick to look around" in the pod, with camera control on). */
+int halo_scripted_camera(void)
+{
+	return player_control_camera_control_disabled() ||
+		(director_camera_scripted && *director_camera_scripted) ||
+		director_peek_perspective(0) == _director_perspective_scripted;
+}
+
+/* the director's third-person camera (following_camera_update): a vehicle
+seat whose camera isn't first person */
+int halo_third_person_camera(void)
+{
+	return director_peek_perspective(0) == _director_perspective_third_person;
 }
 
 /* The intensity player_effect_get_screen_flash gives the script fade (a
@@ -59,3 +83,4 @@ void halo_screen_fade(float rgb_intensity[4])
 	rgb_intensity[2] = color.blue;
 	rgb_intensity[3] = PIN(intensity, 0.0f, 1.0f);
 }
+

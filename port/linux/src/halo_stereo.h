@@ -68,14 +68,20 @@ void halo_stereo_depth_range(float *z_near, float *z_far);
 /* The cutscene screen. In stereo, while the letterbox is in, the game plays
 as a 3D film on a 16:9 screen (stereo.c): the cinematic camera rendered
 twice, framed on the letterbox's inside with no bars except while a title
-shows. */
-/* 1 when this frame is the 3D film: stereo with eyes, and the letterbox in */
+shows. A scripted camera without the letterbox, and a third-person camera,
+go on the screen the same way, at the game's own 16:9 framing. */
+/* 1 when this frame is the 3D film: stereo with eyes, and the letterbox in,
+the camera scripted or (by default) third person */
 int halo_stereo_film(void);
 /* the film's frusta, from the camera's own vertical tangent (render.c's eye
 loop, before it reads the eyes); nothing unless this frame is the film */
 void halo_stereo_film_frusta(float vertical_tangent);
-/* port/linux/game/cinematic_screen.c: 1 while the letterbox is in */
+/* port/linux/game/cinematic_screen.c: 1 while the letterbox is in; while
+the camera is scripted (the script's camera_control); while it's third
+person */
 int halo_cinematic_screen(void);
+int halo_scripted_camera(void);
+int halo_third_person_camera(void);
 /* the script fade (fade_in, fade_out; never a screen flash) with the tick
 fraction: its RGB and intensity, zero intensity if none */
 void halo_screen_fade(float rgb_intensity[4]);

@@ -377,7 +377,7 @@ void cinematic_render(
 			static boolean bars_shown = FALSE;
 			void platform_log(char const *format, ...);
 
-			bar_amount = halo_stereo_film() ? halo_cinematic_title_bars() : 0.0f;
+			bar_amount = halo_stereo_film() && halo_cinematic_screen() ? halo_cinematic_title_bars() : 0.0f;
 			/* once each time a title brings them in, and as they leave */
 			if ((bar_amount > 0.0f) != bars_shown)
 			{
