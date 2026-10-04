@@ -1,6 +1,8 @@
-<img src="port/ios/Assets.xcassets/AppIcon.appiconset/AppIcon-180.png" width="96" alt="Halo: CE app icon">
+<img src="port/ios/Assets.xcassets/AppIcon.appiconset/AppIcon-180.png" width="96" alt="VISR app icon">
 
-# Halo: CE for iPhone and iPad
+# VISR for iPhone and iPad
+
+VISR: An unofficial Halo: Combat Evolved experience on Apple Vision Pro.
 
 [![iOS build](https://github.com/NicholasDominici/halo-ce-ios/actions/workflows/ios.yml/badge.svg?branch=ios-port)](https://github.com/NicholasDominici/halo-ce-ios/actions/workflows/ios.yml)
 
@@ -8,7 +10,7 @@ Halo: Combat Evolved running natively on iPhone and iPad. It's a port of the
 Halo decompilation projects (see [credits](#credits)), compiled for ARM64 with
 OpenGL ES 3 graphics, SDL audio, and on-screen touch controls.
 
-You'll need to provide your own Halo: CE XISO, which the app imports right on
+You'll need to provide your own Halo: Combat Evolved XISO, which the app imports right on
 your device.
 
 I've been testing it on an iPhone 17 Pro Max and an iPad Pro 13-inch (M5).
@@ -21,7 +23,7 @@ please [open an issue](#reporting-bugs).
 ## What you need
 
 - An iPhone or iPad on iOS 16 or newer
-- Your own Halo: CE XISO, from the original Xbox release (NTSC-US or PAL)
+- Your own Halo: Combat Evolved XISO, from the original Xbox release (NTSC-US or PAL)
 - An Apple account to sign the app
 
 The importer checks the map build number and accepts `01.10.12.2276` (NTSC-US)
@@ -38,22 +40,22 @@ and `01.01.14.2342` (PAL).
    [AltStore](https://faq.altstore.io/) and [Sideloadly](https://sideloadly.io/faq)
    both have guides. You can also build and sign it yourself with Xcode
    ([see below](#building-from-source)).
-3. Open **Halo: CE**, tap **Choose Halo XISO**, and pick your disc image in Files.
+3. Open **VISR**, tap **Choose Halo XISO**, and pick your disc image in Files.
 
 The app checks the image, pulls the maps out of it (there's a progress bar), and
 starts the game when it's done. After that, it opens straight into Halo.
 
 ![The XISO import screen](docs/ios/import.jpg)
 
-You can also drop your `.iso` or `.xiso` into the Halo: CE folder yourself
-(Files app > On My iPhone > Halo: CE, or your iPhone's Files tab in Finder) and
+You can also drop your `.iso` or `.xiso` into the VISR folder yourself
+(Files app > On My iPhone > VISR, or your iPhone's Files tab in Finder) and
 then open the app. It'll find the image and import it automatically. Once
 that's done, you can delete the ISO from the folder to free up the space.
 
 ### Updating
 
 Sign new versions with the same bundle ID and your saves carry over. They live
-in the `save` folder inside Halo: CE's folder in Files, so back that up before
+in the `save` folder inside VISR's folder in Files, so back that up before
 you delete the app.
 
 ## Controls
@@ -128,7 +130,7 @@ memory, and runs it straight out of the signed app.
 
 [Open an issue](https://github.com/NicholasDominici/halo-ce-ios/issues) with
 your device, iOS version, the app version, and what you were doing when it went
-wrong. Logs help a ton: `ios-runtime.log` and `debug.txt` are in the Halo: CE
+wrong. Logs help a ton: `ios-runtime.log` and `debug.txt` are in the VISR
 folder in Files. Give them a quick skim for anything personal before you post
 them.
 

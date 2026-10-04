@@ -1,11 +1,11 @@
-# Build and install Halo: CE on iPhone, iPad, Apple TV and Apple Vision Pro
+# Build and install VISR on iPhone, iPad, Apple TV and Apple Vision Pro
 
 This directory builds a native ARM64 iOS app around the existing game's ILP32
 runtime. It uses SDL3, OpenGL ES 3 or Metal, UIKit touch controls, and the user's original
 Xbox map files. The game files are separate from the application and are never
 included in source control.
 
-The Home Screen name is **Halo: CE**. The portable ILP32 runtime lives in
+The Home Screen name is **VISR**. The portable ILP32 runtime lives in
 `port/runtime`; UIKit, Darwin, touch, audio, and the native loader live here.
 The Android app, Gradle/NDK targets, Java activities, and Android host services
 have been removed from this branch.
@@ -69,7 +69,7 @@ The cache validator accepts these exact Xbox v5 cache builds on iOS:
 
 ### Import on the device
 
-1. Sign/install the IPA with your own account, then open **Halo: CE**.
+1. Sign/install the IPA with your own account, then open **VISR**.
 2. Tap **Choose Halo XISO** and select your `.iso` or `.xiso` in Files (On My
    iPhone/iPad, iCloud Drive, or another Files provider). Compressed ZIP/7z
    archives and PC/MCC disc images are not supported.
@@ -83,8 +83,8 @@ Leave enough local storage for its maps as well as any local XISO copy.
 Nothing is fetched from a game-download service, and the source image is never
 modified or deleted. After import, subsequent launches use the extracted maps.
 
-You can also copy **one** `.iso` or `.xiso` directly into Halo: CE's Documents
-folder using Finder's Files tab or Files > On My iPhone/iPad > Halo: CE, then
+You can also copy **one** `.iso` or `.xiso` directly into VISR's Documents
+folder using Finder's Files tab or Files > On My iPhone/iPad > VISR, then
 launch the app. It detects and imports that image when game data is missing.
 If several images are present, choose one with the picker. After a successful
 import, deleting the extra XISO copy from the app folder can reclaim storage.
