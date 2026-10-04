@@ -97,9 +97,10 @@ go on the screen the same way, at the game's own 16:9 framing. */
 /* 1 when this frame is the 3D film: stereo with eyes, and the letterbox in,
 the camera scripted or (by default) third person */
 int halo_stereo_film(void);
-/* the film's frusta, from the camera's own vertical tangent (render.c's eye
-loop, before it reads the eyes); nothing unless this frame is the film */
-void halo_stereo_film_frusta(float vertical_tangent);
+/* the film's frusta from the camera's vertical half tangent, after
+set_window_camera_values (render.c's eye loop, before it reads the eyes);
+nothing unless this frame is the film. SCREEN gameplay is to share it */
+void halo_stereo_screen_frusta(float vertical_tangent);
 /* 1 when this frame is the film for a cutscene: the letterbox, held
 through the film's hold after it drops. The 16:9 narrowing (main.c) and the
 title bars (cinematics.c) follow this, not the letterbox flag itself, so the
@@ -114,7 +115,7 @@ fraction (render.c sets it before the eyes; zero until then), which the
 host's room tint takes as well, so the two move in step */
 void halo_stereo_set_fade(const float rgb_intensity[4]);
 void halo_stereo_fade(float rgb_intensity[4]);
-/* The film's and the 3D TV's shared mapping (stereo.c has the math): from
+/* The film's and the 3D TV's one mapping (stereo.c has the math): from
 the depth share (infinity's parallax as a share of the viewer's eye
 separation), the convergence (meters ahead of the camera on the screen's
 surface), the viewer's eye separation and the screen's half width (one unit

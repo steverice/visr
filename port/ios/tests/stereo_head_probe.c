@@ -72,6 +72,9 @@ void platform_log(const char *format, ...)
 }
 int halo_cinematic_screen(void) { return game_letterbox; }
 int halo_scripted_camera(void) { return game_scripted_camera; }
+int platform_fixed_timestep(void) { return 1; }
+unsigned long platform_clock_frames(void) { return 0; }
+double halo_frame_trace_milliseconds(void) { return 0.0; }
 int halo_third_person_camera(void) { return 0; }
 void halo_screen_commit_stereo_scale(void) {}
 
@@ -496,7 +499,7 @@ static void on_screen(const struct halo_stereo_eye *e, float w, float aspect, co
 	at[1] = -w / aspect + 2.0f * (w / aspect) * (ty + e->down) / (e->up + e->down);
 }
 
-static void film_mapping(void)
+static void film_mapping_check(void)
 {
 	const float share = 0.25f, convergence = 1.75f, separation = 0.064f / 3.048f, w = 2.309f / 3.048f;
 	const float vertical = 0.335f, aspect = 16.0f / 9.0f, horizontal = vertical * aspect;
@@ -623,7 +626,7 @@ int main(void)
 	turning();
 	vignette_easing();
 	vignette_binocular();
-	film_mapping();
+	film_mapping_check();
 	film_hold_reason();
 	if (failures)
 	{

@@ -98,6 +98,12 @@ run('xcrun', 'clang', '-O2', '-fsanitize=address,undefined', '-DHALO_IOS=1', '-I
     'port/ios/tests/stereo_head_probe.c', 'port/ios/host/host_stereo_head.c',
     '-o', BUILD/'stereo-head-probe')
 run(BUILD/'stereo-head-probe')
+# the film's and SCREEN mode's 3D TV: the one mapping and its ease (the probe includes
+# port/linux/game/stereo.c)
+run('xcrun', 'clang', '-O2', '-fsanitize=address,undefined', '-DHALO_IOS=1', '-Iport/linux/src', '-Iport/ios/host',
+    'port/ios/tests/stereo_screen_probe.c', 'port/ios/host/host_stereo_head.c',
+    '-o', BUILD/'stereo-screen-probe')
+run(BUILD/'stereo-screen-probe')
 # the head-tracked presenter's shaders, compiled from its source string at run time: compile
 # them here, as the visionOS build's preprocessor leaves them (host_stereo_vignette.h's mask is
 # macro text, which a math macro could otherwise rewrite unseen)

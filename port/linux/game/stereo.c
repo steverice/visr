@@ -7,7 +7,8 @@ mode the host's Compositor frame supplies the eyes and the head's turn
 (port/ios/host/host_stereo.m), which drives the player's look: the head turns
 the view, the right stick turns the body. In SCREEN mode it supplies the
 eyes alone, through the theater screen as a window: the look stays the
-stick's, as in mono.
+stick's, as in mono, and the render moves each eye's near and far planes out
+to the screen.
 
 Cutscenes, in any stereo mode, are a 3D film on the 16:9 screen while the
 letterbox is in (halo_stereo_film), and so, for comfort, are moments with a
@@ -17,17 +18,21 @@ steer is easier to watch on a screen. Only the letterbox narrows the view to
 its inside (main.c) and brings bars in for titles (cinematics.c); the others
 keep the game's 16:9 framing. Both follow the held film (halo_stereo_film_
 letterbox), not the letterbox flag itself, so the framing stays put through
-the film's hold. The film is not the window's true 1:1: the cinematic
-camera's own field of view, framed on the letterbox's inside (main.c's
-set_window_camera_values), fills the screen, and the head neither steers it
-nor moves its eyes. Its depth is the mapping the film shares with SCREEN
-gameplay (halo_stereo_tv_eyes): how far behind the screen infinity sits and
-what distance lies on the screen's surface, display.film_depth_share and
-display.film_convergence. HEAD mode
-asks the host for SCREEN eyes meanwhile, so the frame is SCREEN for
-everyone downstream: the host draws it on the screen, the head's turn
-stays out of the look and the camera, and the render's SCREEN plane shift
-leaves the film's eyes, which sit at the camera, at the camera's planes.
+the film's hold. HEAD mode asks the host for SCREEN eyes meanwhile, so the
+frame is SCREEN for everyone downstream: the host draws it on the screen,
+and the head's turn stays out of the look and the camera.
+
+The film is a 3D TV: the cinematic camera rendered twice, the eyes a short
+way apart along its right at the camera itself (so the render keeps its
+planes), with frusta skewed so a chosen distance lies on the screen's
+surface. One mapping sets its depth (screen_mapping_eyes, the stereo spec's
+"One mapping for the film and the 3D TV"), which SCREEN gameplay is to share
+with its own values: how far behind the screen infinity sits, as a share of
+the viewer's eye separation (display.film_depth_share), and the
+convergence, the distance ahead of the camera that lies on the surface
+(display.film_convergence). From the host's eyes the film takes only the
+viewer's eye separation and the screen's half width; the head neither
+steers it nor moves its eyes.
 */
 
 #include <math.h>
@@ -44,6 +49,11 @@ int config_boolean(const char *name);
    d3d8_device.c declares it the same way */
 void platform_video_drawable_size(int *width, int *height);
 void platform_log(const char *format, ...);
+/* port/linux/src/xbox_kernel.c: the frame clock, for the mapping's ease
+(with debug.fixed_timestep, presented frames at 1/30 s each) */
+int platform_fixed_timestep(void);
+unsigned long platform_clock_frames(void);
+double halo_frame_trace_milliseconds(void);
 /* port/linux/src/d3d8_device.c */
 void halo_screen_commit_stereo_scale(void);
 #ifdef HALO_IOS
@@ -58,27 +68,46 @@ void host_stereo_frame(struct halo_stereo_frame *frame);
 
 /* one world unit in meters */
 #define METERS_PER_UNIT 3.048f
-/* the ranges of the film's mapping (halo_stereo_tv_eyes; its defaults,
-0.25 and 1.75 m, are port_config.c's): infinity this share of the viewer's
-eye separation behind the screen (display.film_depth_share), never wider
-than the eyes, and this many meters ahead of the camera on the screen's
-surface (display.film_convergence) */
+/* the mappings (screen_mapping_eyes): infinity's depth behind the screen as
+a share of the viewer's eye separation, and the convergence, the meters
+ahead of the camera on the screen's surface. The film's are settings
+(display.film_depth_share, display.film_convergence), whose defaults in
+port_config.c are these; SCREEN gameplay's are the spec's; the
+first-person weapon's are fixed, its
+convergence the nearest point of its arms and weapon on the surface: Task
+7g measured the animation nodes in view along the camera's forward, 0.233 m
+for the assault rifle and 0.315 m for the sniper rifle (the pistol wasn't
+measured), less 0.05 m for the geometry around the nodes, rounded down */
+#define FILM_DEPTH_SHARE 0.25f
+#define FILM_CONVERGENCE_METERS 1.75f
+#define SCREEN_DEPTH_SHARE 0.3f
+#define SCREEN_CONVERGENCE_METERS 1.0f
+#define FIRST_PERSON_DEPTH_SHARE 0.05f
+#define FIRST_PERSON_CONVERGENCE_METERS 0.15f
+/* the settings' ranges: infinity never splits wider than the eyes */
 #define DEPTH_SHARE_MIN 0.05f
 #define DEPTH_SHARE_MAX 0.9f
 #define CONVERGENCE_MIN 0.3f
 #define CONVERGENCE_MAX 10.0f
+/* the head's offset moves gameplay's eyes by this times the stereo's own
+scale (the eyes' separation over the viewer's), each axis clamped to this
+many meters */
+#define SCREEN_LEAN_SCALE 1.0f
+#define SCREEN_LEAN_LIMIT_METERS 0.25f
+/* a change of mapping (film to gameplay or back) eases over this long */
+#define MAPPING_EASE_SECONDS 0.3f
 /* the eyes' separation when the views don't give one (the simulator has
-one view), in meters */
+one view, the side-by-side view none), in meters */
 #define FILM_DEFAULT_SEPARATION 0.064f
 /* the film's shape: the letterbox's inside, 640x360 */
 #define FILM_ASPECT (16.0f / 9.0f)
 /* the screen's half width in meters where there is no screen (side by
 side): the theater's default, 60 degrees across at 4 m */
 #define FILM_DEFAULT_HALF_WIDTH 2.309f
-/* the default 70-degree camera's vertical half tangent in the film:
-0.75 * 0.75 * 0.85 * tan(35 degrees). A placeholder for the frame's begin
-only: render.c's eye loop gives the camera's own tangent
-(halo_stereo_film_frusta) before anything reads the eyes */
+/* the default 70-degree camera's vertical half tangent on the screen,
+narrowed to 16:9: 0.75 * 0.75 * 0.85 * tan(35 degrees). A placeholder for
+the frame's begin only: render.c's eye loop gives the camera's own tangent
+(halo_stereo_screen_frusta) before anything reads the eyes */
 #define FILM_DEFAULT_VERTICAL_TANGENT 0.335f
 
 static struct halo_stereo_frame stereo_frame;
@@ -130,13 +159,38 @@ before the next */
 
 static float z_near_world, z_far_world;
 
-/* this frame (and the last) is the 3D film; the viewer's eye separation
-and the screen's half width, in world units */
+/* One mapping (the stereo spec's "One mapping for the film and the 3D
+TV"): the film's, SCREEN gameplay's or the first-person weapon's */
+struct screen_mapping
+{
+	float depth_share;         /* sigma: infinity's on-screen parallax over the viewer's separation */
+	float convergence_meters;  /* C: the game-world distance that lies on the screen's surface */
+	float lean;                /* the lean's scale: 0, the head's offset doesn't move the eyes; SCREEN_LEAN_SCALE */
+};
+/* a mapping on its way from one to another over MAPPING_EASE_SECONDS
+(screen_mapping_ease): now is this frame's */
+struct screen_mapping_easing
+{
+	struct screen_mapping from, to, now;
+	float elapsed;             /* seconds since the target changed */
+};
+
+/* this frame (and the last) is the 3D film */
 static int film_frame, film_last;
-static float film_viewer_separation, film_half_width;
-/* the film's mapping, read once (display.film_depth_share,
-display.film_convergence in meters); negative until read */
-static float film_depth_share = -1.0f, film_convergence;
+/* what this frame's mapping takes: the viewer's eye separation and the
+screen's half width (meters), the head's offset from the screen's axis
+(meters, right and up, not yet clamped) and the picture's vertical half
+tangent (halo_stereo_screen_frusta) */
+static float screen_viewer_separation, screen_half_width, screen_head_offset[2], screen_vertical_tangent;
+/* the mapping in effect, easing toward the frame's; whether the last frame
+was on the screen at all (a frame that wasn't takes its mapping at once) */
+static struct screen_mapping_easing mapping_easing;
+static int mapping_on_screen_last;
+/* the frame clock's last reading, in seconds (negative: none yet) */
+static double mapping_clock = -1.0;
+/* the film's mapping, read once (mapping_settings); its depth share is
+negative until read */
+static struct screen_mapping film_mapping = { -1.0f, 0.0f, 0.0f };
 /* the script fade the eyes draw and the room takes this frame
 (halo_stereo_set_fade) */
 static float frame_fade[4];
@@ -154,8 +208,6 @@ ticks between two cutscenes (under a white fade), which would otherwise flip
 the view to the full view and back */
 #define FILM_HOLD_FRAMES 10
 static int film_hold;
-
-static void film_frusta(float vertical_tangent);
 
 /* a setting clamped to its range, logged once if it wasn't in it */
 static float clamped_setting(const char *name, float value, float minimum, float maximum, const char *unit)
@@ -197,33 +249,129 @@ static void turn_settings(void)
 }
 
 /* reads the film's mapping settings, once */
-static void film_settings(void)
+static void mapping_settings(void)
 {
-	if (film_depth_share >= 0.0f)
+	if (film_mapping.depth_share >= 0.0f)
 		return;
-	film_depth_share = clamped_setting("display.film_depth_share", (float)config_real("display.film_depth_share"),
-		DEPTH_SHARE_MIN, DEPTH_SHARE_MAX, "of the eye separation");
-	film_convergence = clamped_setting("display.film_convergence", (float)config_real("display.film_convergence"),
-		CONVERGENCE_MIN, CONVERGENCE_MAX, "meters");
+	film_mapping.depth_share = clamped_setting("display.film_depth_share",
+		(float)config_real("display.film_depth_share"), DEPTH_SHARE_MIN, DEPTH_SHARE_MAX, "of the eye separation");
+	film_mapping.convergence_meters = clamped_setting("display.film_convergence",
+		(float)config_real("display.film_convergence"), CONVERGENCE_MIN, CONVERGENCE_MAX, "meters");
+	film_mapping.lean = 0.0f;
+}
+
+/* the frame clock's time since its last reading, in seconds, at most a
+tenth of a second (a load or a pause doesn't run a whole ease in one frame) */
+static float mapping_time_delta(void)
+{
+	double now = platform_fixed_timestep() ? (double)platform_clock_frames() / 30.0 :
+		halo_frame_trace_milliseconds() / 1000.0;
+	double delta = mapping_clock < 0.0 ? 0.0 : now - mapping_clock;
+
+	mapping_clock = now;
+	return (float)fmax(0.0, fmin(0.1, delta));
+}
+
+/* the mapping a mapping's ease takes this frame: linear on the screen,
+since sigma and sigma C (and sigma times the lean's scale) move linearly, so
+every point's parallax moves at a steady rate, the same at any frame rate,
+and stops at the target after MAPPING_EASE_SECONDS. A new target starts
+over from where the mapping is now */
+static void screen_mapping_ease(struct screen_mapping_easing *easing, const struct screen_mapping *target,
+	float time_delta)
+{
+	const struct screen_mapping *from = &easing->from, *to = &easing->to;
+	float t, depth_share;
+
+	if (target->depth_share != to->depth_share || target->convergence_meters != to->convergence_meters ||
+		target->lean != to->lean) {
+		easing->from = easing->now;
+		easing->to = *target;
+		easing->elapsed = 0.0f;
+	}
+	easing->elapsed = fminf(MAPPING_EASE_SECONDS, easing->elapsed + fmaxf(0.0f, time_delta));
+	t = easing->elapsed / MAPPING_EASE_SECONDS;
+	/* (frame times summed in floats fall a hair short of the whole) */
+	if (t >= 0.9999f) {
+		easing->now = *to;
+		return;
+	}
+	depth_share = from->depth_share + (to->depth_share - from->depth_share) * t;
+	easing->now.depth_share = depth_share;
+	easing->now.convergence_meters = (from->depth_share * from->convergence_meters +
+		(to->depth_share * to->convergence_meters - from->depth_share * from->convergence_meters) * t) / depth_share;
+	easing->now.lean = (from->depth_share * from->lean +
+		(to->depth_share * to->lean - from->depth_share * from->lean) * t) / depth_share;
+}
+
+/* a mapping's eyes (halo_stereo_tv_eyes has the math) for a picture of
+vertical half tangent V, the viewer's eye separation e and the screen's half
+width w (meters), with the head's offset h (meters, right and up; NULL for
+none): the lean moves each eye by clamp(h, +-SCREEN_LEAN_LIMIT_METERS) times
+the mapping's lean scale times s / e, the stereo's own scale, so what lies
+at C stays put on the screen, infinity moves with the head by sigma h, and
+nearer things against it */
+static void screen_mapping_eyes(const struct screen_mapping *mapping, float vertical_tangent,
+	float viewer_separation_meters, float screen_half_width_meters, const float head_offset_meters[2],
+	struct halo_stereo_eye eyes[2])
+{
+	float lean[2] = { 0.0f, 0.0f };
+
+	if (head_offset_meters && mapping->lean != 0.0f && viewer_separation_meters > 0.0f &&
+		screen_half_width_meters > 0.0f) {
+		float separation = mapping->depth_share * viewer_separation_meters * vertical_tangent * FILM_ASPECT *
+			(mapping->convergence_meters / METERS_PER_UNIT) / screen_half_width_meters;
+		int axis;
+
+		for (axis = 0; axis < 2; axis++) {
+			float h = fmaxf(-SCREEN_LEAN_LIMIT_METERS, fminf(SCREEN_LEAN_LIMIT_METERS, head_offset_meters[axis]));
+
+			lean[axis] = h * mapping->lean * separation / viewer_separation_meters;
+		}
+	}
+	halo_stereo_tv_eyes(mapping->depth_share, mapping->convergence_meters, viewer_separation_meters,
+		screen_half_width_meters, vertical_tangent, lean, eyes);
+}
+
+/* the frame's eyes at a vertical half tangent, by the mapping in effect */
+static void screen_frusta(float vertical_tangent)
+{
+	screen_vertical_tangent = vertical_tangent;
+	screen_mapping_eyes(&mapping_easing.now, vertical_tangent, screen_viewer_separation, screen_half_width,
+		screen_head_offset, stereo_frame.eyes);
 }
 
 /* the film's eyes for this frame, from the viewer's separation and the
-screen's half width (world units): level, at the camera, by the film's
-mapping; the camera's own tangent sets them at the render
-(halo_stereo_film_frusta), the default camera's until then */
-static void film_begin(float viewer_separation, float half_width)
+screen's half width (meters): level, at the camera, by the film's mapping
+(eased from the last frame's if that was on the screen too, which for now
+is always the same). The camera's own tangent sets them at the render
+(halo_stereo_screen_frusta), the default camera's until then */
+static void screen_begin(float viewer_separation, float half_width, float time_delta)
 {
-	film_settings();
-	film_viewer_separation = viewer_separation;
-	film_half_width = half_width > 0.0f ? half_width : FILM_DEFAULT_HALF_WIDTH / METERS_PER_UNIT;
+	const struct screen_mapping *target = &film_mapping;
+	struct halo_stereo_eye target_eyes[2];
+
+	screen_viewer_separation = viewer_separation > 0.001f ? viewer_separation : FILM_DEFAULT_SEPARATION;
+	screen_half_width = half_width > 0.0f ? half_width : FILM_DEFAULT_HALF_WIDTH;
+	screen_head_offset[0] = screen_head_offset[1] = 0.0f;
+	if (!mapping_on_screen_last) {
+		mapping_easing.from = mapping_easing.to = mapping_easing.now = *target;
+		mapping_easing.elapsed = MAPPING_EASE_SECONDS;
+	} else {
+		screen_mapping_ease(&mapping_easing, target, time_delta);
+	}
 	film_frame = 1;
-	film_frusta(FILM_DEFAULT_VERTICAL_TANGENT);
+	screen_frusta(FILM_DEFAULT_VERTICAL_TANGENT);
+	/* the log gives the target's eyes at the default camera, not a moment
+	of an ease */
+	screen_mapping_eyes(target, FILM_DEFAULT_VERTICAL_TANGENT, screen_viewer_separation, screen_half_width, NULL,
+		target_eyes);
 	if (!film_last || film_reason != film_reason_logged)
-		platform_log("stereo: %s, as a 3D film on the screen: infinity %.2f of the viewer's %.1f mm behind the "
-			"screen, %.2f m ahead on its surface (eyes %.1f mm apart at the default camera), the screen %.2f m wide",
-			film_reasons[film_reason], film_depth_share, viewer_separation * METERS_PER_UNIT * 1000.0f,
-			film_convergence, (stereo_frame.eyes[1].offset[0] - stereo_frame.eyes[0].offset[0]) * METERS_PER_UNIT *
-			1000.0f, 2.0f * film_half_width * METERS_PER_UNIT);
+		platform_log("stereo: %s, as a 3D film on the screen: eyes %.1f mm apart (of the viewer's %.1f mm), "
+			"converged at %.2f m, infinity %.1f mm behind the screen; the screen %.2f m wide",
+			film_reasons[film_reason], (target_eyes[1].offset[0] - target_eyes[0].offset[0]) * METERS_PER_UNIT *
+			1000.0f, screen_viewer_separation * 1000.0f, target->convergence_meters,
+			target->depth_share * screen_viewer_separation * 1000.0f, 2.0f * screen_half_width);
 	film_reason_logged = film_reason;
 }
 
@@ -244,6 +392,7 @@ static int mode_from_name(const char *name, int *recognized)
 void halo_stereo_frame_begin(void)
 {
 	int film;
+	float time_delta;
 
 	if (stereo_mode < 0) {
 		const char *name = config_string("display.stereo");
@@ -251,6 +400,7 @@ void halo_stereo_frame_begin(void)
 
 		stereo_mode = mode_from_name(name, &recognized);
 		turn_settings();
+		mapping_settings();
 		/* the settings in effect (input.* act only in HEAD mode) */
 		platform_log("stereo: display.stereo %s, input.turn %s, input.snap_angle %.1f, "
 			"input.smooth_turn_speed %.1f, input.comfort_vignette %s", mode_names[stereo_mode],
@@ -263,6 +413,7 @@ void halo_stereo_frame_begin(void)
 	if (!vignette_stick_read)
 		vignette_strength = 0.0f;
 	vignette_stick_read = 0;
+	time_delta = mapping_time_delta();
 
 	memset(&stereo_frame, 0, sizeof(stereo_frame));
 	stereo_frame.mode = stereo_mode;
@@ -295,8 +446,10 @@ void halo_stereo_frame_begin(void)
 		int eye;
 
 		platform_video_drawable_size(&width, &height);
-		if (width <= 0 || height <= 0)
+		if (width <= 0 || height <= 0) {
+			mapping_on_screen_last = 0;
 			return; /* no drawable yet: mono this frame */
+		}
 		stereo_frame.eye_count = 2;
 		stereo_frame.eye_width = width / 2;
 		stereo_frame.eye_height = height;
@@ -306,8 +459,9 @@ void halo_stereo_frame_begin(void)
 			e->offset[0] = eye == 0 ? -SIDE_BY_SIDE_OFFSET : SIDE_BY_SIDE_OFFSET;
 			e->left = e->right = e->up = e->down = SIDE_BY_SIDE_TANGENT;
 		}
+		/* the default screen and typical eyes */
 		if (film)
-			film_begin(2.0f * SIDE_BY_SIDE_OFFSET, FILM_DEFAULT_HALF_WIDTH / METERS_PER_UNIT);
+			screen_begin(FILM_DEFAULT_SEPARATION, FILM_DEFAULT_HALF_WIDTH, time_delta);
 	} else if (stereo_mode == HALO_STEREO_HEAD || stereo_mode == HALO_STEREO_SCREEN) {
 		int mode = stereo_frame.mode;
 
@@ -320,18 +474,16 @@ void halo_stereo_frame_begin(void)
 			stereo_frame.mode = mode;
 		} else if (film) {
 			/* the viewer's eyes as the host found them (SCREEN eyes: where they
-			are, and frusta through the screen's edges), and the screen's half
-			width from the frusta: the tangents add to the width over the
-			distance */
+			are, and frusta through the screen's edges): their separation, and
+			the screen's half width from the frusta (the tangents add to the
+			width over the distance) */
 			const struct halo_stereo_eye *eyes = stereo_frame.eyes;
 			float dx = eyes[1].offset[0] - eyes[0].offset[0];
 			float dy = eyes[1].offset[1] - eyes[0].offset[1];
 			float dz = eyes[1].offset[2] - eyes[0].offset[2];
-			float separation = sqrtf(dx * dx + dy * dy + dz * dz);
 
-			if (separation < 0.001f / METERS_PER_UNIT)
-				separation = FILM_DEFAULT_SEPARATION / METERS_PER_UNIT;
-			film_begin(separation, eyes[0].offset[2] * (eyes[0].left + eyes[0].right) * 0.5f);
+			screen_begin(sqrtf(dx * dx + dy * dy + dz * dz) * METERS_PER_UNIT,
+				eyes[0].offset[2] * (eyes[0].left + eyes[0].right) * 0.5f * METERS_PER_UNIT, time_delta);
 		}
 		/* HEAD mode: the look takes this frame's yaw in next frame
 		(player_control runs before the render), and a turn it never took is
@@ -341,6 +493,7 @@ void halo_stereo_frame_begin(void)
 		head_pitch_known = stereo_frame.mode == HALO_STEREO_HEAD;
 		head_pitch_now = stereo_frame.head_pitch;
 	}
+	mapping_on_screen_last = film_frame;
 	/* the eyes' picture size from this frame on, not the next */
 	if (stereo_mode != HALO_STEREO_OFF)
 		halo_screen_commit_stereo_scale();
@@ -354,6 +507,12 @@ int halo_stereo_film(void)
 int halo_stereo_film_letterbox(void)
 {
 	return halo_stereo_film() && film_reason == 1;
+}
+
+void halo_stereo_screen_frusta(float vertical_tangent)
+{
+	if (halo_stereo_film() && vertical_tangent > 0.0f)
+		screen_frusta(vertical_tangent);
 }
 
 int halo_stereo_cut_covered(void)
@@ -408,20 +567,6 @@ void halo_stereo_tv_eyes(float depth_share, float convergence_meters, float view
 		e->up = vertical_tangent - y / convergence;
 		e->down = vertical_tangent + y / convergence;
 	}
-}
-
-/* the film's eyes at a camera's vertical tangent: the film's mapping, no
-lean */
-static void film_frusta(float vertical_tangent)
-{
-	halo_stereo_tv_eyes(film_depth_share, film_convergence, film_viewer_separation, film_half_width,
-		vertical_tangent, NULL, stereo_frame.eyes);
-}
-
-void halo_stereo_film_frusta(float vertical_tangent)
-{
-	if (halo_stereo_film() && vertical_tangent > 0.0f)
-		film_frusta(vertical_tangent);
 }
 
 const struct halo_stereo_frame *halo_stereo_frame(void)
