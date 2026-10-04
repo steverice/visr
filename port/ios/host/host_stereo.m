@@ -20,6 +20,7 @@ Elsewhere host_stereo_frame leaves the frame mono. */
 #import <Foundation/Foundation.h>
 #include <TargetConditionals.h>
 #include "host_stereo.h"
+#include "host_config.h"
 #include "host.h"
 #include <math.h>
 #include <string.h>
@@ -237,8 +238,8 @@ is behind the game's camera, between it and the eye, isn't drawn. The game's
 field of view becomes the screen's angle (display.theater_width), and
 leaning or stepping moves the frusta as a window would. The orientation of
 the head plays no part. */
-static void screen_eyes(struct halo_stereo_frame *frame, cp_drawable_t drawable, simd_float4x4 origin_from_device)
-	API_AVAILABLE(visionos(26.0))
+static void screen_eyes(struct halo_stereo_frame *frame, cp_drawable_t drawable, simd_float4x4 origin_from_device,
+	int anchored) API_AVAILABLE(visionos(26.0))
 {
 	simd_float4x4 origin_from_screen, screen_from_device;
 	simd_float2 half_size;
@@ -246,9 +247,17 @@ static void screen_eyes(struct halo_stereo_frame *frame, cp_drawable_t drawable,
 	int width, height;
 	int eye;
 	static unsigned long screen_frames;
+	static int screen_stats = -1;
 
 	if (views == 0)
 		return;
+	if (screen_stats < 0)
+	{
+		char value[16];
+
+		host_config_string("debug.gpu_stats", "false", value, sizeof(value));
+		screen_stats = !strcmp(value, "true");
+	}
 	host_theater_screen(0, &origin_from_screen, &half_size);
 	screen_from_device = simd_mul(simd_inverse(origin_from_screen), origin_from_device);
 	/* the simulator has one view: both eyes are it */
@@ -274,6 +283,13 @@ static void screen_eyes(struct halo_stereo_frame *frame, cp_drawable_t drawable,
 				"the screen's center (%.2f by %.2f m); tangents left %.3f right %.3f up %.3f down %.3f",
 				view_index, views, position.x, position.y, position.z, 2.0f * half_size.x, 2.0f * half_size.y,
 				e->left, e->right, e->up, e->down);
+		/* debug.gpu_stats: where the left eye is against the screen every
+		few seconds, to check that leaning moves the eyes (the window's
+		parallax), and whether ARKit placed the head */
+		if (eye == 0 && screen_stats && screen_frames % 270 == 0)
+			host_logf(HOST_LOG_INFO, "stereo: on the screen, frame %lu: the left eye at %.3f %.3f %.3f m from the "
+				"screen's center, %s", screen_frames, position.x, position.y, position.z,
+				anchored ? "ARKit places the head" : "no device anchor (the eyes hold still)");
 	}
 	/* the screen's picture size and shape: the eyes' frusta have its shape */
 	host_theater_picture_size(&width, &height);
@@ -305,7 +321,7 @@ static void stereo_frame(struct halo_stereo_frame *frame) API_AVAILABLE(visionos
 	{
 		head.known = 0;
 		picture_width = picture_height = 0;
-		screen_eyes(frame, drawable, origin_from_device);
+		screen_eyes(frame, drawable, origin_from_device, anchored);
 		return;
 	}
 	views = cp_drawable_get_view_count(drawable);
