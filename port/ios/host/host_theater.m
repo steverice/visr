@@ -40,7 +40,7 @@ static BOOL screen_placed;
 static simd_float4x4 origin_from_screen;
 static id<MTLRenderPipelineState> pipeline, hud_pipeline, fade_pipeline;
 static MTLPixelFormat pipeline_color, pipeline_depth;
-static id<MTLDepthStencilState> depth_state, depth_none;
+static id<MTLDepthStencilState> depth_state, depth_fade;
 static id<MTLSamplerState> sampler;
 static unsigned long theater_frames;
 
@@ -180,13 +180,14 @@ static NSString *const shader_source =
 	"	return float4(color * u.brightness, 1);\n"
 	"}\n"
 	/* the script fade's tint of the room around the screen: full view, at
-	the far plane, its color premultiplied by its opacity */
+	a depth behind the screen (fade_depth), its color premultiplied by its
+	opacity */
 	"struct fade_vertex_out { float4 position [[position]]; };\n"
-	"vertex fade_vertex_out fade_vertex(uint index [[vertex_id]])\n"
+	"vertex fade_vertex_out fade_vertex(uint index [[vertex_id]], constant float &depth [[buffer(0)]])\n"
 	"{\n"
 	"	float2 corner = float2(index & 1, index >> 1);\n"
 	"	fade_vertex_out out;\n"
-	"	out.position = float4(corner.x * 2 - 1, 1 - corner.y * 2, 0, 1);\n"
+	"	out.position = float4(corner.x * 2 - 1, 1 - corner.y * 2, depth, 1);\n"
 	"	return out;\n"
 	"}\n"
 	"fragment float4 fade_fragment(fade_vertex_out in [[stage_in]], constant float4 &color [[buffer(0)]])\n"
@@ -254,15 +255,29 @@ static BOOL prepare(id<MTLDevice> device, MTLPixelFormat color, MTLPixelFormat d
 	depth_descriptor.depthCompareFunction = MTLCompareFunctionGreater;
 	depth_descriptor.depthWriteEnabled = YES;
 	depth_state = [device newDepthStencilStateWithDescriptor:depth_descriptor];
-	/* the fade's tint is behind everything: it neither tests nor writes depth */
+	/* the fade's tint is drawn first, behind the screen: it doesn't test,
+	and writes its depth, so the Compositor has a surface for it (depth 0, as
+	the clear leaves, is nothing to show) */
 	depth_descriptor.depthCompareFunction = MTLCompareFunctionAlways;
-	depth_descriptor.depthWriteEnabled = NO;
-	depth_none = [device newDepthStencilStateWithDescriptor:depth_descriptor];
+	depth_descriptor.depthWriteEnabled = YES;
+	depth_fade = [device newDepthStencilStateWithDescriptor:depth_descriptor];
 	MTLSamplerDescriptor *sampler_descriptor = [MTLSamplerDescriptor new];
 	sampler_descriptor.minFilter = MTLSamplerMinMagFilterLinear;
 	sampler_descriptor.magFilter = MTLSamplerMinMagFilterLinear;
 	sampler = [device newSamplerStateWithDescriptor:sampler_descriptor];
 	return YES;
+}
+
+/* how far beyond the screen the fade's tint lies, in meters */
+#define FADE_BEYOND_SCREEN 2.0f
+
+/* the depth, for a view's projection, of what lies straight ahead of it at
+a distance in meters (reverse-Z: nearer is larger) */
+static float fade_depth(simd_float4x4 projection, float distance)
+{
+	simd_float4 clip = simd_mul(projection, (simd_float4){ 0.0f, 0.0f, -distance, 1.0f });
+
+	return clip.w > 0.0f ? simd_clamp(clip.z / clip.w, 0.0f, 1.0f) : 0.0f;
 }
 
 /* stands the screen in front of where the device looks, upright and facing it */
@@ -483,9 +498,6 @@ static void present_pictures(id<MTLCommandQueue> queue, id<MTLTexture> left, id<
 				simd_float4 tint = fade_tint(fade, decode_srgb);
 
 				pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, environment_dark ? 1.0 : 0.0);
-				/* the dark surroundings are the fade's color times its intensity */
-				if (environment_dark && tint.w > 0.0f)
-					pass.colorAttachments[0].clearColor = MTLClearColorMake(tint.x, tint.y, tint.z, 1.0);
 				pass.depthAttachment.texture = depth;
 				pass.depthAttachment.slice = cp_view_texture_map_get_slice_index(map);
 				pass.depthAttachment.loadAction = MTLLoadActionClear;
@@ -508,13 +520,20 @@ static void present_pictures(id<MTLCommandQueue> queue, id<MTLTexture> left, id<
 				uniforms.brightness = brightness;
 				id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
 				[encoder setViewport:cp_view_texture_map_get_viewport(map)];
-				/* the room is the fade's color over it at the fade's opacity:
-				premultiplied over the clear, behind the screen */
-				if (!environment_dark && tint.w > 0.0f)
+				/* the room is the fade's color over it at the fade's opacity,
+				premultiplied; the dark surroundings are its color times its
+				intensity, opaque. Either is a surface a little behind the
+				screen, with that depth: the Compositor shows nothing where the
+				depth is the clear's 0, or shows it only in patches */
+				if (tint.w > 0.0f)
 				{
+					simd_float4 color = environment_dark ? (simd_float4){ tint.x, tint.y, tint.z, 1.0f } : tint;
+					float behind = fade_depth(projection, screen_distance + FADE_BEYOND_SCREEN);
+
 					[encoder setRenderPipelineState:fade_pipeline];
-					[encoder setDepthStencilState:depth_none];
-					[encoder setFragmentBytes:&tint length:sizeof(tint) atIndex:0];
+					[encoder setDepthStencilState:depth_fade];
+					[encoder setVertexBytes:&behind length:sizeof(behind) atIndex:0];
+					[encoder setFragmentBytes:&color length:sizeof(color) atIndex:0];
 					[encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
 				}
 				[encoder setRenderPipelineState:hud ? hud_pipeline : pipeline];
