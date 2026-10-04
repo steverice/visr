@@ -101,6 +101,7 @@ DEFAULTS = {
     "display.screen_convergence": "1.0",
     "display.screen_framing": '"band"',
     "display.stereo_vehicle_screen": "false",
+    "display.first_person_body": "true",
     "input.turn": '"snap"',
     "input.snap_angle": "30.0",
     "input.smooth_turn_speed": "120.0",

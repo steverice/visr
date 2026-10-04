@@ -89,6 +89,21 @@ third-person camera (unless display.stereo_vehicle_screen puts it on the
 screen) it turns the game's camera by the head's yaw and change of pitch
 since that camera began, and gives it the head's roll: the picture only */
 void halo_stereo_head_orient(float forward[3], float up[3]);
+/* The first-person body (port/linux/game/first_person_body.c): nonzero
+while object_index is the local player's unit, drawn as a body in first
+person: HEAD mode or the side-by-side view, an eye layer, not the film or
+SCREEN gameplay, the director's first person (not a scripted camera),
+display.first_person_body */
+int halo_first_person_body(long object_index);
+/* the render-only node matrices for that body: the head collapsed to its
+parent's position; with collapse_arms, each arm from the upper arm down
+collapsed to the upper arm; node_count is the smaller of the model's nodes
+and the object's node matrices; returns the copy (one static array, valid
+until the next call), or matrices unchanged if the model's nodes aren't
+recognized */
+struct real_matrix4x3;
+const struct real_matrix4x3 *halo_first_person_body_matrices(long model_index,
+	const struct real_matrix4x3 *matrices, short node_count, int collapse_arms);
 /* the eye cameras' near and far planes in world units, for the presenter's
 depth (d3d8_device.c), set by the eye loop each stereo frame */
 void halo_stereo_set_depth_range(float z_near, float z_far);

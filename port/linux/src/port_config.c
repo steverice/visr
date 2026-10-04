@@ -137,6 +137,9 @@ static const struct config_setting config_settings[] =
 		"Apple Vision Pro: \"off\" (flat), \"head\" (in stereo, the head turns the view),\n"
 		"\"screen\" (in stereo on the theater screen), or \"side_by_side\" (a debug view\n"
 		"of both eyes in the window)." },
+	{ "display.first_person_body", _config_boolean, "true", "HALO_FIRST_PERSON_BODY", _environment_set_is_true, _platform_ios,
+		"With display.stereo = \"head\": draw the Master Chief's body below the\n"
+		"view (no head, no third-person arms), so looking down shows legs and feet." },
 	{ "display.film_depth_share", _config_real, "0.25", "HALO_FILM_DEPTH_SHARE", _environment_value, _platform_ios,
 		"With display.stereo: how deep a cutscene (a 3D film on the screen) looks:\n"
 		"how far behind the screen the far distance sits, as a share of your eye\n"

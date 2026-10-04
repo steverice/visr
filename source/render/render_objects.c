@@ -102,6 +102,8 @@ symbols in this file:
 #include "objects/widgets/widgets.h"
 #include "units/units.h"
 #include "models/models.h"
+/* port: the model tag's node count, for the first-person body */
+#include "models/model_definitions.h"
 #include "shaders/shader_definitions.h"
 #include "shaders/shaders.h"
 #include "game/players.h"
@@ -470,8 +472,15 @@ static void render_object_list(
 	while (object_index != NONE)
 	{
 		struct object_datum *object = object_get(object_index);
+		/* port: in head-tracked stereo the player's own unit draws as a body
+		below the view, without its head, and without its third-person arms and
+		children while the first-person weapon shows
+		(port/linux/game/first_person_body.c) */
+		boolean first_person_body = halo_first_person_body(object_index) && !render.camera.mirrored;
+		boolean first_person_body_arms_hidden = first_person_body &&
+			first_person_weapon_visible(render.local_player_index);
 
-		if (!object_is_first_person_camera(object_index) || render.camera.mirrored)
+		if (!object_is_first_person_camera(object_index) || render.camera.mirrored || first_person_body)
 		{
 			struct render_model_effect model_effect;
 
@@ -505,6 +514,8 @@ static void render_object_list(
 				struct object_definition *definition =
 					object_definition_get(object->definition_index);
 				real level_of_detail_pixels = object_get_level_of_detail_pixels(object_index);
+				/* port: the first-person body's are a render-only copy */
+				real_matrix4x3 const *node_matrices = object_get_node_matrices(object_index);
 
 				match_assert(
 					"c:\\halo\\SOURCE\\render\\render_objects.c",
@@ -599,10 +610,24 @@ static void render_object_list(
 						}
 					}
 
+					/* port: the body's render-only copy, the head (and the arms)
+					collapsed; the shadow below keeps the real matrices */
+					if (first_person_body && definition->object.model.index != NONE)
+					{
+						short node_count = (short)(object->object.node_matrices.size / (short)sizeof(real_matrix4x3));
+						short model_node_count = (short)model_definition_get(definition->object.model.index)->nodes.count;
+
+						node_matrices = halo_first_person_body_matrices(
+							definition->object.model.index,
+							node_matrices,
+							MIN(node_count, model_node_count),
+							first_person_body_arms_hidden);
+					}
+
 					render_model(
 						definition->object.model.index,
 						level_of_detail_pixels,
-						object_get_node_matrices(object_index),
+						node_matrices,
 						object->object.region_permutations,
 						object->object.outgoing_change_colors,
 						object->object.outgoing_function_values,
@@ -638,7 +663,9 @@ static void render_object_list(
 				}
 			}
 
-			if (!data->shadow && object->object.first_widget_index != NONE)
+			/* port: the body's widgets and children (the third-person weapon)
+			go with its hidden arms */
+			if (!data->shadow && object->object.first_widget_index != NONE && !first_person_body_arms_hidden)
 			{
 				struct render_animation animation;
 
@@ -647,7 +674,7 @@ static void render_object_list(
 				widgets_render(object_index, data->lighting, &animation);
 			}
 
-			if (object->object.first_child_object_index != NONE)
+			if (object->object.first_child_object_index != NONE && !first_person_body_arms_hidden)
 			{
 				render_object_list(
 					data,
@@ -1103,7 +1130,8 @@ static void render_object(
 	{
 		struct object_datum *object = object_get(data->object_index);
 
-		if (!object_is_first_person_camera(data->object_index) &&
+		/* port: the first-person body casts its shadow (first_person_body.c) */
+		if ((!object_is_first_person_camera(data->object_index) || halo_first_person_body(data->object_index)) &&
 			!TEST_FLAG(object->object.flags, _object_shadowless_bit) &&
 			(!TEST_FLAG(object->object.flags, _object_invisible_bit) ||
 				object->object.first_child_object_index != NONE))

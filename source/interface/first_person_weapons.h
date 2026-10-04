@@ -75,6 +75,9 @@ void first_person_weapon_message_from_weapon(
 struct real_matrix4x3 *first_person_weapon_get_node_matrix(
 	short local_player_index,
 	short node_index);
+/* port: whether the local player's first-person weapon draws this frame */
+boolean first_person_weapon_visible(
+	short local_player_index);
 
 /* ---------- globals */
 

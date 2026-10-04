@@ -98,6 +98,12 @@ run('xcrun', 'clang', '-O2', '-fsanitize=address,undefined', '-DHALO_IOS=1', '-I
     'port/ios/tests/stereo_head_probe.c', 'port/ios/host/host_stereo_head.c',
     '-o', BUILD/'stereo-head-probe')
 run(BUILD/'stereo-head-probe')
+# head-tracked stereo's first-person body: the render-only node matrices with the head and the
+# third-person arms collapsed, and when the body draws (the probe includes
+# port/linux/game/first_person_body.c)
+run('xcrun', 'clang', '-O2', '-fsanitize=address,undefined', '-Iport/linux/src',
+    'port/ios/tests/first_person_body_probe.c', '-o', BUILD/'first-person-body-probe')
+run(BUILD/'first-person-body-probe')
 # SCREEN mode's 3D TV and the film: the one mapping, its ease, the reasons and the framing, and
 # the first-person weapon's own eye (the probe includes port/linux/game/stereo.c)
 run('xcrun', 'clang', '-O2', '-fsanitize=address,undefined', '-DHALO_IOS=1', '-Iport/linux/src', '-Iport/ios/host',
