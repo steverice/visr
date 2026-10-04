@@ -4092,9 +4092,11 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 			/* HEAD mode's HUD: the whole layer on the UI's quad while a menu,
 			the console or a progress bar drew into it, except over a
 			cutscene's film, where the menu stays on the screen with the
-			frozen film; and where the crosshair points */
+			frozen film; where the crosshair points; and the HUD pass's
+			projection, for the catch-all quad */
 			present.hud_ui = hud && hud_layer_ui && !halo_stereo_film_letterbox();
 			halo_stereo_reticle(present.reticle);
+			halo_stereo_hud_tangents(present.hud_tangents);
 			render_interpolation_next_frame_due(gpu_present_stereo(&present));
 		}
 		else

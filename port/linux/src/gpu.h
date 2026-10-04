@@ -441,6 +441,7 @@ struct gpu_stereo_present
 	int32_t cut_covered;               /* 1 while the script fade covers a cut (no fade through black) */
 	int32_t hud_ui;                    /* 1 while the HUD layer holds a menu, the console or a progress bar */
 	float reticle[3];                  /* where the HUD's center points in the eyes' frame (halo_stereo_reticle) */
+	float hud_tangents[2];             /* the HUD pass's half tangents across and up (halo_stereo_hud_tangents) */
 };
 
 /* presents a stereo frame as gpu_present does a mono one (and returns the

@@ -58,25 +58,42 @@ struct host_stereo_hud_quad
 	+y_axis is the top) */
 	float center[3], x_axis[3], y_axis[3];
 	int frame;
+	/* the catch-all: shows only what no other quad's rectangle claims
+	(host_stereo_hud_claimed) */
+	int catch_all;
+	/* not drawn (a reticle off the view), but its rectangle is claimed */
+	int hidden;
 };
 
 /* most quads a layout makes */
 #define HOST_STEREO_HUD_MAXIMUM_QUADS 8
 
 /* The reticle's quad: the square at the layer's center at its natural size
-(HOST_STEREO_HUD_METERS_PER_LINE), facing the eyes, at
-HOST_STEREO_HUD_DISTANCE along direction, in the eyes' frame (x right, y up,
-z back; the guest's halo_stereo_reticle): straight ahead, head-locked, on
-foot; where the game's camera aims in a head-tracked third-person seat.
-Returns 0 (no quad) when that's not ahead of the eyes. This is the one place
-the reticle is placed: tracked-controller aiming (Task 11) replaces it. */
-int host_stereo_hud_reticle(float layout_width, const float direction[3], struct host_stereo_hud_quad *quad);
+(HOST_STEREO_HUD_METERS_PER_LINE), in the eyes' frame (x right, y up, z
+back), facing back along direction, upright. Without a position it sits
+HOST_STEREO_HUD_DISTANCE along direction (the guest's halo_stereo_reticle):
+straight ahead, head-locked, on foot; where the game's camera aims in a
+head-tracked third-person seat; and returns 0 (no quad) when that's not
+ahead of the eyes. With one (meters; Task 11's point where the controller's
+aim hits) it's centered there. This is the one place the reticle is
+placed: tracked-controller aiming (Task 11) replaces its caller's
+arguments. */
+int host_stereo_hud_reticle(float layout_width, const float position[3], const float direction[3],
+	struct host_stereo_hud_quad *quad);
 
 /* the quads for a HEAD-mode frame's HUD layer laid out layout_width lines
 across: with ui, the whole layer on the UI's quad; else the reticle
-(reticle: its direction, as above) and the bands' pieces. Returns the
-count; quads holds HOST_STEREO_HUD_MAXIMUM_QUADS */
-int host_stereo_hud_layout(float layout_width, int ui, const float reticle[3], struct host_stereo_hud_quad *quads);
+(reticle: its direction, as above; first, perhaps hidden), the bands'
+pieces and, last, given the HUD pass's half tangents across and up (the
+guest's halo_stereo_hud_tangents; NULL or 0: none), the catch-all: the
+whole layer head-locked at that projection, showing only what no piece
+claims, so nothing the HUD draws is dropped. Returns the count; quads holds
+HOST_STEREO_HUD_MAXIMUM_QUADS */
+int host_stereo_hud_layout(float layout_width, int ui, const float reticle[3], const float hud_tangents[2],
+	struct host_stereo_hud_quad *quads);
+/* 1 if a quad other than the catch-all shows the layer's texture coordinate
+u, v (the catch-all's fragment shader does the same) */
+int host_stereo_hud_claimed(const struct host_stereo_hud_quad *quads, int count, float u, float v);
 
 /* the UI's quad for a picture of the given aspect (width over height): the
 whole picture, centered ahead, as large as fits inside the sharp region */

@@ -66,6 +66,12 @@ the head's; in a head-tracked third-person camera (a vehicle seat), the game
 camera's forward, which the gun follows, in the picture the head turned
 (halo_stereo_head_orient). For the presenter's reticle (gpu_stereo_present) */
 void halo_stereo_reticle(float direction[3]);
+/* the HUD pass's projection this frame (render.c): its half tangents across
+and up, centered on the eye cameras' forward; 0 before it runs. The
+presenter's catch-all quad shows the HUD layer at that size, so what the
+game projects onto the HUD (nav points) points where it projected it */
+void halo_stereo_set_hud_tangents(float across, float up);
+void halo_stereo_hud_tangents(float tangents[2]);
 
 /* HEAD mode's look (source/game/player_control.c): the stick turns yaw only,
 as input.turn says (in input.snap_angle steps, smoothly at

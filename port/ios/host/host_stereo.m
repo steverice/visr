@@ -58,6 +58,9 @@ static unsigned long stereo_frames;
 logged, since the space opened: the once-only logs repeat for each opening
 (host_stereo_space_opened) */
 static unsigned long screen_frames, stereo_presents, ui_presents;
+/* the last frame's HUD went whole on the UI's quad: -1 none yet since the
+space opened */
+static int ui_shown = -1;
 static int depth_reported;
 /* the Compositor's frame is open for this game frame (host_stereo_frame)
 with display.stereo = "head", whatever the frame is (the full view, the film
@@ -127,9 +130,10 @@ static NSString *const shader_source =
 	"}\n"
 	/* one of the HUD's quads (host_stereo_hud.h): its texture's rectangle,
 	its center and half extents in its frame, which clip_from_frame takes
-	to the view */
+	to the view; for the catch-all, the other quads' rectangles, which it
+	leaves to them */
 	"struct hud_uniforms { float4x4 clip_from_frame; float4 source; float4 center; float4 x_axis; float4 y_axis;\n"
-	"	uint decode_srgb; float brightness; uint opaque; };\n"
+	"	float4 masks[8]; uint decode_srgb; float brightness; uint opaque; uint mask_count; };\n"
 	"vertex picture_vertex hud_vertex(uint index [[vertex_id]], constant hud_uniforms &u [[buffer(0)]])\n"
 	"{\n"
 	"	float2 corner = float2(index & 1, index >> 1);\n"
@@ -149,7 +153,13 @@ static NSString *const shader_source =
 	"fragment float4 hud_fragment(picture_vertex in [[stage_in]], texture2d<float> hud [[texture(0)]],\n"
 	"	sampler linear [[sampler(0)]], constant hud_uniforms &u [[buffer(0)]])\n"
 	"{\n"
-	"	float4 color = hud.sample(linear, in.coordinate);\n"
+	"	for (uint index = 0; index < u.mask_count; index++)\n"
+	"		if (all(in.coordinate >= u.masks[index].xy) && all(in.coordinate < u.masks[index].zw))\n"
+	"			discard_fragment();\n"
+	/* only inside the quad's rectangle: linear filtering at its edge would
+	take a sliver of the neighboring piece */
+	"	float2 half_texel = 0.5 / float2(hud.get_width(), hud.get_height());\n"
+	"	float4 color = hud.sample(linear, clamp(in.coordinate, u.source.xy + half_texel, u.source.zw - half_texel));\n"
 	"	float covered = u.opaque ? 1.0 : 1.0 - color.a;\n"
 	"	if (max(covered, max(color.r, max(color.g, color.b))) < 1.0 / 255.0)\n"
 	"		discard_fragment();\n"
@@ -198,9 +208,11 @@ struct hud_uniforms
 {
 	simd_float4x4 clip_from_frame;
 	simd_float4 source, center, x_axis, y_axis;
+	simd_float4 masks[8];
 	uint32_t decode_srgb;
 	float brightness;
 	uint32_t opaque;
+	uint32_t mask_count;
 };
 
 static BOOL prepare(id<MTLDevice> device, MTLPixelFormat color, MTLPixelFormat depth)
@@ -464,6 +476,7 @@ void host_stereo_space_opened(void)
 	screen_frames = 0;
 	stereo_presents = 0;
 	ui_presents = 0;
+	ui_shown = -1;
 	depth_reported = 0;
 #endif
 }
@@ -546,7 +559,17 @@ static void hud_draw(id<MTLRenderCommandEncoder> encoder, id<MTLTexture> texture
 	{
 		const struct host_stereo_hud_quad *quad = &quads[index];
 		struct hud_uniforms uniforms;
+		int other;
 
+		if (quad->hidden)
+			continue;
+		memset(&uniforms, 0, sizeof(uniforms));
+		/* the catch-all leaves every other quad's rectangle to it */
+		if (quad->catch_all)
+			for (other = 0; other < count && uniforms.mask_count < 8; other++)
+				if (!quads[other].catch_all)
+					uniforms.masks[uniforms.mask_count++] = (simd_float4){ quads[other].source[0],
+						quads[other].source[1], quads[other].source[2], quads[other].source[3] };
 		uniforms.clip_from_frame = quad->frame == HOST_STEREO_HUD_LEVEL ? simd_mul(clip_from_device, level) :
 			clip_from_device;
 		uniforms.source = (simd_float4){ quad->source[0], quad->source[1], quad->source[2], quad->source[3] };
@@ -565,7 +588,8 @@ static void hud_draw(id<MTLRenderCommandEncoder> encoder, id<MTLTexture> texture
 
 void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLTexture> right,
 	id<MTLTexture> left_depth, id<MTLTexture> right_depth, id<MTLTexture> hud, float hud_aspect,
-	int hud_ui, const float reticle[3], float near_meters, float far_meters, float brightness, float vignette)
+	int hud_ui, const float reticle[3], const float hud_tangents[2], float near_meters, float far_meters,
+	float brightness, float vignette)
 {
 #if TARGET_OS_VISION
 	if (@available(visionOS 26.0, *))
@@ -576,16 +600,16 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 		simd_float2 depth_range = stereo_depth_range(near_meters, far_meters, &depth_scale, &depth_floor);
 		float layout_width = (hud_aspect > 0.0f ? hud_aspect : 4.0f / 3.0f) * HOST_STEREO_HUD_LINES;
 		struct host_stereo_hud_quad quads[HOST_STEREO_HUD_MAXIMUM_QUADS];
-		int quad_count = hud ? host_stereo_hud_layout(layout_width, hud_ui, reticle, quads) : 0;
-		static int ui_shown = -1;
+		int quad_count = hud ? host_stereo_hud_layout(layout_width, hud_ui, reticle, hud_tangents, quads) : 0;
 
 		if (stereo_presents++ == 0)
 			host_logf(HOST_LOG_INFO, "stereo: first present: eyes %lux%lu, %s (laid out at %.3f:1; its bands at "
-				"%.2f mm a line, the reticle at %.2f, %.1f m ahead, inside %.0f degrees of the center), depth range "
-				"%.3f to %.1f m, %zu drawable%s", (unsigned long)left.width, (unsigned long)left.height,
-				hud ? "a HUD" : "no HUD", hud_aspect, 1000.0f * host_stereo_hud_band_scale(layout_width),
-				1000.0f * HOST_STEREO_HUD_METERS_PER_LINE, HOST_STEREO_HUD_DISTANCE, HUD_SHARP_RADIUS_DEGREES,
-				near_meters, far_meters, count, count == 1 ? "" : "s");
+				"%.2f mm a line, the reticle at %.2f, %.1f m ahead, inside %.0f degrees of the center; the rest "
+				"head-locked at the HUD pass's half tangents %.3f by %.3f), depth range %.3f to %.1f m, %zu drawable%s",
+				(unsigned long)left.width, (unsigned long)left.height, hud ? "a HUD" : "no HUD", hud_aspect,
+				1000.0f * host_stereo_hud_band_scale(layout_width), 1000.0f * HOST_STEREO_HUD_METERS_PER_LINE,
+				HOST_STEREO_HUD_DISTANCE, HUD_SHARP_RADIUS_DEGREES, hud_tangents ? hud_tangents[0] : 0.0f,
+				hud_tangents ? hud_tangents[1] : 0.0f, near_meters, far_meters, count, count == 1 ? "" : "s");
 		/* each change between the HUD's pieces and the UI's quad */
 		if (hud && (hud_ui != 0) != ui_shown)
 		{
@@ -700,6 +724,7 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 	(void)hud_aspect;
 	(void)hud_ui;
 	(void)reticle;
+	(void)hud_tangents;
 	(void)near_meters;
 	(void)far_meters;
 	(void)brightness;

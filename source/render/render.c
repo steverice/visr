@@ -655,6 +655,10 @@ static void render_player_frame_stereo(
 	draws here, once, as a flat picture for both eyes (as render_window
 	draws it in mono: in place of the HUD) */
 	halo_stereo_layer(HALO_STEREO_LAYER_HUD);
+	/* port: the HUD pass's projection (render_camera_build_frustum without
+	bounds: symmetric, the camera's vertical field of view and the
+	viewport's shape), for the presenter's catch-all quad */
+	halo_stereo_set_hud_tangents(aspect * field_of_view_tangent, field_of_view_tangent);
 	memset(&parameters, 0, sizeof(parameters));
 	render.local_player_index = window->local_player_index;
 	render.camera = *camera;

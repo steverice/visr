@@ -37,26 +37,93 @@ static void level_extent(const struct host_stereo_hud_quad *quad, float degrees[
 	degrees[3] = atanf(y1 / distance) / DEGREES;
 }
 
+/* a 105 by 90 degree view's half tangents (Vision Pro-like; the HUD pass
+takes its projection from the eyes') for the --quads output and the checks */
+static const float hud_tangents[2] = { 1.303f, 1.0f };
+
 static void print_quads(float width, int ui, const float reticle[3])
 {
 	struct host_stereo_hud_quad quads[HOST_STEREO_HUD_MAXIMUM_QUADS];
-	int count = host_stereo_hud_layout(width, ui, reticle, quads), index;
+	int count = host_stereo_hud_layout(width, ui, reticle, hud_tangents, quads), index;
 
 	for (index = 0; index < count; index++)
 	{
 		const struct host_stereo_hud_quad *q = &quads[index];
 
-		printf("%d %g %g %g %g %g %g %g %g %g %g %g %g %g\n", q->frame, q->source[0], q->source[1], q->source[2],
+		if (q->hidden)
+			continue;
+		printf("%d %d %g %g %g %g %g %g %g %g %g %g %g %g %g\n", q->frame, q->catch_all, q->source[0], q->source[1], q->source[2],
 			q->source[3], q->center[0], q->center[1], q->center[2], q->x_axis[0], q->x_axis[1], q->x_axis[2],
 			q->y_axis[0], q->y_axis[1], q->y_axis[2]);
 	}
+}
+
+/* the catch-all: a layer point no piece claims (a nav point, the
+multiplayer score) shows at the direction the HUD pass projected it; a
+point a piece claims doesn't show there */
+static void catch_all_checks(float width)
+{
+	const float ahead[3] = { 0.0f, 0.0f, -1.0f };
+	/* a seat aiming 60 degrees right: the reticle's quad is there, and the
+	center's square still isn't the catch-all's */
+	const float seat[3] = { 0.866f, 0.0f, -0.5f };
+	struct host_stereo_hud_quad quads[HOST_STEREO_HUD_MAXIMUM_QUADS];
+	int count = host_stereo_hud_layout(width, 0, ahead, hud_tangents, quads);
+	const struct host_stereo_hud_quad *all = &quads[count - 1];
+	/* a nav point drawn at three quarters across and a third down the
+	layer, outside every piece */
+	float u = 0.75f, v = 0.33f;
+	float x = all->center[0] + (2.0f * u - 1.0f) * all->x_axis[0];
+	float y = all->center[1] + (1.0f - 2.0f * v) * all->y_axis[1];
+	float across = atanf(x / HOST_STEREO_HUD_DISTANCE), up = atanf(y / HOST_STEREO_HUD_DISTANCE);
+	float game_across = atanf((2.0f * u - 1.0f) * hud_tangents[0]), game_up = atanf((1.0f - 2.0f * v) * hud_tangents[1]);
+	char what[200];
+
+	snprintf(what, sizeof(what), "a nav point outside the pieces shows at %.2f, %.2f degrees, where the HUD pass "
+		"projected it (%.2f, %.2f)", across / DEGREES, up / DEGREES, game_across / DEGREES, game_up / DEGREES);
+	check(!host_stereo_hud_claimed(quads, count, u, v) && fabsf(across - game_across) < 1e-5f &&
+		fabsf(up - game_up) < 1e-5f, what);
+	check(host_stereo_hud_claimed(quads, count, 0.5f, 0.5f), "the reticle's square is its own, not the catch-all's");
+	/* the elements as measured (layout lines: x0, y0, x1, y1), at 640
+	lines across (the Mac) and 853 (the visionOS simulator): every corner
+	is a piece's, so none shows on the catch-all at its other scale */
+	{
+		static const float measured[2][5][4] = {
+			{ { 48, 37, 168, 82 }, { 48, 82.5f, 386, 146 }, { 464, 37, 584, 66 }, { 48, 362, 131, 444 },
+				{ 292, 212, 347, 267 } },
+			{ { 62.9f, 36.9f, 182.4f, 82 }, { 62.9f, 82.5f, 298.2f, 117.6f }, { 662, 36.9f, 781.8f, 66 },
+				{ 63.1f, 361.3f, 146, 444.7f }, { 398.4f, 211.8f, 453.6f, 266.9f } } };
+		static const float widths[2] = { 640.0f, 853.3f };
+		int w, e, corner, claimed = 1;
+
+		for (w = 0; w < 2; w++)
+		{
+			int n = host_stereo_hud_layout(widths[w], 0, ahead, hud_tangents, quads);
+
+			for (e = 0; e < 5; e++)
+				for (corner = 0; corner < 4; corner++)
+					claimed &= host_stereo_hud_claimed(quads, n, measured[w][e][corner & 1 ? 2 : 0] / widths[w],
+						measured[w][e][corner & 2 ? 3 : 1] / 480.0f);
+		}
+		check(claimed, "every measured element, at 640 and 853 lines across, is inside a piece");
+		count = host_stereo_hud_layout(width, 0, ahead, hud_tangents, quads);
+	}
+	count = host_stereo_hud_layout(width, 0, seat, hud_tangents, quads);
+	check(host_stereo_hud_claimed(quads, count, 0.5f, 0.5f) && !quads[0].hidden &&
+		fabsf(atan2f(quads[0].center[0], -quads[0].center[2]) / DEGREES - 60.0f) < 0.01f,
+		"in a seat the crosshair is on its own quad along the aim, and the catch-all leaves the center to it");
+	count = host_stereo_hud_layout(width, 0, (const float[3]){ 0.0f, 0.0f, 1.0f }, hud_tangents, quads);
+	check(quads[0].hidden && host_stereo_hud_claimed(quads, count, 0.5f, 0.5f),
+		"with the aim behind, the crosshair hides and the catch-all still leaves the center alone");
+	check(host_stereo_hud_layout(width, 0, ahead, NULL, quads) == count - 1,
+		"without the HUD pass's projection there's no catch-all");
 }
 
 static void layout_checks(float width)
 {
 	const float ahead[3] = { 0.0f, 0.0f, -1.0f };
 	struct host_stereo_hud_quad quads[HOST_STEREO_HUD_MAXIMUM_QUADS];
-	int count = host_stereo_hud_layout(width, 0, ahead, quads), index;
+	int count = host_stereo_hud_layout(width, 0, ahead, hud_tangents, quads), index;
 	float reach = 0.0f, reticle_half_degrees;
 	int inside = 1, clear = 1, sources = 1, above = 0, below = 0, level = 1;
 	char what[200];
@@ -67,12 +134,16 @@ static void layout_checks(float width)
 	check(fabsf(quads[0].center[0]) < 1e-6f && fabsf(quads[0].center[1]) < 1e-6f &&
 		fabsf(quads[0].center[2] + HOST_STEREO_HUD_DISTANCE) < 1e-6f, "the reticle is centered, 2 m ahead");
 	check(fabsf(quads[0].x_axis[0] - quads[0].y_axis[1]) < 1e-6f &&
-		fabsf(quads[0].x_axis[0] * 2.0f - 96.0f * HOST_STEREO_HUD_METERS_PER_LINE) < 1e-6f,
+		fabsf(quads[0].x_axis[0] * 2.0f - 160.0f * HOST_STEREO_HUD_METERS_PER_LINE) < 1e-6f,
 		"the reticle is a square at the natural scale");
 	check(fabsf((quads[0].source[0] + quads[0].source[2]) / 2.0f - 0.5f) < 1e-6f &&
 		fabsf((quads[0].source[1] + quads[0].source[3]) / 2.0f - 0.5f) < 1e-6f,
 		"the reticle is cut from the layer's center");
 	reticle_half_degrees = atanf(quads[0].y_axis[1] / HOST_STEREO_HUD_DISTANCE) / DEGREES;
+	check(quads[count - 1].catch_all && quads[count - 1].frame == HOST_STEREO_HUD_HEAD,
+		"the catch-all comes last, head-locked");
+	/* the bands' pieces: all but the reticle and the catch-all */
+	count--;
 	for (index = 1; index < count; index++)
 	{
 		float degrees[4];
@@ -122,6 +193,16 @@ static void layout_checks(float width)
 			}
 		check(!overlap, "no two pieces overlap");
 	}
+	/* the bands' rows: the counters and meters next to the reticle, the
+	messages above them */
+	{
+		float counters[4], messages[4];
+
+		level_extent(&quads[1], counters);
+		level_extent(&quads[3], messages);
+		check(counters[1] < messages[1], "the always-on counters and meters are nearer the reticle than the messages");
+	}
+	catch_all_checks(width);
 }
 
 static void ui_checks(float aspect)
@@ -140,7 +221,8 @@ static void ui_checks(float aspect)
 		fmaxf(degrees[2], degrees[3]) >= HUD_SHARP_RADIUS_DEGREES - 1e-3f &&
 		fabsf(quad.x_axis[0] / quad.y_axis[1] - aspect) < 1e-4f && quad.source[2] == 1.0f && quad.source[3] == 1.0f,
 		what);
-	check(host_stereo_hud_layout(aspect * 480.0f, 1, ahead, quads) == 1 && quads[0].frame == HOST_STEREO_HUD_LEVEL,
+	check(host_stereo_hud_layout(aspect * 480.0f, 1, ahead, hud_tangents, quads) == 1 &&
+		quads[0].frame == HOST_STEREO_HUD_LEVEL,
 		"a menu in the HUD layer puts the whole layer on the UI's quad, alone");
 }
 
@@ -154,7 +236,7 @@ static void reticle_checks(void)
 	float behind[3] = { 0.3f, 0.0f, 1.0f };
 	float facing;
 
-	check(host_stereo_hud_reticle(640.0f, aim, &quad) == 1, "a seat's reticle shows while its aim is ahead");
+	check(host_stereo_hud_reticle(640.0f, NULL, aim, &quad) == 1, "a seat's reticle shows while its aim is ahead");
 	check(fabsf(atan2f(quad.center[0], -quad.center[2]) - 30.0f * DEGREES) < 1e-4f &&
 		fabsf(asinf(quad.center[1] / HOST_STEREO_HUD_DISTANCE) - 10.0f * DEGREES) < 1e-4f,
 		"a seat's reticle sits along the game camera's aim, 30 degrees right and 10 up");
@@ -162,7 +244,16 @@ static void reticle_checks(void)
 		(quad.x_axis[2] * quad.y_axis[0] - quad.x_axis[0] * quad.y_axis[2]) * quad.center[1] +
 		(quad.x_axis[0] * quad.y_axis[1] - quad.x_axis[1] * quad.y_axis[0]) * quad.center[2];
 	check(facing < 0.0f && fabsf(quad.x_axis[1]) < 1e-6f, "it faces the eyes, upright");
-	check(host_stereo_hud_reticle(640.0f, behind, &quad) == 0, "it leaves the view when the head turns far from the aim");
+	check(host_stereo_hud_reticle(640.0f, NULL, behind, &quad) == 0, "it leaves the view when the head turns far from the aim");
+	/* Task 11: at a point (where a controller's aim hits), facing back
+	along the aim */
+	{
+		float point[3] = { 0.3f, -0.2f, -4.0f };
+
+		check(host_stereo_hud_reticle(640.0f, point, aim, &quad) == 1 && quad.center[0] == 0.3f &&
+			quad.center[1] == -0.2f && quad.center[2] == -4.0f && fabsf(quad.x_axis[1]) < 1e-6f,
+			"given a point, the reticle is centered there, upright, facing back along the aim");
+	}
 }
 
 static void level_checks(void)

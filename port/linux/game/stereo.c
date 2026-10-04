@@ -549,6 +549,22 @@ static void reticle_set(const float aim[3], const float forward[3], const float 
 	reticle_direction[2] = -(aim[0] * forward[0] + aim[1] * forward[1] + aim[2] * forward[2]);
 }
 
+/* the HUD pass's projection: half tangents across and up (render.c), 0
+until it runs this frame */
+static float hud_tangents[2];
+
+void halo_stereo_set_hud_tangents(float across, float up)
+{
+	hud_tangents[0] = across;
+	hud_tangents[1] = up;
+}
+
+void halo_stereo_hud_tangents(float tangents[2])
+{
+	tangents[0] = hud_tangents[0];
+	tangents[1] = hud_tangents[1];
+}
+
 void halo_stereo_reticle(float direction[3])
 {
 	direction[0] = reticle_direction[0];
@@ -587,6 +603,7 @@ void halo_stereo_frame_begin(void)
 	stereo_layer = HALO_STEREO_LAYER_MONO;
 	ui_span = 0;
 	reticle_set(NULL, NULL, NULL);
+	hud_tangents[0] = hud_tangents[1] = 0.0f;
 	memset(frame_fade, 0, sizeof(frame_fade));
 	/* why the view is the film. In SCREEN mode everything is on the screen
 	already, so only the director's own cameras are the film: the player's
