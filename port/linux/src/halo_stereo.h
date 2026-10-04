@@ -53,7 +53,8 @@ int halo_stereo_current_layer(void);
 /* HEAD mode's look (source/game/player_control.c): the stick turns yaw only,
 as input.turn says (in input.snap_angle steps, smoothly at
 input.smooth_turn_speed, or not at all), and never pitch; it takes the
-stick's yaw (*yaw, -1 to 1), the game's response curve at it (yaw_response)
+stick's yaw (*yaw, -1 to 1), the game's response curve at the stick's own
+yaw, without the diagonal boost the pitch gives *yaw (yaw_response)
 and the frame's time in seconds, and zeroes the game's own stick turn. And the
 head's yaw since the look last took it in, with the stick's turn, unscaled by
 the zoom, and the pitch that brings the look's (current_pitch) to the head's.
@@ -67,8 +68,8 @@ int halo_stereo_head_drives_look(short gamepad_index);
 darkens the eyes' edges this frame, while the stick turns the look smoothly;
 0 otherwise */
 float halo_stereo_vignette(void);
-/* the vignette's next strength from its strength now, the turn's share of
-input.smooth_turn_speed (0 to 1) and the time since, in seconds: it eases
+/* the vignette's next strength from its strength now, the turn rate's share of
+120 degrees per second (0 to 1, more is full) and the time since, in seconds: it eases
 toward the share, in over 0.1 s and out over 0.2 s */
 float halo_stereo_vignette_ease(float strength, float turn_fraction, float time_delta);
 /* HEAD mode's render (source/render/render.c): turns a camera by the head's

@@ -17,6 +17,10 @@ check can read the settings afresh. */
 
 #include "halo_stereo.h"
 #include "host_stereo_head.h"
+#include "host_stereo_vignette.h"
+
+/* the eye shader's vignette mask, as C */
+HOST_STEREO_VIGNETTE_SOURCE
 
 /* the settings each check reads (NULL: the setting is absent) */
 static const char *setting_turn = "smooth";
@@ -315,6 +319,12 @@ static void turning(void)
 	restart("snap", 30.0, 120.0, 1);
 	hold_stick(1.0f, 0.5f, 90.0f, &peak);
 	check(peak == 0.0f, "vignette: none for snaps");
+	restart("smooth", 30.0, 45.0, 1);
+	hold_stick(1.0f, 0.5f, 90.0f, &peak);
+	check(fabsf(peak - 45.0f / 120.0f) < 0.001f, "vignette: at 45 deg/s full over, 45/120 strong");
+	restart("smooth", 30.0, 360.0, 1);
+	hold_stick(1.0f, 0.5f, 90.0f, &peak);
+	check(fabsf(peak - 1.0f) < 0.001f, "vignette: at 360 deg/s, full");
 }
 
 /* the vignette's easing, alone */
@@ -362,6 +372,58 @@ static void pole(void)
 	}
 }
 
+/* the mask (host_stereo_vignette.h) at a direction, azimuth right positive
+and elevation up positive in radians, through an eye's frustum tangents
+(left, right, up, down); -1 if the eye doesn't see it */
+static float mask_at(const float tangents[4], float azimuth, float elevation, float inner, float outer)
+{
+	float x = tanf(azimuth), y = tanf(elevation) / cosf(azimuth);
+	float u = (x + tangents[0]) / (tangents[0] + tangents[1]);
+	float v = (tangents[2] - y) / (tangents[2] + tangents[3]);
+
+	if (u < 0.0f || u > 1.0f || v < 0.0f || v > 1.0f)
+		return -1.0f;
+	return host_stereo_vignette_edge(u, v, tangents[0], tangents[1], tangents[2], tangents[3], inner, outer);
+}
+
+/* the mask both eyes see: the Vision Pro's measured frusta (task-7b-report.md),
+the right eye's mirroring the left's */
+static void vignette_binocular(void)
+{
+	static const float left_eye[4] = { 1.757f, 1.014f, 1.014f, 1.209f };
+	static const float right_eye[4] = { 1.014f, 1.757f, 1.014f, 1.209f };
+	float outer = atanf(1.014f), inner = HOST_STEREO_VIGNETTE_CLEAR_SHARE * outer;
+	float worst = 0.0f;
+	int both = 0, a, e;
+
+	printf("comfort vignette in both eyes:\n");
+	for (a = -60; a <= 60; a += 2) {
+		for (e = -40; e <= 40; e += 2) {
+			float left = mask_at(left_eye, a * DEGREES, e * DEGREES, inner, outer);
+			float right = mask_at(right_eye, a * DEGREES, e * DEGREES, inner, outer);
+
+			if (left < 0.0f || right < 0.0f)
+				continue;
+			both++;
+			if (fabsf(left - right) > worst)
+				worst = fabsf(left - right);
+		}
+	}
+	printf("  %d directions seen by both eyes: the masks differ by at most %.6f\n", both, worst);
+	check(both > 500 && worst < 0.0001f, "a direction both eyes see is darkened alike in each");
+	check(mask_at(left_eye, 0.0f, 0.0f, inner, outer) == 0.0f && mask_at(right_eye, 0.0f, 0.0f, inner, outer) == 0.0f,
+		"straight ahead is clear in both eyes");
+	check(mask_at(left_eye, 25.0f * DEGREES, 0.0f, inner, outer) == 0.0f &&
+		mask_at(left_eye, -25.0f * DEGREES, 0.0f, inner, outer) == 0.0f,
+		"the left eye is clear 25 degrees to either side (centered on straight ahead)");
+	check(fabsf(mask_at(left_eye, 40.0f * DEGREES, 0.0f, inner, outer) -
+		mask_at(right_eye, 40.0f * DEGREES, 0.0f, inner, outer)) < 0.0001f &&
+		mask_at(left_eye, 40.0f * DEGREES, 0.0f, inner, outer) > 0.5f,
+		"40 degrees right: the same in both eyes, over half dark");
+	check(fabsf(mask_at(left_eye, -50.0f * DEGREES, 0.0f, inner, outer) - 1.0f) < 0.0001f,
+		"50 degrees out (past the nearest edge's angle): full");
+}
+
 int main(void)
 {
 	pole();
@@ -373,6 +435,7 @@ int main(void)
 	pan("level pan at 30 deg pitch", 30.0f * DEGREES, 0.0f);
 	turning();
 	vignette_easing();
+	vignette_binocular();
 	if (failures)
 	{
 		printf("stereo head probe: %d failed\n", failures);

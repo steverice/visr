@@ -102,6 +102,10 @@ static int vignette_stick_read;
 over this long, in seconds */
 #define VIGNETTE_EASE_IN 0.1f
 #define VIGNETTE_EASE_OUT 0.2f
+/* the comfort vignette is full at this turn rate and up, in degrees per
+second (input.smooth_turn_speed's default): a slower speed setting, a
+fainter vignette */
+#define VIGNETTE_FULL_RATE 120.0f
 /* the stick past this turns one snap; it must come back inside the release
 before the next */
 #define SNAP_FLICK 0.7f
@@ -410,7 +414,7 @@ void halo_stereo_stick_look(short gamepad_index, float yaw_response, float time_
 		this frame's time: the game's own turn would speed up to three times
 		as fast while the stick is held over */
 		smooth_yaw = yaw_response * smooth_degrees_per_second * (3.14159265f / 180.0f) * time_delta;
-		turn_fraction = fabsf(yaw_response);
+		turn_fraction = fabsf(yaw_response) * smooth_degrees_per_second / VIGNETTE_FULL_RATE;
 	} else if (turn_mode == TURN_SNAP) {
 		/* a snap turns the way the stick would turn the look smoothly */
 		float snap_radians = snap_degrees * 3.14159265f / 180.0f;

@@ -31,6 +31,7 @@ Elsewhere host_stereo_frame leaves the frame mono. */
 #include <simd/simd.h>
 #include "host_theater.h"
 #include "host_stereo_head.h"
+#include "host_stereo_vignette.h"
 
 /* one world unit in meters */
 #define METERS_PER_UNIT 3.048f
@@ -77,9 +78,12 @@ static NSString *const shader_source =
 	takes depth 0 for nothing there (black, or the room), and the sky, the
 	clear and what only transparent effects drew all reach it as 0, so they
 	take the depth of something half way to the far plane. The comfort
-	vignette (input.comfort_vignette) darkens the color only, toward black
-	outside the middle 60% of the picture, and never its depth */
-	"struct eye_uniforms { uint decode_srgb; float depth_scale; float depth_floor; float brightness; float vignette; };\n"
+	vignette (input.comfort_vignette, host_stereo_vignette.h) darkens the
+	color only, toward black away from straight ahead, alike in both eyes,
+	and never its depth */
+	HOST_STEREO_VIGNETTE_STRING(HOST_STEREO_VIGNETTE_SOURCE) "\n"
+	"struct eye_uniforms { uint decode_srgb; float depth_scale; float depth_floor; float brightness; float vignette;\n"
+	"	float4 tangents; float vignette_inner; float vignette_outer; };\n"
 	"fragment eye_pixel eye_fragment(picture_vertex in [[stage_in]], texture2d<float> picture [[texture(0)]],\n"
 	"	depth2d<float> depth [[texture(1)]], sampler linear [[sampler(0)]], sampler nearest [[sampler(1)]],\n"
 	"	constant eye_uniforms &u [[buffer(0)]])\n"
@@ -87,7 +91,8 @@ static NSString *const shader_source =
 	"	float3 color = picture.sample(linear, in.coordinate).rgb;\n"
 	"	if (u.decode_srgb)\n"
 	"		color = select(pow((color + 0.055) / 1.055, 2.4), color / 12.92, color <= 0.04045);\n"
-	"	float edge = smoothstep(0.6, 1.0, length(in.coordinate * 2.0 - 1.0));\n"
+	"	float edge = u.vignette > 0.0 ? host_stereo_vignette_edge(in.coordinate.x, in.coordinate.y, u.tangents.x,\n"
+	"		u.tangents.y, u.tangents.z, u.tangents.w, u.vignette_inner, u.vignette_outer) : 0.0;\n"
 	"	eye_pixel out;\n"
 	"	out.color = float4(color * u.brightness * (1.0 - u.vignette * edge), 1);\n"
 	"	out.depth = clamp(depth.sample(nearest, in.coordinate) * u.depth_scale, u.depth_floor, 1.0);\n"
@@ -124,6 +129,24 @@ Compositor's default range is about 0.1 m to infinity, where this is about
 1 km away */
 #define STEREO_DEPTH_FLOOR_DEFAULT 0.0001f
 
+#if TARGET_OS_VISION
+/* a view's frustum tangents (left, right, up, down, all positive) from its
+projection: an off-axis projection's x scale is 2 / (left + right) and its
+x offset (right - left) / (left + right); likewise y */
+static simd_float4 view_tangents(cp_drawable_t drawable, size_t view_index) API_AVAILABLE(visionos(26.0))
+{
+	simd_float4x4 projection = cp_drawable_compute_projection(drawable,
+		cp_axis_direction_convention_right_up_back, view_index);
+
+	return (simd_float4){
+		(1.0f - projection.columns[2].x) / projection.columns[0].x,
+		(1.0f + projection.columns[2].x) / projection.columns[0].x,
+		(1.0f + projection.columns[2].y) / projection.columns[1].y,
+		(1.0f - projection.columns[2].y) / projection.columns[1].y,
+	};
+}
+#endif
+
 struct eye_uniforms
 {
 	uint32_t decode_srgb;
@@ -131,6 +154,10 @@ struct eye_uniforms
 	float depth_floor;
 	float brightness;
 	float vignette;
+	/* the view's frustum: left, right, up, down tangents; the vignette's
+	inner and outer angles in radians, the same for both eyes */
+	simd_float4 tangents;
+	float vignette_inner, vignette_outer;
 };
 
 struct hud_uniforms
@@ -482,6 +509,19 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 			}
 			commands = [queue commandBuffer];
 			views = cp_drawable_get_view_count(drawable);
+			/* the comfort vignette's angles, the same for every view: full at
+			the nearest edge of any view's frustum */
+			float vignette_outer = 0.0f;
+			for (size_t view_index = 0; view_index < views; view_index++)
+			{
+				simd_float4 tangents = view_tangents(drawable, view_index);
+				float nearest = atanf(fminf(fminf(tangents.x, tangents.y), fminf(tangents.z, tangents.w)));
+
+				if (view_index == 0 || nearest < vignette_outer)
+					vignette_outer = nearest;
+			}
+			if (!(vignette_outer > 0.0f))
+				vignette = 0.0f;
 			for (size_t view_index = 0; view_index < views; view_index++)
 			{
 				cp_view_t view = cp_drawable_get_view(drawable, view_index);
@@ -496,7 +536,8 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 				uint32_t decode_srgb = color.pixelFormat == MTLPixelFormatBGRA8Unorm_sRGB ||
 					color.pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB;
 				struct eye_uniforms eye_uniforms = { decode_srgb, depth_scale, depth_floor, brightness,
-					fmaxf(0.0f, fminf(1.0f, vignette)) };
+					fmaxf(0.0f, fminf(1.0f, vignette)), view_tangents(drawable, view_index),
+					HOST_STEREO_VIGNETTE_CLEAR_SHARE * vignette_outer, vignette_outer };
 
 				pass.colorAttachments[0].texture = color;
 				pass.colorAttachments[0].slice = slice;

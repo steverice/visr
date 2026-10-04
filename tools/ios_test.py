@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Run native ILP32, memory-tracking and SDL audio handoff regressions."""
+import re
 import shlex
 import subprocess
 from pathlib import Path
@@ -97,6 +98,18 @@ run('xcrun', 'clang', '-O2', '-fsanitize=address,undefined', '-DHALO_IOS=1', '-I
     'port/ios/tests/stereo_head_probe.c', 'port/ios/host/host_stereo_head.c',
     '-o', BUILD/'stereo-head-probe')
 run(BUILD/'stereo-head-probe')
+# the head-tracked presenter's shaders, compiled from its source string at run time: compile
+# them here, as the visionOS build's preprocessor leaves them (host_stereo_vignette.h's mask is
+# macro text, which a math macro could otherwise rewrite unseen)
+run('xcrun', '--sdk', 'xros', 'clang', '-target', 'arm64-apple-xros26.0', '-E', '-P', '-x', 'objective-c',
+    '-Iport/ios/host', '-Iport/linux/src', '-Iport/runtime/include', '-Iport/runtime/guest/runtime',
+    'port/ios/host/host_stereo.m', '-o', BUILD / 'host_stereo.i')
+preprocessed = (BUILD / 'host_stereo.i').read_text()
+literals = re.match(r'shader_source =\s*((?:@?"(?:[^"\\]|\\.)*"\s*)+);',
+                    preprocessed[preprocessed.index('shader_source ='):])
+(BUILD / 'host_stereo.metal').write_text(''.join(
+    re.findall(r'"((?:[^"\\]|\\.)*)"', literals.group(1))).encode().decode('unicode_escape'))
+run('xcrun', '--sdk', 'xros', 'metal', '-c', BUILD / 'host_stereo.metal', '-o', BUILD / 'host_stereo.air')
 # HEAD mode turns in snaps unless the player asks otherwise
 if '{ "input.turn", _config_string, "\\"snap\\""' not in (ROOT / 'port/linux/src/port_config.c').read_text():
     raise SystemExit('port_config.c: input.turn must default to "snap"')
