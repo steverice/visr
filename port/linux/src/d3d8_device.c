@@ -3805,6 +3805,11 @@ static void write_depth_screenshot(struct render_target_entry *target, const cha
 	if (!directory || !(depth = depth_read(target)))
 		return;
 	pixels = malloc(image_size);
+	if (!pixels)
+	{
+		free(depth);
+		return;
+	}
 	for (index = 0; index < width * height; index++)
 	{
 		float reversed = 1.0f - depth[index];
@@ -3898,19 +3903,22 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 		{
 			struct gpu_stereo_present present = { 0 };
 			int eye;
-			static int depth_checked;
+			static unsigned long depth_checks;
 
-			/* debug.gpu_stats: how much of the first stereo frame's eye depth is
-			empty, which the Compositor would show as nothing (passthrough) */
-			if (debug_settings.statistics && !depth_checked)
+			/* debug.gpu_stats: how much of the eye depth the game drew is empty
+			(before the presenter's floor, host_stereo.m), on the first stereo
+			frame and every 900th after: walls and floors should leave none
+			outside the sky, so a nonzero share in an enclosed space means
+			static geometry lost its depth (headset session 1) */
+			if (debug_settings.statistics && depth_checks++ % 900 == 0)
 			{
 				float share = depth_empty_share(render_target_get_layer(&device.depth_buffer, 0));
 
-				depth_checked = 1;
 				if (share >= 0.0f)
-					platform_log("stereo: the first stereo frame's left eye depth is %.1f%% empty", 100.0f * share);
+					platform_log("stereo: frame %lu: the left eye depth is %.1f%% empty (stereo frame %lu)",
+						device.frame, 100.0f * share, depth_checks);
 				else
-					platform_log("stereo: the first stereo frame's depth can't be read back");
+					platform_log("stereo: the eye depth can't be read back");
 			}
 
 			for (eye = 0; eye < 2; eye++)
