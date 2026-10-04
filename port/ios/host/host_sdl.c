@@ -16,6 +16,7 @@ so the audio callback is handed to a thread that has one.
 #include "host_stereo.h"
 #endif
 #include "host.h"
+#include "host_config.h"
 
 #include <SDL3/SDL.h>
 #include <limits.h>
@@ -229,10 +230,28 @@ int host_sdl_gl_swap_window(uint32_t window)
 
 /* ---------- events */
 
+/* host_main.m: a second window scene's start, undone (see there); and its
+test */
+void host_extra_scene_poll(void);
+void host_extra_scene_test(void);
+
 int host_sdl_poll_event(void *event)
 {
 	SDL_Event host_event;
+	static int test_extra_scene = -1;
+	static unsigned long polls;
 
+	host_extra_scene_poll();
+	if (test_extra_scene < 0)
+	{
+		char value[16];
+
+		host_config_string("debug.test_extra_scene", "false", value, sizeof(value));
+		test_extra_scene = !strcmp(value, "true");
+	}
+	/* a few seconds in, once the game's window is up */
+	if (test_extra_scene && ++polls == 600)
+		host_extra_scene_test();
 	if (!SDL_PollEvent(&host_event))
 		return 0;
 	/* the layouts agree except for the pointers of text, drop and user

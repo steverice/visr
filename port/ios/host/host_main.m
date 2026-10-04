@@ -76,35 +76,86 @@ scene that connects: a second one (visionOS can connect or restore another
 window scene of the app) fires its start timer whenever the running guest
 pumps the run loop (SDL_PollEvent), and would start a second guest inside the
 first, nested on the main thread, until the system kills the hung app. Only
-the first call runs the game; a later one closes its scene and returns. */
-static void close_extra_window_scenes(void) {
+the first call runs the game. A later one returns at once, and its
+postFinishLaunch then turns SDL's iOS event pump off (SDL_SetiOSEventPump),
+which is global: the running game would never run the main run loop again,
+so no UIKit event, lifecycle notification or main-queue block would reach it.
+host_extra_scene_poll, from the game's event poll, turns the pump back on and
+closes the extra scene. */
+static int extra_scene_pending;
+
+/* the scene holding the game's window, or nil before it exists */
+static UIWindowScene *game_window_scene(void) {
+    SDL_Window *game_window=host_sdl_window();
+    UIWindow *window=game_window ? (__bridge UIWindow *)SDL_GetPointerProperty(SDL_GetWindowProperties(game_window),
+        SDL_PROP_WINDOW_UIKIT_WINDOW_POINTER,NULL) : nil;
+    return window.windowScene;
+}
+
+/* whether a disconnecting scene is the game's: yes before the game's window
+exists, when any of SDL's window scenes could be it (as before) */
+static BOOL scene_is_the_games(UIScene *scene) {
+    UIWindowScene *game_scene=game_window_scene();
+    if(game_scene)return scene==game_scene;
+    return [scene isKindOfClass:UIWindowScene.class] &&
+        [NSStringFromClass([(NSObject *)scene.delegate class]) isEqualToString:@"SDLUIKitSceneDelegate"];
+}
+
+int host_scene_is_games(void *scene) {
+    return scene_is_the_games((__bridge UIScene *)scene);
+}
+
+/* closes SDL's window scenes other than the one holding the game's window
+(SDL's plain UIWindow, from the SDL window's properties); NO until that
+window exists, since before then the game's scene could be any of them */
+static BOOL close_extra_window_scenes(void) {
 #if !TARGET_OS_TV
-    NSMutableArray<UIWindowScene *> *extra=[NSMutableArray array];
-    BOOL found=NO;
+    UIWindowScene *game_scene=game_window_scene();
+    if(!game_scene)return NO;
     for(UIScene *scene in UIApplication.sharedApplication.connectedScenes){
         /* SDL's window scenes only, never theater mode's immersive space */
-        if(![scene isKindOfClass:UIWindowScene.class] ||
+        if(scene==game_scene || ![scene isKindOfClass:UIWindowScene.class] ||
             ![NSStringFromClass([(NSObject *)scene.delegate class]) isEqualToString:@"SDLUIKitSceneDelegate"])continue;
-        BOOL game=NO;
-        for(UIWindow *window in ((UIWindowScene *)scene).windows)
-            if([NSStringFromClass(window.class) isEqualToString:@"SDL_uikitwindow"])game=YES;
-        if(game)found=YES;
-        else [extra addObject:(UIWindowScene *)scene];
-    }
-    /* not before the game's own window exists: it could be any of them */
-    if(!found)return;
-    for(UIWindowScene *scene in extra){
         host_logf(HOST_LOG_INFO,"closing an extra window scene (%s)",scene.session.role.UTF8String);
-        [UIApplication.sharedApplication requestSceneSessionDestruction:scene.session options:nil errorHandler:nil];
+        [UIApplication.sharedApplication requestSceneSessionDestruction:scene.session options:nil
+            errorHandler:^(NSError *error){host_logf(HOST_LOG_WARN,"the extra window scene didn't close: %s",
+                error.description.UTF8String);}];
     }
 #endif
+    return YES;
 }
+
+/* the game's event poll (host_sdl.c), on the main thread outside any SDL
+call: after a later main call, the event pump comes back on, and the extra
+scene closes once the game's window exists */
+void host_extra_scene_poll(void) {
+    if(!extra_scene_pending)return;
+    if(extra_scene_pending==1){
+        SDL_SetiOSEventPump(true);
+        host_logf(HOST_LOG_INFO,"the event pump is back on after the extra window scene's start");
+        /* a block on the main queue runs only when the main run loop does */
+        dispatch_async(dispatch_get_main_queue(),^{host_logf(HOST_LOG_INFO,"the main queue runs again");});
+        extra_scene_pending=2;
+    }
+    if(close_extra_window_scenes())extra_scene_pending=0;
+}
+
+/* debug.test_extra_scene (the simulator): asks for a second window scene of
+the app once the game runs, to drive the path above */
+void host_extra_scene_test(void) {
+#if !TARGET_OS_TV
+    host_logf(HOST_LOG_INFO,"debug.test_extra_scene: asking for a second window scene");
+    [UIApplication.sharedApplication requestSceneSessionActivation:nil userActivity:nil options:nil
+        errorHandler:^(NSError *error){host_logf(HOST_LOG_WARN,"debug.test_extra_scene: %s",error.description.UTF8String);}];
+#endif
+}
+
 int main(int argc,char **argv) {
     (void)argc;(void)argv;
     static int entered;
     if(entered++){
         host_logf(HOST_LOG_WARN,"another window scene connected and asked to start the game while it runs (start %d); ignored",entered);
-        dispatch_async(dispatch_get_main_queue(),^{close_extra_window_scenes();});
+        extra_scene_pending=1;
         return 0;
     }
     @autoreleasepool {
@@ -153,7 +204,14 @@ int main(int argc,char **argv) {
            loop is when a player is most likely to close the window; delivered
            while that loop or the guest pumps the run loop. */
         [NSNotificationCenter.defaultCenter addObserverForName:UISceneDidDisconnectNotification object:nil queue:nil
-            usingBlock:^(NSNotification *notification){(void)notification;host_exit(0);}];
+            usingBlock:^(NSNotification *notification){
+                /* an extra window scene closing (close_extra_window_scenes), or
+                theater mode's space, isn't the game's window closing */
+                if(!scene_is_the_games(notification.object)){
+                    host_logf(HOST_LOG_INFO,"a scene that isn't the game's window disconnected");
+                    return;
+                }
+                host_exit(0);}];
 #endif
         UIApplication.sharedApplication.idleTimerDisabled=YES;
 #if TARGET_OS_MACCATALYST
