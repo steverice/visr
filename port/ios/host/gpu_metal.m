@@ -3156,14 +3156,21 @@ static uint32_t gpu_metal_present(gpu_texture back_buffer)
 		if (theater_wanted && record && record->texture && host_theater_active())
 		{
 			int screen_width, screen_height;
+			long window_width, window_height, width, height;
 			id<MTLTexture> picture;
 
 			host_theater_picture_size(&screen_width, &screen_height);
-			/* at the screen's shape, which is the game's layout (852x480 on
-			visionOS), whatever the back buffer's: in head-tracked stereo a
-			frame without eyes (a menu, a load) is drawn at the eyes' size,
-			whose pixels aren't square (d3d8_device.c's screen_mode_choose) */
-			picture = upscale(record->texture, screen_width, screen_height);
+			window_width = screen_width;
+			window_height = screen_height;
+			width = window_width;
+			height = window_width * (long)record->description.height / (long)record->description.width;
+
+			if (height > window_height)
+			{
+				height = window_height;
+				width = window_height * (long)record->description.width / (long)record->description.height;
+			}
+			picture = upscale(record->texture, width, height);
 			use_texture(record);
 			commit(YES);
 			host_theater_present(queue, picture);
