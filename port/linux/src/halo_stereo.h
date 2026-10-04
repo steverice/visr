@@ -92,15 +92,23 @@ int halo_stereo_film(void);
 /* the film's frusta, from the camera's own vertical tangent (render.c's eye
 loop, before it reads the eyes); nothing unless this frame is the film */
 void halo_stereo_film_frusta(float vertical_tangent);
+/* the script fade the eyes draw this frame, with the picture's tick
+fraction (render.c sets it before the eyes; zero until then), which the
+host's room tint takes as well, so the two move in step */
+void halo_stereo_set_fade(const float rgb_intensity[4]);
+void halo_stereo_fade(float rgb_intensity[4]);
 /* port/linux/game/cinematic_screen.c: 1 while the letterbox is in; while
 the camera is scripted (the script's camera_control); while it's third
 person */
 int halo_cinematic_screen(void);
 int halo_scripted_camera(void);
 int halo_third_person_camera(void);
-/* the script fade (fade_in, fade_out; never a screen flash) with the tick
-fraction: its RGB and intensity, zero intensity if none */
-void halo_screen_fade(float rgb_intensity[4]);
+/* the script fade (fade_in, fade_out; never a screen flash) at the picture's
+time: the game's tick before this one plus tick_fraction (the render's
+interpolation fraction; 1.0 gives the game's own whole-tick intensity). Its
+RGB and intensity into rgb_intensity, zero intensity if none; 1 while the
+game has a fade active (it draws one, perhaps at intensity 0) */
+int halo_screen_fade(float tick_fraction, float rgb_intensity[4]);
 /* source/cutscene/cinematics.c: 0..1, how far the bars are in, following
 the active title's fades */
 float halo_cinematic_title_bars(void);

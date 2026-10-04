@@ -121,6 +121,9 @@ static float z_near_world, z_far_world;
 world units */
 static int film_frame, film_last;
 static float film_half_width;
+/* the script fade the eyes draw and the room takes this frame
+(halo_stereo_set_fade) */
+static float frame_fade[4];
 /* a third-person camera (a vehicle seat's) goes on the screen as the film
 does, the stick still driving it as in mono; the one switch for a later
 setting */
@@ -242,6 +245,7 @@ void halo_stereo_frame_begin(void)
 	memset(&stereo_frame, 0, sizeof(stereo_frame));
 	stereo_frame.mode = stereo_mode;
 	stereo_layer = HALO_STEREO_LAYER_MONO;
+	memset(frame_fade, 0, sizeof(frame_fade));
 	film_reason = 0;
 	if (stereo_mode != HALO_STEREO_OFF) {
 		if (halo_cinematic_screen())
@@ -323,6 +327,16 @@ void halo_stereo_frame_begin(void)
 int halo_stereo_film(void)
 {
 	return film_frame && stereo_frame.eye_count == 2;
+}
+
+void halo_stereo_set_fade(const float rgb_intensity[4])
+{
+	memcpy(frame_fade, rgb_intensity, sizeof(frame_fade));
+}
+
+void halo_stereo_fade(float rgb_intensity[4])
+{
+	memcpy(rgb_intensity, frame_fade, sizeof(frame_fade));
 }
 
 /* The 3D film's frusta. The cinematic camera is the center of a pair of

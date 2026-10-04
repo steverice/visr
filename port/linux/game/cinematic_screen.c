@@ -52,10 +52,13 @@ int halo_third_person_camera(void)
 
 /* The intensity player_effect_get_screen_flash gives the script fade (a
 cosine over the fade's ticks, inverted while fading in), computed here
-without that function, which ends a finished fade in the game state, and
-with the tick fraction, so the room changes smoothly at the display's
-rate. */
-void halo_screen_fade(float rgb_intensity[4])
+without that function, which ends a finished fade in the game state. The
+fade is active exactly when the game's is (whole ticks); its intensity is
+taken at the picture's time, the tick before this one plus the fraction, as
+the render's interpolation shows objects (render_interpolation_game_time_
+sec), so the room changes smoothly at the display's rate and in step with
+the picture. */
+int halo_screen_fade(float tick_fraction, float rgb_intensity[4])
 {
 	real_rgb_color color;
 	long start_time;
@@ -67,14 +70,14 @@ void halo_screen_fade(float rgb_intensity[4])
 	rgb_intensity[0] = rgb_intensity[1] = rgb_intensity[2] = rgb_intensity[3] = 0.0f;
 	/* the game draws no fade while the console is up */
 	if (console_is_active() || !player_effect_get_screen_fade(&color, &start_time, &ticks, &fading_out))
-		return;
+		return 0;
 	elapsed_ticks = game_time_get() - start_time;
 	if (!fading_out && elapsed_ticks > ticks)
-		return;
+		return 0;
 	intensity = ticks > 0
 		? transition_function_evaluate(
 			_transition_function_cosine,
-			PIN(((real)elapsed_ticks + game_time_get_tick_fraction()) / ticks, 0.0f, 1.0f))
+			PIN(((real)elapsed_ticks - 1.0f + PIN(tick_fraction, 0.0f, 1.0f)) / ticks, 0.0f, 1.0f))
 		: 1.0f;
 	if (!fading_out)
 		intensity = 1.0f - intensity;
@@ -82,5 +85,5 @@ void halo_screen_fade(float rgb_intensity[4])
 	rgb_intensity[1] = color.green;
 	rgb_intensity[2] = color.blue;
 	rgb_intensity[3] = PIN(intensity, 0.0f, 1.0f);
+	return 1;
 }
-

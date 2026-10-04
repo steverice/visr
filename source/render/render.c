@@ -151,6 +151,9 @@ static boolean render_stereo_eyes_drawn;
 /* port: in a stereo eye's render_window, the camera whose apex is the culling
 frustum's (render_player_frame_stereo), else NULL */
 static const struct render_camera *render_stereo_visibility_camera;
+/* port: in a stereo eye's render_window, the frame's one screen flash
+(render_player_frame_stereo), else NULL */
+static const struct render_screen_flash *render_stereo_screen_flash;
 
 extern short global_screenshot_count;
 
@@ -351,7 +354,12 @@ static void render_window(
 	}
 	else
 		structure_visibility_compute();
-	player_effect_get_screen_flash(local_player_index, &parameters.screen_flash);
+	/* port: a stereo eye takes the frame's flash: the game's function ends
+	a damage flash's time each call, once per frame in mono */
+	if (render_stereo_screen_flash)
+		parameters.screen_flash = *render_stereo_screen_flash;
+	else
+		player_effect_get_screen_flash(local_player_index, &parameters.screen_flash);
 	rasterizer_window_begin(&parameters);
 
 	if (!bink_playback_in_progress())
@@ -434,8 +442,10 @@ static void render_window(
 		structure_render_fog_screen();
 		rasterizer_lens_flares_draw();
 		halo_render_before_hud(local_player_index, rasterizer_target, &rasterizer_camera->viewport_bounds);
-		/* port: in stereo the screen effects run per eye; the HUD, the flash and
-		the widgets draw once, in the HUD pass (render_player_frame_stereo) */
+		/* port: in stereo the screen effects and the flash (the script fade
+		too) run per eye, so the picture carries them as in mono; the HUD
+		and the widgets draw once, in the HUD pass, which repeats the flash
+		over what the HUD covers (render_player_frame_stereo) */
 		if (halo_stereo_current_layer() == HALO_STEREO_LAYER_MONO)
 		{
 			interface_draw_screen();
@@ -445,7 +455,10 @@ static void render_window(
 			halo_screen_ui_offset(FALSE);
 		}
 		else
+		{
 			interface_draw_screen_effects();
+			rasterizer_screen_flash();
+		}
 	}
 
 	/* port: in stereo the movie draws once, in the HUD pass: each call can
@@ -486,6 +499,8 @@ static void render_player_frame_stereo(
 	short eye;
 	struct rasterizer_window_begin_parameters parameters;
 	real time_delta_since_tick_sec;
+	struct render_screen_flash screen_flash;
+	float fade[4];
 
 	stereo = halo_stereo_frame();
 	/* head-tracked stereo: the cameras turn by the head's turn the look takes
@@ -539,6 +554,17 @@ static void render_player_frame_stereo(
 	cross_product3d(&right, &window->rasterizer_camera.forward, &up);
 	normalize3d(&up);
 
+	/* the frame's screen flash, once: both eyes and the HUD pass draw it.
+	The game's function ends a damage flash's time by the frame's at each
+	call. While a script fade is up, its intensity is taken at the picture's
+	time (the tick fraction), which the host's room tint takes as well, so
+	the picture's fade and the room's stay in step */
+	memset(&screen_flash, 0, sizeof(screen_flash));
+	player_effect_get_screen_flash(window->local_player_index, &screen_flash);
+	if (halo_screen_fade(render_interpolation_fraction(), fade))
+		screen_flash.intensity = fade[3];
+	halo_stereo_set_fade(fade);
+
 	time_delta_since_tick_sec = render.time_delta_since_tick_sec;
 	for (eye = 0; eye < 2; eye++)
 	{
@@ -582,8 +608,9 @@ static void render_player_frame_stereo(
 		if (eye == 1)
 			render.time_delta_since_tick_sec = 0.0f;
 		/* the mirror's render_window runs in the eye's layer, so it skips
-		rasterizer_screen_flash and render_ui_widgets, deliberately: they
-		draw once, in the HUD pass */
+		render_ui_widgets, deliberately: they draw once, in the HUD pass. It
+		takes the flash as mono's mirror does (the game's function, for no
+		player: the script fade alone) */
 		if (structure_visibility_find_mirror(&eye_camera, &eye_frustum, &mirror))
 		{
 			short saved_cluster_index;
@@ -614,6 +641,7 @@ static void render_player_frame_stereo(
 		}
 
 		render_stereo_visibility_camera = &cull_camera;
+		render_stereo_screen_flash = &screen_flash;
 		render_window(
 			window->local_player_index,
 			camera,
@@ -622,6 +650,7 @@ static void render_player_frame_stereo(
 			&eye_frustum,
 			_render_target_primary,
 			has_mirror);
+		render_stereo_screen_flash = NULL;
 		render_stereo_visibility_camera = NULL;
 	}
 	render.time_delta_since_tick_sec = time_delta_since_tick_sec;
@@ -640,7 +669,7 @@ static void render_player_frame_stereo(
 	render_camera_build_frustum(&parameters.camera, NULL, &parameters.frustum, TRUE);
 	parameters.rasterizer_target = _render_target_primary;
 	parameters.window_index = render.window_index;
-	player_effect_get_screen_flash(window->local_player_index, &parameters.screen_flash);
+	parameters.screen_flash = screen_flash;
 	rasterizer_window_begin(&parameters);
 	if (!bink_playback_in_progress())
 	{
