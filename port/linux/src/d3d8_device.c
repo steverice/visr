@@ -87,6 +87,11 @@ frames, after one is presented (halo_screen_commit). */
 render target the size of the screen has per unit of it */
 static long screen_width;
 static float screen_scale[2] = { 1.0f, 1.0f };
+/* head-tracked stereo: the screen's scale for frames and layers without the
+Compositor's eyes (menus, loads, the mono layer), the last one a frame
+without them took: the theater picture's, which the mono presenter puts on
+the screen; 0 until one is known */
+static float screen_scale_mono[2];
 static long ui_offset;
 static int32_t screen_maximum_texture_size = 8192;
 #define UI_OFFSET ((int32_t)ui_offset)
@@ -132,6 +137,8 @@ void halo_render_scale_step(int direction)
 	render_scale_changed_milliseconds = halo_frame_trace_milliseconds();
 	platform_log("render scale %.2f", scale);
 }
+
+static int head_eyes_frame(void);
 
 static void screen_mode_choose(long *width, float scale[2])
 {
@@ -181,10 +188,7 @@ static void screen_mode_choose(long *width, float scale[2])
 		square. The display's shape is kept to 4:3 and wider, which would
 		squeeze a view's height. Only in a frame with the Compositor's eyes;
 		the drawable is theirs then (host_stereo_picture_size) */
-		const struct halo_stereo_frame *stereo = halo_stereo_frame();
-
-		if (stereo->mode == HALO_STEREO_HEAD && stereo->eye_count == 2 && stereo->eye_width > 0 &&
-			stereo->eye_height > 0)
+		if (head_eyes_frame())
 		{
 			long render_height = config_integer("display.render_height");
 
@@ -223,11 +227,32 @@ static void screen_mode_choose(long *width, float scale[2])
 #endif
 }
 
+/* a head-tracked frame with the Compositor's eyes, whose screen-sized
+targets are the eyes' pictures (screen_mode_choose) */
+static int head_eyes_frame(void)
+{
+	const struct halo_stereo_frame *stereo = halo_stereo_frame();
+
+	return stereo->mode == HALO_STEREO_HEAD && stereo->eye_count == 2 && stereo->eye_width > 0 &&
+		stereo->eye_height > 0;
+}
+
+/* the scale just taken, remembered for mono frames if this frame has no eyes */
+static void screen_scale_taken(void)
+{
+	if (!head_eyes_frame())
+	{
+		screen_scale_mono[0] = screen_scale[0];
+		screen_scale_mono[1] = screen_scale[1];
+	}
+}
+
 long halo_screen_width(void)
 {
 	if (!screen_width)
 	{
 		screen_mode_choose(&screen_width, screen_scale);
+		screen_scale_taken();
 		platform_log("screen: %ldx%d drawn at %.0fx%.0f", screen_width, SCREEN_HEIGHT,
 			screen_width * screen_scale[0], SCREEN_HEIGHT * screen_scale[1]);
 	}
@@ -630,6 +655,14 @@ static struct render_target_entry *render_target_get_layer(const D3DSurface *sur
 		scale[0] = screen_scale[0];
 		scale[1] = screen_scale[1];
 		layer = stereo_layer;
+		/* head-tracked stereo: the mono layer (a frame without eyes, which
+		presents mono on the theater screen) keeps the theater picture's size
+		and shape; the eyes and the HUD take the views' */
+		if (layer == HALO_STEREO_LAYER_MONO && screen_scale_mono[0] > 0.0f && head_eyes_frame())
+		{
+			scale[0] = screen_scale_mono[0];
+			scale[1] = screen_scale_mono[1];
+		}
 	}
 	else
 		offscreen_target_scale(width, height, format, scale);
@@ -1135,6 +1168,11 @@ long halo_screen_commit(void)
 	if (!screen_width)
 		return halo_screen_width();
 	screen_mode_choose(&width, scale);
+	if (!head_eyes_frame())
+	{
+		screen_scale_mono[0] = scale[0];
+		screen_scale_mono[1] = scale[1];
+	}
 	if (width != screen_width || scale[0] != screen_scale[0] || scale[1] != screen_scale[1])
 	{
 		platform_log("screen: %ldx%d drawn at %.0fx%.0f", width, SCREEN_HEIGHT,
@@ -1161,12 +1199,29 @@ than the last frame's. Only the scale: a new width waits for
 halo_screen_commit, which the rasterizer follows. */
 void halo_screen_commit_stereo_scale(void)
 {
+	const struct halo_stereo_frame *stereo = halo_stereo_frame();
 	long width;
 	float scale[2];
+	/* what the scale depends on, to skip the work while it doesn't change */
+	static int32_t last_mode = -1, last_eye_count, last_width, last_height;
+	static double last_render_scale;
 
 	if (!screen_width)
 		return;
+	if (stereo->mode == last_mode && stereo->eye_count == last_eye_count && stereo->eye_width == last_width &&
+		stereo->eye_height == last_height && render_scale_live == last_render_scale)
+		return;
+	last_mode = stereo->mode;
+	last_eye_count = stereo->eye_count;
+	last_width = stereo->eye_width;
+	last_height = stereo->eye_height;
+	last_render_scale = render_scale_live;
 	screen_mode_choose(&width, scale);
+	if (!head_eyes_frame())
+	{
+		screen_scale_mono[0] = scale[0];
+		screen_scale_mono[1] = scale[1];
+	}
 	if (width == screen_width && (scale[0] != screen_scale[0] || scale[1] != screen_scale[1]))
 	{
 		platform_log("screen: %ldx%d drawn at %.0fx%.0f for the stereo frame", width, SCREEN_HEIGHT,

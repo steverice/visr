@@ -523,8 +523,16 @@ static void present_pictures(id<MTLCommandQueue> queue, id<MTLTexture> left, id<
 					pass.renderTargetArrayLength = 1;
 				uniforms.clip_from_screen = simd_mul(projection,
 					simd_mul(simd_inverse(origin_from_view), origin_from_screen));
-				uniforms.half_size = (simd_float2){ screen_width / 2.0f,
-					screen_width / 2.0f * (float)picture.height / (float)picture.width };
+				/* the screen's shape, the game's layout: not the picture's,
+				whose pixels needn't be square (a head-tracked frame without
+				eyes is drawn at the eyes' size) */
+				{
+					int picture_width, picture_height;
+
+					host_theater_picture_size(&picture_width, &picture_height);
+					uniforms.half_size = (simd_float2){ screen_width / 2.0f,
+						screen_width / 2.0f * (float)picture_height / (float)picture_width };
+				}
 				uniforms.decode_srgb = decode_srgb;
 				uniforms.brightness = brightness;
 				id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
