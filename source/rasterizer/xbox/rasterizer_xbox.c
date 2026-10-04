@@ -2790,11 +2790,11 @@ void rasterizer_set_frustum_z(
 		"c:\\halo\\SOURCE\\rasterizer\\xbox\\rasterizer_xbox.c",
 		2967,
 		global_d3d_device);
-	/* port: in a SCREEN gameplay eye the first-person weapon has its own
-	eye, nearly flat with its nearest point on the screen's surface
-	(stereo.c); the window's save call keeps the view and projection, and
-	the restore call puts them back beside the depth range. Mono, HEAD mode
-	and the film never have a weapon eye */
+	/* port: in a SCREEN mode eye (gameplay or the film) the first-person
+	weapon has its own eye, nearly flat with its nearest point on the
+	screen's surface (stereo.c); the window's save call keeps the view and
+	projection, and the restore call puts them back beside the depth range.
+	Mono and HEAD mode never have a weapon eye */
 	if (z_near == -1.0f && z_far == -1.0f)
 	{
 		first_person_saved_world_to_view = global_window_parameters.frustum.world_to_view;

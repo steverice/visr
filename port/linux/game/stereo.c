@@ -613,9 +613,15 @@ int halo_stereo_first_person_eye(struct halo_stereo_eye *eye)
 	struct screen_mapping weapon;
 	struct halo_stereo_eye eyes[2];
 
-	if (!halo_stereo_screen_gameplay() || (stereo_layer != 0 && stereo_layer != 1))
+	/* every frame on the screen in SCREEN mode, the film's too: the film's
+	hold after a cutscene shows the player's first-person camera, weapon and
+	all, and the weapon must not lunge out of the screen under the film's
+	mapping and snap back when gameplay's begins. Under a true cutscene or a
+	director's camera the weapon isn't drawn anyway */
+	if (!screen_mode() || !(film_frame || gameplay_frame) || stereo_frame.eye_count != 2 ||
+		(stereo_layer != 0 && stereo_layer != 1))
 		return 0;
-	/* the weapon's mapping, leaning with the scene's */
+	/* the weapon's mapping, leaning with the scene's (which eases) */
 	weapon.depth_share = FIRST_PERSON_DEPTH_SHARE;
 	weapon.convergence_meters = FIRST_PERSON_CONVERGENCE_METERS;
 	weapon.lean = mapping_easing.now.lean;

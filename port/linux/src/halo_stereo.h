@@ -114,10 +114,12 @@ hold); main.c then narrows the vertical view by 0.75, so the screen shows
 the game's horizontal view across 16:9. With the immersive space closed,
 SCREEN mode's window keeps mono's Hor+ view */
 int halo_stereo_screen_framing(void);
-/* in a SCREEN gameplay eye's layer: the first-person weapon's eye (its
-offset right and up from the camera, world units, and its tangents) by the
-weapon's own nearly flat mapping, its nearest point on the screen's surface
-(rasterizer_set_frustum_z); returns 0 elsewhere */
+/* in an eye's layer of a frame on the screen in SCREEN mode (or
+debug.side_by_side_screen), gameplay or the film (its hold shows the
+player's camera): the first-person weapon's eye (its offset right and up
+from the camera, world units, and its tangents) by the weapon's own nearly
+flat mapping, its nearest point on the screen's surface
+(rasterizer_set_frustum_z); returns 0 elsewhere, HEAD mode included */
 int halo_stereo_first_person_eye(struct halo_stereo_eye *eye);
 /* debug.gpu_stats: logs the culling camera's distance back behind the
 center camera (render.c), once for each mode and mapping */

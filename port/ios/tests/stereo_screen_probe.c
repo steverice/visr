@@ -399,12 +399,39 @@ static void first_person_eye(void)
 	}
 	check(worst < 1e-5f && leaned[0].offset[0] != eyes[0].offset[0], "leaning, it stays put on the screen");
 	host_head[0] = 0.0f;
-	halo_stereo_layer(0);
 	game_letterbox = 1;
 	frames(1);
-	check(!halo_stereo_first_person_eye(&none), "the film has none");
+	halo_stereo_layer(0);
+	check(halo_stereo_film() && halo_stereo_first_person_eye(&none), "the film in SCREEN mode has one");
+	/* the film's hold after a cutscene shows the player's camera: the weapon
+	stays on the surface through it, not under the film's mapping */
+	frames(FILM_HOLD_FRAMES);
 	game_letterbox = 0;
+	{
+		int frame, held = 0, on_surface = 1;
+
+		for (frame = 0; frame < FILM_HOLD_FRAMES + 2; frame++) {
+			frames(1);
+			halo_stereo_screen_frusta(VERTICAL);
+			held += halo_stereo_film();
+			for (eye = 0; eye < 2; eye++) {
+				halo_stereo_layer(eye);
+				if (!halo_stereo_first_person_eye(&leaned[eye]))
+					on_surface = 0;
+			}
+			if (on_surface && (fabsf(parallax(leaned, on_axis)) > 1e-5f ||
+				fabsf(parallax(leaned, far) - parallax(eyes, far)) > 1e-6f))
+				on_surface = 0;
+		}
+		check(held == FILM_HOLD_FRAMES && on_surface,
+			"through the film's hold and into gameplay, the weapon keeps its own eye, no jump");
+	}
 	stereo_mode = HALO_STEREO_HEAD;
+	game_letterbox = 1;
+	frames(1);
+	halo_stereo_layer(0);
+	check(halo_stereo_film() && !halo_stereo_first_person_eye(&none), "HEAD mode's film has none");
+	game_letterbox = 0;
 	frames(3 * FILM_HOLD_FRAMES);
 	halo_stereo_layer(0);
 	check(!halo_stereo_first_person_eye(&none) && !halo_stereo_screen_gameplay() && !halo_stereo_screen_framing(),
