@@ -3843,6 +3843,40 @@ static void write_depth_screenshot(struct render_target_entry *target, const cha
 	free(pixels);
 }
 
+/* frees the screen-sized targets of the stereo layers (the eyes and the
+HUD) once stereo has stopped: the immersive space closed, and nothing
+reopened it for a few seconds. Mono's stay. */
+static void stereo_targets_release(void)
+{
+	struct render_target_entry **link = &render_targets;
+	unsigned long freed = 0, bytes = 0;
+
+	while (*link)
+	{
+		struct render_target_entry *entry = *link;
+
+		if (entry->layer == HALO_STEREO_LAYER_MONO)
+		{
+			link = &entry->next;
+			continue;
+		}
+		{
+			struct render_target_entry **bucket = render_target_bucket(entry->target.data);
+
+			while (*bucket != entry)
+				bucket = &(*bucket)->next_in_bucket;
+			*bucket = entry->next_in_bucket;
+		}
+		*link = entry->next;
+		bytes += entry->target.gl_width * entry->target.gl_height * (entry->target.depth ? 5 : 4);
+		gpu_texture_destroy(entry->target.texture);
+		free(entry);
+		freed++;
+	}
+	if (freed)
+		platform_log("stereo: stereo stopped; freed %lu eye and HUD targets (%lu MB)", freed, bytes >> 20);
+}
+
 /* the back buffer's texture for a stereo layer if something drew it this
 frame, else NULL (without creating it) */
 static struct render_target_entry *back_buffer_drawn_this_frame(int layer)
@@ -3878,6 +3912,14 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 		(render_player_frame_stereo) draw everything in the mono layer, which
 		gpu_present_stereo never reads, so they present mono as before */
 		int stereo_frame = stereo->eye_count == 2 && back_buffer_drawn_this_frame(0);
+		static unsigned long frames_without_eyes;
+
+		/* a few seconds without the Compositor's eyes (the space closed):
+		the stereo layers' targets go */
+		if (stereo->eye_count == 2)
+			frames_without_eyes = 0;
+		else if (stereo->mode != HALO_STEREO_OFF && ++frames_without_eyes == 300)
+			stereo_targets_release();
 		/* a stereo frame's screenshot and trace are of eye 0 */
 		struct render_target_entry *back_buffer = render_target_get_layer(&device.back_buffer,
 			stereo_frame ? 0 : HALO_STEREO_LAYER_MONO);

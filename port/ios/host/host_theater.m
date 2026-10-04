@@ -124,10 +124,91 @@ void host_theater_picture_size(int *width, int *height)
 	*height = (int)lround(*width / SCREEN_ASPECT) & ~1;
 }
 
+/* While the space is closed, a button on the game's window opens it again
+(the stereo spec's D3: closing the space returns to the window). A pinch on
+it, or a tap, calls Theater.swift's host_theater_open, as the game did at
+start. */
+static UIButton *reopen_button;
+
+@interface TheaterReopenTarget : NSObject
+@end
+
+@implementation TheaterReopenTarget
+- (void)reopen
+{
+	host_logf(HOST_LOG_INFO, "theater: opening the immersive space again");
+	host_theater_open();
+}
+@end
+
+static TheaterReopenTarget *reopen_target;
+
+/* the game's window: SDL's, in SDL's window scene */
+static UIWindow *game_window(void)
+{
+	for (UIScene *scene in UIApplication.sharedApplication.connectedScenes)
+	{
+		if (![scene isKindOfClass:UIWindowScene.class] ||
+			![NSStringFromClass([(NSObject *)scene.delegate class]) isEqualToString:@"SDLUIKitSceneDelegate"])
+			continue;
+		for (UIWindow *window in ((UIWindowScene *)scene).windows)
+			if (window.rootViewController)
+				return window;
+	}
+	return nil;
+}
+
+static void reopen_button_shown(BOOL shown)
+{
+	if (!shown)
+	{
+		[reopen_button removeFromSuperview];
+		reopen_button = nil;
+		return;
+	}
+	UIView *view = game_window().rootViewController.view;
+	if (!view || reopen_button)
+		return;
+	if (!reopen_target)
+		reopen_target = [TheaterReopenTarget new];
+	UIButtonConfiguration *configuration = [UIButtonConfiguration filledButtonConfiguration];
+	configuration.title = @"Back to the Theater";
+	reopen_button = [UIButton buttonWithConfiguration:configuration primaryAction:nil];
+	[reopen_button addTarget:reopen_target action:@selector(reopen) forControlEvents:UIControlEventPrimaryActionTriggered];
+	reopen_button.translatesAutoresizingMaskIntoConstraints = NO;
+	[view addSubview:reopen_button];
+	[NSLayoutConstraint activateConstraints:@[
+		[reopen_button.topAnchor constraintEqualToAnchor:view.safeAreaLayoutGuide.topAnchor constant:24.0],
+		[reopen_button.centerXAnchor constraintEqualToAnchor:view.centerXAnchor],
+	]];
+	[view bringSubviewToFront:reopen_button];
+}
+
+/* debug.test_theater_reopen (host_sdl.c): closes the space as the Digital
+Crown would, then presses the button */
+void host_theater_test_close(void)
+{
+	for (UIScene *scene in UIApplication.sharedApplication.connectedScenes)
+	{
+		if ([scene isKindOfClass:UIWindowScene.class] &&
+			[NSStringFromClass([(NSObject *)scene.delegate class]) isEqualToString:@"SDLUIKitSceneDelegate"])
+			continue;
+		host_logf(HOST_LOG_INFO, "debug.test_theater_reopen: closing the immersive space");
+		[UIApplication.sharedApplication requestSceneSessionDestruction:scene.session options:nil errorHandler:nil];
+	}
+}
+
+void host_theater_test_reopen(void)
+{
+	host_logf(HOST_LOG_INFO, "debug.test_theater_reopen: %s", reopen_button ? "pressing the button" : "no button to press");
+	[reopen_button sendActionsForControlEvents:UIControlEventPrimaryActionTriggered];
+}
+
 void host_theater_attach(void *renderer)
 {
 	layer_renderer = (__bridge cp_layer_renderer_t)renderer;
 	screen_placed = NO;
+	reopen_button_shown(NO);
 	window_hidden(YES);
 	host_logf(HOST_LOG_INFO, "theater: the immersive space is open");
 	if (!session && ar_world_tracking_provider_is_supported())
@@ -152,6 +233,16 @@ int host_theater_active(void)
 		frame_drop();
 		layer_renderer = nil;
 		window_hidden(NO);
+		/* nothing tracks the room in the window: stop ARKit until the space
+		opens again (host_theater_attach starts it) */
+		if (session)
+		{
+			ar_session_stop(session);
+			session = nil;
+			world_tracking = nil;
+			host_logf(HOST_LOG_INFO, "theater: ARKit stopped until the space opens again");
+		}
+		reopen_button_shown(YES);
 		return 0;
 	}
 	return 1;

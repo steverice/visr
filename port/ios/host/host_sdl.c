@@ -258,6 +258,28 @@ int host_sdl_poll_event(void *event)
 	if (test_extra_scene && polls == 1800)
 		host_logf(HOST_LOG_INFO, "debug.test_extra_scene: config.toml's display.theater_distance reads %.2f",
 			host_config_real("display.theater_distance", -1.0));
+	/* debug.test_theater_reopen: the immersive space closed, then opened again
+	from the window's button */
+	{
+		static int test_theater_reopen = -1;
+		static unsigned long theater_polls;
+
+		if (test_theater_reopen < 0)
+		{
+			char value[16];
+
+			host_config_string("debug.test_theater_reopen", "false", value, sizeof(value));
+			test_theater_reopen = !strcmp(value, "true");
+		}
+		if (test_theater_reopen)
+		{
+			theater_polls++;
+			if (theater_polls == 900)
+				host_theater_test_close();
+			if (theater_polls == 3600)
+				host_theater_test_reopen();
+		}
+	}
 #else
 	(void)test_extra_scene;
 	(void)polls;

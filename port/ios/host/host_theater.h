@@ -53,6 +53,10 @@ int host_theater_dark(void);
 void host_theater_picture_size(int *width, int *height);
 /* opens the immersive space (Theater.swift) */
 void host_theater_open(void);
+/* debug.test_theater_reopen (host_sdl.c): closes the immersive space as the
+Digital Crown would; presses the window's button that opens it again */
+void host_theater_test_close(void);
+void host_theater_test_reopen(void);
 /* whether the space is open, so gpu_present draws there and not in the window */
 int host_theater_active(void);
 /* for Theater.swift: the space's layer renderer, unretained */

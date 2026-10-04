@@ -491,6 +491,10 @@ static const struct config_setting config_settings[] =
 		"Ask for a second window scene a few seconds in, to check that the game\n"
 		"ignores its start, keeps its event pump and closes the scene (the\n"
 		"host's host_main.m). For the simulator." },
+	{ "debug.test_theater_reopen", _config_boolean, "false", "HALO_TEST_THEATER_REOPEN", _environment_set_is_true, _platform_ios,
+		"With display.immersive: close the immersive space a few seconds in, then\n"
+		"press the window's button that opens it again (the host's\n"
+		"host_theater.m). For the simulator." },
 	{ "debug.gl_debug", _config_boolean, "false", "HALO_GL_DEBUG", _environment_set_is_true, _platform_all,
 		"Report OpenGL errors in the log." },
 	{ "debug.metal_state_cache", _config_boolean, "true", "HALO_METAL_STATE_CACHE", _environment_value, _platform_ios,
