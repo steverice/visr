@@ -203,7 +203,11 @@ Compositor keeps its default range and the depth is written as far: the
 picture is reprojected as if distant. The floor is the depth half way to the
 far plane, n' / (f - n'): far enough to reproject as distant, and not 0, which
 the Compositor takes for nothing there; without usable planes, a small depth
-in the Compositor's default range. */
+in the Compositor's default range. The floor also hides a game depth that is
+wrongly empty (static geometry without depth, headset session 1): it would
+reproject as if half way to the far plane rather than vanish, so watch the
+game's own empty share instead (d3d8_device.c, debug.gpu_stats). A far plane
+nearer than twice the near would put the floor above 1; it is kept below. */
 static simd_float2 stereo_depth_range(float near_meters, float far_meters, float *scale, float *floor)
 {
 	float near = fmaxf(near_meters, host_theater_minimum_near());
@@ -219,7 +223,7 @@ static simd_float2 stereo_depth_range(float near_meters, float far_meters, float
 		return (simd_float2){ 0.0f, 0.0f };
 	}
 	*scale = near * (far_meters - near_meters) / (near_meters * (far_meters - near));
-	*floor = near / (far_meters - near);
+	*floor = fminf(near / (far_meters - near), 0.5f);
 	return (simd_float2){ far_meters, near };
 }
 
