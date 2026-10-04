@@ -3358,7 +3358,7 @@ static uint32_t gpu_metal_present_stereo(const struct gpu_stereo_present *presen
 				use_texture(hud);
 			commit(YES);
 			host_stereo_present(queue, color[0]->texture, color[1]->texture, depth[0]->texture, depth[1]->texture,
-				hud ? hud->texture : nil, present->near_meters, present->far_meters,
+				hud ? hud->texture : nil, present->hud_aspect, present->near_meters, present->far_meters,
 				stereo_cut_brightness(0, present));
 			frames++;
 			pacing.work_started = CACurrentMediaTime();

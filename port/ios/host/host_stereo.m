@@ -408,7 +408,7 @@ int host_stereo_ready(void)
 }
 
 void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLTexture> right,
-	id<MTLTexture> left_depth, id<MTLTexture> right_depth, id<MTLTexture> hud,
+	id<MTLTexture> left_depth, id<MTLTexture> right_depth, id<MTLTexture> hud, float hud_aspect,
 	float near_meters, float far_meters, float brightness)
 {
 #if TARGET_OS_VISION
@@ -497,8 +497,10 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 					device_from_hud.columns[3] = (simd_float4){ 0.0f, 0.0f, -HUD_DISTANCE, 1.0f };
 					uniforms.clip_from_hud = simd_mul(projection,
 						simd_mul(simd_inverse(cp_view_get_transform(view)), device_from_hud));
-					uniforms.half_size = (simd_float2){ HUD_WIDTH / 2.0f,
-						HUD_WIDTH / 2.0f * (float)hud.height / (float)hud.width };
+					/* at the shape the game lays the HUD out in: its texture is
+					the eyes' size, whose pixels needn't be square */
+					uniforms.half_size = (simd_float2){ HUD_WIDTH / 2.0f, HUD_WIDTH / 2.0f /
+						(hud_aspect > 0.0f ? hud_aspect : (float)hud.width / (float)hud.height) };
 					uniforms.decode_srgb = decode_srgb;
 					uniforms.brightness = brightness;
 					[encoder setRenderPipelineState:hud_pipeline];
@@ -521,6 +523,7 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 	(void)left_depth;
 	(void)right_depth;
 	(void)hud;
+	(void)hud_aspect;
 	(void)near_meters;
 	(void)far_meters;
 	(void)brightness;

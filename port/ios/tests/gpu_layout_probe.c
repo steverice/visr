@@ -63,6 +63,7 @@ int main(void)
 	FIELD(gpu_stereo_present, mode);
 	FIELD(gpu_stereo_present, cinematic);
 	FIELD(gpu_stereo_present, fade);
+	FIELD(gpu_stereo_present, hud_aspect);
 	/* host_stereo_frame's (guest_host.h) */
 	SIZE(halo_stereo_eye);
 	FIELD(halo_stereo_eye, left);

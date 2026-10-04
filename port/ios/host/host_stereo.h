@@ -21,8 +21,9 @@ int host_stereo_ready(void);
 /* draws each eye's picture and depth full view into its Compositor view, the
 HUD on a head-locked quad over both, and presents the frame; the game's
 command buffer, which drew them, is committed already. Brightness (0 to 1)
-dims both toward black, for the fade of a cut to or from the screen */
+dims both toward black, for the fade of a cut to or from the screen; the HUD
+quad has hud_aspect's shape (its width over its height) */
 void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLTexture> right,
-	id<MTLTexture> left_depth, id<MTLTexture> right_depth, id<MTLTexture> hud,
+	id<MTLTexture> left_depth, id<MTLTexture> right_depth, id<MTLTexture> hud, float hud_aspect,
 	float near_meters, float far_meters, float brightness);
 #endif

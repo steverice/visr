@@ -173,6 +173,34 @@ static void screen_mode_choose(long *width, float scale[2])
 	}
 	pixels = halo_display_render_size(drawable_width, drawable_height, *width,
 		requested_width, config_integer("display.render_height"), screen_maximum_texture_size);
+	{
+		/* head-tracked stereo: the screen's targets are the eyes' pictures,
+		each view's size and shape times display.render_scale, which needn't
+		be the screen's shape (the presenter fills each view with its eye's
+		picture and draws the HUD at the screen's shape): their pixels aren't
+		square. The display's shape is kept to 4:3 and wider, which would
+		squeeze a view's height. Only in a frame with the Compositor's eyes;
+		the drawable is theirs then (host_stereo_picture_size) */
+		const struct halo_stereo_frame *stereo = halo_stereo_frame();
+
+		if (stereo->mode == HALO_STEREO_HEAD && stereo->eye_count == 2 && stereo->eye_width > 0 &&
+			stereo->eye_height > 0)
+		{
+			long render_height = config_integer("display.render_height");
+
+			pixels.width = drawable_width;
+			pixels.height = drawable_height;
+			if (render_height > 0 && pixels.height > render_height)
+			{
+				pixels.width = pixels.width * render_height / pixels.height;
+				pixels.height = render_height;
+			}
+			if (pixels.width > screen_maximum_texture_size)
+				pixels.width = screen_maximum_texture_size;
+			if (pixels.height > screen_maximum_texture_size)
+				pixels.height = screen_maximum_texture_size;
+		}
+	}
 	scale[0] = (float)pixels.width / (float)*width;
 	scale[1] = (float)pixels.height / (float)SCREEN_HEIGHT;
 #else
@@ -1124,6 +1152,28 @@ long halo_screen_commit(void)
 #endif
 	}
 	return screen_width;
+}
+
+/* In a stereo frame, at its begin (stereo.c): takes up the scale the
+frame's eyes need now, so its first frame with the Compositor's views, or
+the first on the theater screen after them, renders at their size rather
+than the last frame's. Only the scale: a new width waits for
+halo_screen_commit, which the rasterizer follows. */
+void halo_screen_commit_stereo_scale(void)
+{
+	long width;
+	float scale[2];
+
+	if (!screen_width)
+		return;
+	screen_mode_choose(&width, scale);
+	if (width == screen_width && (scale[0] != screen_scale[0] || scale[1] != screen_scale[1]))
+	{
+		platform_log("screen: %ldx%d drawn at %.0fx%.0f for the stereo frame", width, SCREEN_HEIGHT,
+			width * scale[0], SCREEN_HEIGHT * scale[1]);
+		screen_scale[0] = scale[0];
+		screen_scale[1] = scale[1];
+	}
 }
 
 ULONG WINAPI D3DDevice_Release(void)
@@ -3823,6 +3873,9 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 			present.near_meters *= 3.048f;
 			present.far_meters *= 3.048f;
 			present.mode = stereo->mode;
+			/* the HUD's shape as the game lays it out: its texture's pixels
+			needn't be square (screen_mode_choose) */
+			present.hud_aspect = (float)halo_screen_width() / (float)SCREEN_HEIGHT;
 			/* a cutscene: the 3D film on the screen, whatever the mode; the
 			script fade, which tints the space around the screen */
 			present.cinematic = halo_stereo_film();

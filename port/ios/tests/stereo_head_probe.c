@@ -30,6 +30,7 @@ void platform_log(const char *format, ...) { (void)format; }
 int halo_cinematic_screen(void) { return 0; }
 int halo_scripted_camera(void) { return 0; }
 int halo_third_person_camera(void) { return 0; }
+void halo_screen_commit_stereo_scale(void) {}
 
 /* the device's pose this frame, columns right, up, back (ARKit's axes) */
 static float pose[3][3];

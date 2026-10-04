@@ -38,6 +38,8 @@ double config_real(const char *name);
    d3d8_device.c declares it the same way */
 void platform_video_drawable_size(int *width, int *height);
 void platform_log(const char *format, ...);
+/* port/linux/src/d3d8_device.c */
+void halo_screen_commit_stereo_scale(void);
 #ifdef HALO_IOS
 /* port/ios/host/host_stereo.m, imported by the guest (guest_host.h): opens the
 Compositor's next frame and fills the eyes and the head's turn from it */
@@ -239,6 +241,9 @@ void halo_stereo_frame_begin(void)
 		head_pitch_known = stereo_frame.mode == HALO_STEREO_HEAD;
 		head_pitch_now = stereo_frame.head_pitch;
 	}
+	/* the eyes' picture size from this frame on, not the next */
+	if (stereo_mode != HALO_STEREO_OFF)
+		halo_screen_commit_stereo_scale();
 }
 
 int halo_stereo_film(void)
