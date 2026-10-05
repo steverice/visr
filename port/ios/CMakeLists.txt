@@ -56,7 +56,7 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "visionOS")
     set(HALO_DEVICE_FAMILY 7)
 else()
     set(HALO_PLATFORM_SOURCES Assets.xcassets host/host_import.m host/host_orientation.m host/host_touch.m
-        host/host_texture_settings.m)
+        host/host_texture_settings.m host/host_config.c)
     set(HALO_INFO_PLIST Info.plist)
     set(HALO_DEVICE_FAMILY "1,2")
 endif()
