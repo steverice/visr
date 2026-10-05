@@ -51,6 +51,15 @@ seen nearly edge-on (where the picture then stops following the eye) */
 
 /* the eyes' picture size, while the head drives the view */
 static int picture_width, picture_height;
+/* foveated eye passes this frame (foveated_eyes): each eye's rate map and
+its parameter data for the shaders, and the size the eyes' targets are
+allocated at; nil and 0 otherwise */
+static id<MTLRasterizationRateMap> eye_rate_maps[2];
+static id<MTLBuffer> eye_rate_map_parameters[2];
+static int foveated_allocated_width, foveated_allocated_height;
+/* what foveated_eyes last logged, to log again only on a change */
+static int foveated_eyes_logged = -1;
+static unsigned long foveated_eyes_key;
 /* the head's last pose, while ARKit places it */
 static struct host_stereo_head head;
 static unsigned long stereo_frames;
@@ -84,7 +93,7 @@ static int head_configured(void)
 	return configured;
 }
 
-static id<MTLRenderPipelineState> eye_pipeline, hud_pipeline;
+static id<MTLRenderPipelineState> eye_pipeline, eye_foveated_pipeline, hud_pipeline;
 static MTLPixelFormat pipeline_color, pipeline_depth;
 static id<MTLDepthStencilState> depth_always;
 static id<MTLSamplerState> linear_sampler, nearest_sampler;
@@ -116,19 +125,42 @@ static NSString *const shader_source =
 	HOST_STEREO_VIGNETTE_STRING(HOST_STEREO_VIGNETTE_SOURCE) "\n"
 	"struct eye_uniforms { uint decode_srgb; float depth_scale; float depth_floor; float brightness; float vignette;\n"
 	"	float4 tangents; float vignette_inner; float vignette_outer; };\n"
+	/* the picture and depth at at (normalized), the vignette at the view's
+	own coordinate */
+	"static eye_pixel eye_shade(float2 coordinate, float2 at, texture2d<float> picture, depth2d<float> depth,\n"
+	"	sampler linear, sampler nearest, constant eye_uniforms &u)\n"
+	"{\n"
+	"	float3 color = picture.sample(linear, at).rgb;\n"
+	"	if (u.decode_srgb)\n"
+	"		color = select(pow((color + 0.055) / 1.055, 2.4), color / 12.92, color <= 0.04045);\n"
+	"	float edge = u.vignette > 0.0 ? host_stereo_vignette_edge(coordinate.x, coordinate.y, u.tangents.x,\n"
+	"		u.tangents.y, u.tangents.z, u.tangents.w, u.vignette_inner, u.vignette_outer) : 0.0;\n"
+	"	eye_pixel out;\n"
+	"	out.color = float4(color * u.brightness * (1.0 - u.vignette * edge), 1);\n"
+	"	out.depth = clamp(depth.sample(nearest, at) * u.depth_scale, u.depth_floor, 1.0);\n"
+	"	return out;\n"
+	"}\n"
 	"fragment eye_pixel eye_fragment(picture_vertex in [[stage_in]], texture2d<float> picture [[texture(0)]],\n"
 	"	depth2d<float> depth [[texture(1)]], sampler linear [[sampler(0)]], sampler nearest [[sampler(1)]],\n"
 	"	constant eye_uniforms &u [[buffer(0)]])\n"
 	"{\n"
-	"	float3 color = picture.sample(linear, in.coordinate).rgb;\n"
-	"	if (u.decode_srgb)\n"
-	"		color = select(pow((color + 0.055) / 1.055, 2.4), color / 12.92, color <= 0.04045);\n"
-	"	float edge = u.vignette > 0.0 ? host_stereo_vignette_edge(in.coordinate.x, in.coordinate.y, u.tangents.x,\n"
-	"		u.tangents.y, u.tangents.z, u.tangents.w, u.vignette_inner, u.vignette_outer) : 0.0;\n"
-	"	eye_pixel out;\n"
-	"	out.color = float4(color * u.brightness * (1.0 - u.vignette * edge), 1);\n"
-	"	out.depth = clamp(depth.sample(nearest, in.coordinate) * u.depth_scale, u.depth_floor, 1.0);\n"
-	"	return out;\n"
+	"	return eye_shade(in.coordinate, in.coordinate, picture, depth, linear, nearest, u);\n"
+	"}\n"
+	/* foveated eye passes (foveated_eyes): the game's picture and depth were
+	rendered through the eye's rate map, so a screen point (the normalized
+	coordinate times the screen size, inside it) is read where the map put
+	it, kept half a texel inside the map's physical region: the targets are
+	allocated larger, and what lies past that region is stale */
+	"struct eye_foveation { float2 screen; float2 physical; float2 allocated; };\n"
+	"fragment eye_pixel eye_foveated_fragment(picture_vertex in [[stage_in]], texture2d<float> picture [[texture(0)]],\n"
+	"	depth2d<float> depth [[texture(1)]], sampler linear [[sampler(0)]], sampler nearest [[sampler(1)]],\n"
+	"	constant eye_uniforms &u [[buffer(0)]], constant rasterization_rate_map_data &map [[buffer(1)]],\n"
+	"	constant eye_foveation &f [[buffer(2)]])\n"
+	"{\n"
+	"	rasterization_rate_map_decoder decoder(map);\n"
+	"	float2 screen = clamp(in.coordinate * f.screen, float2(0.0), f.screen - 1.0 / 256.0);\n"
+	"	float2 physical = clamp(decoder.map_screen_to_physical_coordinates(screen), float2(0.5), f.physical - 0.5);\n"
+	"	return eye_shade(in.coordinate, physical / f.allocated, picture, depth, linear, nearest, u);\n"
 	"}\n"
 	/* one of the HUD's quads (host_stereo_hud.h): its texture's rectangle,
 	and its center and half extents in its frame, which clip_from_frame
@@ -452,6 +484,12 @@ static void foveation_measure(cp_drawable_t drawable) API_AVAILABLE(visionos(26.
 }
 #endif
 
+/* eye_foveated_fragment's sizes */
+struct eye_foveation
+{
+	simd_float2 screen, physical, allocated;
+};
+
 struct eye_uniforms
 {
 	uint32_t decode_srgb;
@@ -493,6 +531,9 @@ static BOOL prepare(id<MTLDevice> device, MTLPixelFormat color, MTLPixelFormat d
 	if (depth == MTLPixelFormatDepth32Float_Stencil8)
 		descriptor.stencilAttachmentPixelFormat = depth;
 	eye_pipeline = [device newRenderPipelineStateWithDescriptor:descriptor error:&error];
+	descriptor.fragmentFunction = [library newFunctionWithName:@"eye_foveated_fragment"];
+	if (eye_pipeline)
+		eye_foveated_pipeline = [device newRenderPipelineStateWithDescriptor:descriptor error:&error];
 	descriptor.vertexFunction = [library newFunctionWithName:@"hud_vertex"];
 	descriptor.fragmentFunction = [library newFunctionWithName:@"hud_fragment"];
 	descriptor.colorAttachments[0].blendingEnabled = YES;
@@ -501,12 +542,12 @@ static BOOL prepare(id<MTLDevice> device, MTLPixelFormat color, MTLPixelFormat d
 	/* the view stays opaque under the HUD */
 	descriptor.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
 	descriptor.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
-	if (eye_pipeline)
+	if (eye_pipeline && eye_foveated_pipeline)
 		hud_pipeline = [device newRenderPipelineStateWithDescriptor:descriptor error:&error];
-	if (!eye_pipeline || !hud_pipeline)
+	if (!eye_pipeline || !eye_foveated_pipeline || !hud_pipeline)
 	{
 		host_logf(HOST_LOG_ERROR, "stereo: the presenter's pipelines failed: %s", error.description.UTF8String);
-		eye_pipeline = hud_pipeline = nil;
+		eye_pipeline = eye_foveated_pipeline = hud_pipeline = nil;
 		return NO;
 	}
 	pipeline_color = color;
@@ -646,6 +687,94 @@ static void screen_eyes(struct halo_stereo_frame *frame, cp_drawable_t drawable,
 			views == 1 ? "" : "s", width, height);
 }
 
+/* the game's eye passes through the rate maps (debug.foveation_eye_passes,
+on by default with display.foveation): each eye's targets are allocated at
+the drawable's color texture size for its view, which the configuration's
+maximum render quality sets, and its passes go through its view's map, so a
+lower quality (the Compositor eases it) renders into the top left of the
+same targets. Only with one single-layer map per view and a texture per view
+(the dedicated layout, which the M2 offers): a layered map would need the
+right view's passes to select its layer, which these passes don't. Otherwise
+the eyes render unfoveated at the maps' screen size, and only the presenter
+goes through the maps (composite-only) */
+static void foveated_eyes(struct halo_stereo_frame *frame, cp_drawable_t drawable, size_t views)
+	API_AVAILABLE(visionos(26.0))
+{
+	char value[16];
+	id<MTLRasterizationRateMap> maps[2] = { nil, nil };
+	int allocated_width = 0, allocated_height = 0, eye;
+	const char *why = NULL;
+	unsigned long key;
+
+	host_config_string("debug.foveation_eye_passes", "true", value, sizeof(value));
+	if (!strcmp(value, "false"))
+		why = "debug.foveation_eye_passes is off";
+	else if (views < 2)
+		why = "the drawable has one view";
+	for (eye = 0; eye < 2 && !why; eye++)
+	{
+		cp_view_texture_map_t texture_map = cp_view_get_view_texture_map(cp_drawable_get_view(drawable, (size_t)eye));
+		size_t texture = cp_view_texture_map_get_texture_index(texture_map);
+		id<MTLTexture> color = cp_drawable_get_color_texture(drawable, texture);
+		id<MTLRasterizationRateMap> map = host_theater_view_rate_map(drawable, texture_map);
+		MTLSize physical = map ? [map physicalSizeForLayer:0] : MTLSizeMake(0, 0, 0);
+
+		if (!map || map.layerCount != 1 || color.textureType != MTLTextureType2D ||
+			(eye == 1 && (map == maps[0] || texture == cp_view_texture_map_get_texture_index(
+				cp_view_get_view_texture_map(cp_drawable_get_view(drawable, 0))))))
+			why = "the layout isn't dedicated (a single-layer map and a texture per view)";
+		else if (physical.width > color.width || physical.height > color.height)
+			why = "a map's physical size is larger than its view's texture";
+		else
+		{
+			maps[eye] = map;
+			if ((int)color.width > allocated_width)
+				allocated_width = (int)color.width;
+			if ((int)color.height > allocated_height)
+				allocated_height = (int)color.height;
+		}
+	}
+	if (why)
+		maps[0] = maps[1] = nil;
+	for (eye = 0; eye < 2; eye++)
+	{
+		eye_rate_maps[eye] = maps[eye];
+		eye_rate_map_parameters[eye] = nil;
+		if (maps[eye])
+		{
+			id<MTLBuffer> parameters = [maps[eye].device newBufferWithLength:maps[eye].parameterBufferSizeAndAlign.size
+				options:MTLResourceStorageModeShared];
+
+			[maps[eye] copyParameterDataToBuffer:parameters offset:0];
+			eye_rate_map_parameters[eye] = parameters;
+		}
+	}
+	foveated_allocated_width = why ? 0 : allocated_width;
+	foveated_allocated_height = why ? 0 : allocated_height;
+	frame->foveated_width = foveated_allocated_width;
+	frame->foveated_height = foveated_allocated_height;
+	/* once, and on a change of the sizes or the reason */
+	key = why ? (unsigned long)(uintptr_t)why : ((unsigned long)frame->eye_width << 48) ^
+		((unsigned long)frame->eye_height << 32) ^ ((unsigned long)allocated_width << 16) ^ (unsigned long)allocated_height;
+	if (foveated_eyes_logged == (why == NULL) && foveated_eyes_key == key)
+		return;
+	foveated_eyes_logged = why == NULL;
+	foveated_eyes_key = key;
+	if (why)
+		host_logf(HOST_LOG_INFO, "stereo: foveated: the eyes render unfoveated at the rate map's screen size %dx%d, "
+			"and only the presenter goes through the maps (composite-only): %s", frame->eye_width, frame->eye_height,
+			why);
+	else
+	{
+		MTLSize left = [maps[0] physicalSizeForLayer:0], right = [maps[1] physicalSizeForLayer:0];
+
+		host_logf(HOST_LOG_INFO, "stereo: foveated: the eyes render through the rate maps: screen %dx%d, targets "
+			"allocated at %dx%d, physical now %lux%lu and %lux%lu", frame->eye_width, frame->eye_height,
+			allocated_width, allocated_height, (unsigned long)left.width, (unsigned long)left.height,
+			(unsigned long)right.width, (unsigned long)right.height);
+	}
+}
+
 static void stereo_frame(struct halo_stereo_frame *frame) API_AVAILABLE(visionos(26.0))
 {
 	simd_float4x4 origin_from_device;
@@ -713,19 +842,18 @@ static void stereo_frame(struct halo_stereo_frame *frame) API_AVAILABLE(visionos
 
 		/* even, as the picture size the game renders at (host_stereo_picture_size).
 		Foveated (display.foveation), the map's screen size: the presenter
-		writes the view through the map, and the game renders its eyes
-		unfoveated at that size (composite-only foveation; the eye passes
-		through the maps come later, so debug.foveation_eye_passes renders the
-		same way for now) */
+		writes the view through the map, and the game's eye passes render
+		through it too, or unfoveated at that size (foveated_eyes) */
 		if (rate_map)
 		{
 			frame->eye_width = (int32_t)rate_map.screenSize.width & ~1;
 			frame->eye_height = (int32_t)rate_map.screenSize.height & ~1;
 			frame->foveated = 1;
 			if (stereo_frames == 0)
-				host_logf(HOST_LOG_INFO, "stereo: foveated: the eyes render unfoveated at the rate map's screen size "
-					"%dx%d (the view's logical viewport %.0fx%.0f), and only the presenter goes through the maps "
-					"(composite-only)", frame->eye_width, frame->eye_height, viewport.width, viewport.height);
+				host_logf(HOST_LOG_INFO, "stereo: foveated: the eyes' screen size is the rate map's, %dx%d (the "
+					"view's logical viewport %.0fx%.0f)", frame->eye_width, frame->eye_height, viewport.width,
+					viewport.height);
+			foveated_eyes(frame, drawable, views);
 		}
 		else
 		{
@@ -795,6 +923,7 @@ void host_stereo_space_opened(void *layer_renderer)
 	foveation_logged_key = nil;
 	foveation_frames = 0;
 	foveation_easing_logged = 0;
+	foveated_eyes_logged = -1;
 #else
 	(void)layer_renderer;
 #endif
@@ -812,8 +941,13 @@ void host_stereo_frame(struct halo_stereo_frame *frame)
 	frame->eye_width = 0;
 	frame->eye_height = 0;
 	frame->foveated = 0;
+	frame->foveated_width = 0;
+	frame->foveated_height = 0;
 #if TARGET_OS_VISION
 	head_frame_open = 0;
+	eye_rate_maps[0] = eye_rate_maps[1] = nil;
+	eye_rate_map_parameters[0] = eye_rate_map_parameters[1] = nil;
+	foveated_allocated_width = foveated_allocated_height = 0;
 	if (@available(visionOS 26.0, *))
 		stereo_frame(frame);
 #endif
@@ -832,6 +966,44 @@ int host_stereo_picture_size(int *width, int *height)
 	(void)width;
 	(void)height;
 	return 0;
+}
+
+int host_stereo_foveated_size(int *screen_width, int *screen_height, int *allocated_width, int *allocated_height)
+{
+#if TARGET_OS_VISION
+	if (eye_rate_maps[0] && foveated_allocated_width > 0 && picture_width > 0)
+	{
+		*screen_width = picture_width;
+		*screen_height = picture_height;
+		*allocated_width = foveated_allocated_width;
+		*allocated_height = foveated_allocated_height;
+		return 1;
+	}
+#endif
+	*screen_width = *screen_height = *allocated_width = *allocated_height = 0;
+	return 0;
+}
+
+id<MTLRasterizationRateMap> host_stereo_rate_map(int eye)
+{
+#if TARGET_OS_VISION
+	if (eye >= 0 && eye < 2)
+		return eye_rate_maps[eye];
+#else
+	(void)eye;
+#endif
+	return nil;
+}
+
+id<MTLBuffer> host_stereo_rate_map_parameters(int eye)
+{
+#if TARGET_OS_VISION
+	if (eye >= 0 && eye < 2)
+		return eye_rate_map_parameters[eye];
+#else
+	(void)eye;
+#endif
+	return nil;
 }
 
 int host_stereo_ready(void)
@@ -926,10 +1098,12 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 		int inset_shown = inset && !hud_ui && host_stereo_hud_inset(layout_width, NULL, reticle, &inset_quad);
 
 		if (stereo_presents++ == 0)
-			host_logf(HOST_LOG_INFO, "stereo: first present: eyes %lux%lu, %s (laid out at %.3f:1; its bands at "
+			host_logf(HOST_LOG_INFO, "stereo: first present: eyes %lux%lu%s, %s (laid out at %.3f:1; its bands at "
 				"%.2f mm a line, the reticle at %.2f, %.1f m ahead, inside %.0f degrees of the center; the rest "
 				"head-locked at the HUD pass's half tangents %.3f by %.3f), depth range %.3f to %.1f m, %zu drawable%s",
-				(unsigned long)left.width, (unsigned long)left.height, hud ? "a HUD" : "no HUD", hud_aspect,
+				(unsigned long)left.width, (unsigned long)left.height,
+				eye_rate_maps[0] && left.width == (NSUInteger)foveated_allocated_width ? " (foveated: allocated)" : "",
+				hud ? "a HUD" : "no HUD", hud_aspect,
 				1000.0f * host_stereo_hud_band_scale(layout_width, hud_group_extent), 1000.0f * HOST_STEREO_HUD_METERS_PER_LINE,
 				HOST_STEREO_HUD_DISTANCE, HUD_SHARP_RADIUS_DEGREES, hud_tangents ? hud_tangents[0] : 0.0f,
 				hud_tangents ? hud_tangents[1] : 0.0f, near_meters, far_meters, count, count == 1 ? "" : "s");
@@ -1030,7 +1204,23 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 				id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
 				[encoder setViewport:cp_view_texture_map_get_viewport(map)];
 				[encoder setDepthStencilState:depth_always];
-				[encoder setRenderPipelineState:eye_pipeline];
+				/* foveated eye passes: the eye's picture is in its map's physical
+				layout, at the top left of its targets (foveated_eyes) */
+				if (eye_rate_maps[eye] && colors[eye].width == (NSUInteger)foveated_allocated_width &&
+					colors[eye].height == (NSUInteger)foveated_allocated_height)
+				{
+					MTLSize physical = [eye_rate_maps[eye] physicalSizeForLayer:0];
+					struct eye_foveation foveation = {
+						{ (float)picture_width, (float)picture_height },
+						{ (float)physical.width, (float)physical.height },
+						{ (float)colors[eye].width, (float)colors[eye].height } };
+
+					[encoder setRenderPipelineState:eye_foveated_pipeline];
+					[encoder setFragmentBuffer:eye_rate_map_parameters[eye] offset:0 atIndex:1];
+					[encoder setFragmentBytes:&foveation length:sizeof(foveation) atIndex:2];
+				}
+				else
+					[encoder setRenderPipelineState:eye_pipeline];
 				[encoder setFragmentTexture:colors[eye] atIndex:0];
 				[encoder setFragmentTexture:depths[eye] atIndex:1];
 				[encoder setFragmentSamplerState:linear_sampler atIndex:0];

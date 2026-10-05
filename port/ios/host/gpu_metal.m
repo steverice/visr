@@ -170,9 +170,10 @@ static id<MTLCommandQueue> queue;
 static CAMetalLayer *layer;
 /* reversed-Z (see depth_compare_function) */
 static float reversed_depth(float depth);
+#include "host_config.h"
+#include "host_stereo.h"
 #if TARGET_OS_VISION
 #include "host_theater.h"
-#include "host_stereo.h"
 #include "host_stereo_hud.h"
 /* display.immersive: frames go to the theater screen while its space is open */
 static BOOL theater_wanted;
@@ -1089,12 +1090,63 @@ static id<MTLFunction> pixel_function(MetalShader *pixel, unsigned exact)
 	return pixel->exact[exact];
 }
 
+/* ---------- foveation (Task 10)
+
+A foveated eye's targets (gpu_texture_description.foveated_eye) are
+allocated at the Compositor's drawable size per view and drawn through the
+eye's rate map (host_stereo_rate_map), which fills their top left: every
+pass that writes one binds the map, and its viewports and scissors are in
+the map's screen coordinates, the eye's logical size (target_size). What
+reads them maps each screen point to where the map put it: the presenter
+(host_stereo.m), the game's shaders (nv2a_msl.c's foveated sampler) and
+foveation_resolve here, which draws a picture at its screen shape for the
+film's paths, the screenshots and the depth reads. */
+
+/* the eye's map for a foveated target this frame, or nil */
+static id<MTLRasterizationRateMap> foveation_map(MetalTexture *record)
+{
+	if (!record || !record->description.foveated_eye)
+		return nil;
+	return host_stereo_rate_map(record->description.foveated_eye - 1);
+}
+
+/* the map's parameter data, for a shader's rasterization_rate_map_decoder */
+static id<MTLBuffer> foveation_parameters(MetalTexture *record)
+{
+	return record && record->description.foveated_eye ?
+		host_stereo_rate_map_parameters(record->description.foveated_eye - 1) : nil;
+}
+
+/* a foveated target's screen size (the eye's logical size, which the game's
+viewports cover) and its map's physical size; NO if it isn't foveated this
+frame */
+static BOOL foveation_sizes(MetalTexture *record, MTLSize *screen, MTLSize *physical)
+{
+	id<MTLRasterizationRateMap> map = foveation_map(record);
+	int screen_width, screen_height, allocated_width, allocated_height;
+
+	if (!map || !host_stereo_foveated_size(&screen_width, &screen_height, &allocated_width, &allocated_height))
+		return NO;
+	*screen = MTLSizeMake((NSUInteger)screen_width, (NSUInteger)screen_height, 1);
+	*physical = [map physicalSizeForLayer:0];
+	return YES;
+}
+
 /* ---------- render passes */
 
+/* the targets' size in the units of their viewports and scissors: a
+foveated target's screen size, else its texture's */
 static void target_size(gpu_texture color, gpu_texture depth, unsigned long *width, unsigned long *height)
 {
 	MetalTexture *record = texture_record(color ? color : depth);
+	MTLSize screen, physical;
 
+	if (foveation_sizes(record, &screen, &physical))
+	{
+		*width = screen.width;
+		*height = screen.height;
+		return;
+	}
 	*width = record && record->texture ? record->texture.width : 0;
 	*height = record && record->texture ? record->texture.height : 0;
 }
@@ -1168,6 +1220,16 @@ static BOOL pass_begin(gpu_texture color, gpu_texture depth, const struct gpu_cl
 	pass_end();
 	pass = [MTLRenderPassDescriptor renderPassDescriptor];
 	pass.visibilityResultBuffer = visibility_buffer;
+	/* a foveated eye's targets render through its map; both attachments are
+	the eye's then, at the same allocated size */
+	pass.rasterizationRateMap = foveation_map(color ? color_record : depth_record);
+	if (color && depth && foveation_map(color_record) != foveation_map(depth_record))
+	{
+		static int logged;
+
+		if (!logged++)
+			platform_log("Metal: a pass pairs targets %u and %u, of which only one is a foveated eye's", color, depth);
+	}
 	if (!color)
 	{
 		/* a depth-only pass: the game's pixel shaders still write a color
@@ -3162,6 +3224,140 @@ static id<MTLTexture> upscale(id<MTLTexture> back_buffer, long width, long heigh
 /* the back buffer letterboxed into the drawable, as gpu_gl.c's gpu_present,
 without its vertical flip: GL's window shows row 0 at the bottom, Metal's
 drawable at the top */
+/* foveation_resolve's shaders, compiled when first needed: the decoder is
+Metal 2.3's, and a GPU without rate maps never needs them */
+static NSString *const resolve_source =
+	@"#include <metal_stdlib>\n"
+	"using namespace metal;\n"
+	"struct PresentOut { float4 position [[position]]; float2 coordinates; };\n"
+	"struct FoveationSizes { float2 screen; float2 physical; float2 allocated; };\n"
+	/* a screen point (the normalized coordinate times the screen size, inside
+	it) where the map put it, half a texel inside its physical region: the
+	targets are allocated larger, and past the region they are stale */
+	"static float2 foveated_at(float2 coordinates, constant rasterization_rate_map_data &map,\n"
+	"\tconstant FoveationSizes &f)\n"
+	"{\n"
+	"\trasterization_rate_map_decoder decoder(map);\n"
+	"\tfloat2 screen = clamp(coordinates * f.screen, float2(0.0), f.screen - 1.0 / 256.0);\n"
+	"\tfloat2 physical = clamp(decoder.map_screen_to_physical_coordinates(screen), float2(0.5), f.physical - 0.5);\n"
+	"\treturn physical / f.allocated;\n"
+	"}\n"
+	"fragment float4 resolve_color(PresentOut in [[stage_in]], texture2d<float> picture [[texture(0)]],\n"
+	"\tsampler linear [[sampler(0)]], constant rasterization_rate_map_data &map [[buffer(0)]],\n"
+	"\tconstant FoveationSizes &f [[buffer(1)]])\n"
+	"{\n"
+	"\treturn picture.sample(linear, foveated_at(in.coordinates, map, f));\n"
+	"}\n"
+	"fragment float resolve_depth(PresentOut in [[stage_in]], depth2d<float> depth [[texture(0)]],\n"
+	"\tsampler nearest [[sampler(0)]], constant rasterization_rate_map_data &map [[buffer(0)]],\n"
+	"\tconstant FoveationSizes &f [[buffer(1)]])\n"
+	"{\n"
+	"\treturn depth.sample(nearest, foveated_at(in.coordinates, map, f));\n"
+	"}\n";
+
+struct foveation_sizes_uniform
+{
+	float screen[2], physical[2], allocated[2];
+};
+
+static id<MTLRenderPipelineState> resolve_color_pipeline, resolve_depth_pipeline;
+static id<MTLSamplerState> resolve_nearest;
+
+/* a foveated target drawn unfoveated at width x height, at its screen
+shape, into a new texture: BGRA8 for a color target, R32Float for a depth
+target's depth (as stored, reversed). Encoded in the open command buffer,
+after the open pass; nil if the target isn't foveated this frame */
+static id<MTLTexture> foveation_resolve(MetalTexture *record, NSUInteger width, NSUInteger height)
+{
+	MTLSize screen, physical;
+	BOOL depth = record && record->description.format == GPU_FORMAT_DEPTH_STENCIL;
+	MTLTextureDescriptor *descriptor;
+	MTLRenderPassDescriptor *pass;
+	id<MTLRenderCommandEncoder> resolve;
+	id<MTLTexture> output;
+	struct foveation_sizes_uniform sizes;
+
+	if (!record || !record->texture || !foveation_sizes(record, &screen, &physical) || !width || !height)
+		return nil;
+	if (!resolve_color_pipeline)
+	{
+		NSError *error = nil;
+		id<MTLLibrary> library = [device newLibraryWithSource:resolve_source options:nil error:&error];
+		MTLRenderPipelineDescriptor *pipeline = [MTLRenderPipelineDescriptor new];
+		MTLSamplerDescriptor *nearest = [MTLSamplerDescriptor new];
+
+		if (library)
+		{
+			pipeline.vertexFunction = present_vertex;
+			pipeline.fragmentFunction = [library newFunctionWithName:@"resolve_color"];
+			pipeline.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+			resolve_color_pipeline = [device newRenderPipelineStateWithDescriptor:pipeline error:&error];
+			pipeline.fragmentFunction = [library newFunctionWithName:@"resolve_depth"];
+			pipeline.colorAttachments[0].pixelFormat = MTLPixelFormatR32Float;
+			if (resolve_color_pipeline)
+				resolve_depth_pipeline = [device newRenderPipelineStateWithDescriptor:pipeline error:&error];
+		}
+		if (!resolve_color_pipeline || !resolve_depth_pipeline)
+		{
+			platform_log("Metal: the foveation resolve's shaders failed: %s", error.description.UTF8String);
+			resolve_color_pipeline = resolve_depth_pipeline = nil;
+			return nil;
+		}
+		resolve_nearest = [device newSamplerStateWithDescriptor:nearest];
+	}
+	descriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:depth ? MTLPixelFormatR32Float :
+		MTLPixelFormatBGRA8Unorm width:width height:height mipmapped:NO];
+	descriptor.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+	descriptor.storageMode = MTLStorageModePrivate;
+	output = [device newTextureWithDescriptor:descriptor];
+	sizes = (struct foveation_sizes_uniform){ { (float)screen.width, (float)screen.height },
+		{ (float)physical.width, (float)physical.height },
+		{ (float)record->texture.width, (float)record->texture.height } };
+	pass_end();
+	pass = [MTLRenderPassDescriptor renderPassDescriptor];
+	pass.colorAttachments[0].texture = output;
+	pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+	pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+	resolve = [command_buffer() renderCommandEncoderWithDescriptor:pass];
+	if (metal_debug)
+		resolve.label = [NSString stringWithFormat:@"foveation resolve of %lux%lu", (unsigned long)screen.width,
+			(unsigned long)screen.height];
+	[resolve setRenderPipelineState:depth ? resolve_depth_pipeline : resolve_color_pipeline];
+	[resolve setViewport:(MTLViewport){ 0.0, 0.0, (double)width, (double)height, 0.0, 1.0 }];
+	[resolve setFragmentTexture:record->texture atIndex:0];
+	[resolve setFragmentSamplerState:depth ? resolve_nearest : present_sampler atIndex:0];
+	[resolve setFragmentBuffer:foveation_parameters(record) offset:0 atIndex:0];
+	[resolve setFragmentBytes:&sizes length:sizeof(sizes) atIndex:1];
+	[resolve drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
+	[resolve endEncoding];
+	use_texture(record);
+	return output;
+}
+
+#if TARGET_OS_VISION
+/* a foveated target resolved at its screen shape inside its allocated size,
+for a picture drawn whole somewhere else (the film's screen, the UI's
+quad); an unfoveated one as it is */
+static id<MTLTexture> foveation_picture(MetalTexture *record)
+{
+	MTLSize screen, physical;
+	NSUInteger width, height;
+	id<MTLTexture> resolved;
+
+	if (!foveation_sizes(record, &screen, &physical))
+		return record->texture;
+	width = record->texture.width;
+	height = width * screen.height / screen.width;
+	if (height > record->texture.height)
+	{
+		height = record->texture.height;
+		width = height * screen.width / screen.height;
+	}
+	resolved = foveation_resolve(record, width, height);
+	return resolved ? resolved : record->texture;
+}
+#endif
+
 static uint32_t gpu_metal_present(gpu_texture back_buffer)
 {
 	@autoreleasepool
@@ -3501,12 +3697,16 @@ static uint32_t gpu_metal_present_stereo(const struct gpu_stereo_present *presen
 		if (theater_wanted && on_screen && present->hud_ui && color[0] &&
 			color[0]->texture && hud && hud->texture && host_stereo_ui_ready())
 		{
+			id<MTLTexture> picture;
+
 			command_buffer();
 			pass_end();
+			/* (a foveated eye at its screen shape) */
+			picture = foveation_picture(color[0]);
 			use_texture(color[0]);
 			use_texture(hud);
 			commit(YES);
-			host_stereo_present_ui(queue, color[0]->texture, hud->texture,
+			host_stereo_present_ui(queue, picture, hud->texture,
 				stereo_cut_brightness(HOST_STEREO_VIEW_UI, present->cut_covered));
 			frames++;
 			pacing.work_started = CACurrentMediaTime();
@@ -3515,15 +3715,20 @@ static uint32_t gpu_metal_present_stereo(const struct gpu_stereo_present *presen
 		if (theater_wanted && on_screen && color[0] && color[0]->texture && color[1] &&
 			color[1]->texture && host_stereo_ready())
 		{
+			id<MTLTexture> left, right;
+
 			command_buffer();
 			pass_end();
+			/* (foveated eyes at their screen shape) */
+			left = foveation_picture(color[0]);
+			right = foveation_picture(color[1]);
 			use_texture(color[0]);
 			use_texture(color[1]);
 			if (hud && hud->texture)
 				use_texture(hud);
 			commit(YES);
 			stereo_pacing_count();
-			host_theater_present_eyes(queue, color[0]->texture, color[1]->texture, hud ? hud->texture : nil,
+			host_theater_present_eyes(queue, left, right, hud ? hud->texture : nil,
 				present->fade, stereo_cut_brightness(HOST_STEREO_VIEW_SCREEN, present->cut_covered));
 			frames++;
 			pacing.work_started = CACurrentMediaTime();

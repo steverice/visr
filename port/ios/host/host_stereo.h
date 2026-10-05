@@ -20,12 +20,26 @@ void host_stereo_space_opened(void *layer_renderer);
 /* display.frame_repeat in stereo (HEAD or SCREEN mode), 0 to 3: each
 Compositor frame stays up for that many refreshes more; 0 otherwise */
 int host_stereo_frame_repeat(void);
+/* foveated eye passes (display.foveation, debug.foveation_eye_passes, HEAD
+mode's full view with the dedicated layout): 1 while this frame's eyes
+render through the Compositor's rate maps, with the eyes' screen (logical)
+size, eye_width by eye_height, and the size their targets are allocated at,
+the drawable's color texture per view (the largest physical size the maps
+can reach as the render quality eases); 0 otherwise */
+int host_stereo_foveated_size(int *screen_width, int *screen_height, int *allocated_width, int *allocated_height);
 
 #ifdef __OBJC__
 #import <Metal/Metal.h>
 /* whether a stereo frame can present: host_stereo_frame opened it and the
 space is still open */
 int host_stereo_ready(void);
+/* this frame's rate map for an eye (0 left, 1 right) while its passes
+render through it (host_stereo_foveated_size), else nil; its screen size is
+the view's logical size, and it fills the top left of the eye's targets.
+The parameter buffer is its copyParameterDataToBuffer data, for a shader's
+rasterization_rate_map_decoder, made once a frame */
+id<MTLRasterizationRateMap> host_stereo_rate_map(int eye);
+id<MTLBuffer> host_stereo_rate_map_parameters(int eye);
 /* draws each eye's picture and depth full view into its Compositor view, the
 HUD's quads over both (host_stereo_hud.h), and presents the frame; the
 game's command buffer, which drew them, is committed already. Brightness (0

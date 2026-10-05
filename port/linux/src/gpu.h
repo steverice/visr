@@ -96,7 +96,14 @@ struct gpu_texture_description
 	uint8_t type;
 	uint8_t format;
 	uint8_t usage;
-	uint8_t pad;
+	/* 0 for an ordinary texture; 1 or 2 for a screen-sized target of the
+	left or right eye in a foveated frame (a render target allocated at the
+	Compositor's drawable size per view, which the eye's rate map fills only
+	in part): the backend binds that eye's rate map on any pass that writes
+	it, and its viewports and scissors are in the map's screen coordinates
+	(Task 10, d3d8_device.c). With debug.rate_map_test on the Mac, 1 marks
+	the mono screen's targets, which a synthetic map fills */
+	uint8_t foveated_eye;
 	uint32_t width, height, depth, levels;
 };
 

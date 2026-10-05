@@ -177,10 +177,17 @@ struct xgpu_render_target
 	/* pixels per unit of width and height: more than 1 for the screen's
 	targets when the game draws at the display's resolution (d3d8_device.c) */
 	float scale[2];
+	/* the logical size: width and height times scale */
 	unsigned long gl_width, gl_height;
 	/* changes whenever the target is drawn into or cleared (d3d8_device.c,
 	bind_targets) */
 	unsigned long written;
+	/* a foveated eye's target (gpu_texture_description.foveated_eye): the
+	eye, 1 or 2, and the texture's allocated size, of which the eye's rate
+	map fills the top left; gl_width by gl_height is its screen size. 0 for
+	any other target, allocated at gl_width by gl_height */
+	unsigned char foveated_eye;
+	unsigned long allocated_width, allocated_height;
 };
 
 /* the GL texture holding a render target with this physical address, or 0 */

@@ -242,6 +242,8 @@ static int head_eyes_frame(void)
 		stereo->eye_height > 0;
 }
 
+static int foveated_eye_allocation(unsigned long *width, unsigned long *height);
+
 /* the scale just taken, remembered for mono frames if this frame has no eyes */
 static void screen_scale_taken(void)
 {
@@ -604,6 +606,26 @@ static DWORD surface_dimensions(const D3DSurface *surface, unsigned long *width,
 	return format;
 }
 
+/* the screen's scale, or with foveated eye passes the eyes' allocated size
+over their screen size times it: the density the eyes would have unfoveated,
+for the targets that aren't foveated but follow the eyes' size (the HUD
+layer, the HUD groups' and the reticle's targets, the zoom's inset and the
+effect targets), so that they cost what they did before foveation rather
+than growing with the maps' screen size */
+static void screen_scale_dense(float scale[2])
+{
+	const struct halo_stereo_frame *stereo = halo_stereo_frame();
+	unsigned long width, height;
+
+	scale[0] = screen_scale[0];
+	scale[1] = screen_scale[1];
+	if (foveated_eye_allocation(&width, &height))
+	{
+		scale[0] *= (float)width / (float)stereo->eye_width;
+		scale[1] *= (float)height / (float)stereo->eye_height;
+	}
+}
+
 /* the Xbox-sized offscreen targets drawn larger than the Xbox drew them:
 the 128x128 R5G6B5 shadow maps (and their blur) at display.shadow_map_size,
 and with display.effect_resolution the 320x240 active-camouflage source (and
@@ -628,8 +650,14 @@ static void offscreen_target_scale(unsigned long width, unsigned long height, DW
 		scale[0] = scale[1] = (float)shadow_size / 128.0f;
 	else if (width == 320 && height == 240 && effect_resolution)
 	{
-		scale[0] = screen_scale[1] * effect_factor;
-		scale[1] = screen_scale[1] * effect_factor;
+		float dense[2];
+
+		/* (foveated eye passes: at the eyes' density without foveation, not
+		the rate maps' screen size, which the full-rate center reaches only
+		there) */
+		screen_scale_dense(dense);
+		scale[0] = dense[1] * effect_factor;
+		scale[1] = dense[1] * effect_factor;
 	}
 }
 
@@ -657,6 +685,9 @@ static struct render_target_entry *render_target_get_layer(const D3DSurface *sur
 	BOOL depth;
 	DWORD format;
 	int layer = HALO_STEREO_LAYER_MONO;
+	/* a foveated eye's target: its eye (1 or 2) and allocated size */
+	unsigned char foveated_eye = 0;
+	unsigned long allocated_width = 0, allocated_height = 0;
 
 	if (!surface || !surface->Data)
 		return NULL;
@@ -680,23 +711,50 @@ static struct render_target_entry *render_target_get_layer(const D3DSurface *sur
 		/* the zoom's inset: the screen as mono draws it, at square pixels and
 		a share of the eyes' height (halo_stereo.h) */
 		if (layer == HALO_STEREO_LAYER_INSET)
-			scale[0] = scale[1] = screen_scale[1] * HALO_STEREO_INSET_HEIGHT_SHARE;
+		{
+			float dense[2];
+
+			screen_scale_dense(dense);
+			scale[0] = scale[1] = dense[1] * HALO_STEREO_INSET_HEIGHT_SHARE;
+		}
 		/* the reticle's layer and the HUD groups' targets are color only:
 		their draws share the HUD layer's depth and stencil, as mono's HUD
 		shares one */
 		if (depth && (layer == HALO_STEREO_LAYER_RETICLE || layer >= HALO_STEREO_LAYER_HUD_GROUP))
 			layer = HALO_STEREO_LAYER_HUD;
+		/* foveated eye passes: an eye's targets are allocated at the
+		drawable's size per view and drawn through its rate map, at the
+		screen's scale (the map's screen size); the HUD's keep the eyes'
+		density without foveation (screen_scale_dense): the presenter reads
+		them through the drawable's map anyway, and more pixels gain nothing */
+		if ((layer == 0 || layer == 1) && foveated_eye_allocation(&allocated_width, &allocated_height))
+			foveated_eye = (unsigned char)(layer + 1);
+		else if (layer == HALO_STEREO_LAYER_HUD || layer == HALO_STEREO_LAYER_RETICLE ||
+			layer >= HALO_STEREO_LAYER_HUD_GROUP)
+			screen_scale_dense(scale);
 	}
 	else
 		offscreen_target_scale(width, height, format, scale);
 	for (entry = *render_target_bucket(surface->Data); entry; entry = entry->next_in_bucket)
 	{
-		if (entry->target.data == surface->Data && entry->target.width == width &&
-			entry->target.height == height && entry->target.depth == depth && entry->layer == layer &&
-			entry->target.scale[0] == scale[0] && entry->target.scale[1] == scale[1])
+		if (entry->target.data != surface->Data || entry->target.width != width ||
+			entry->target.height != height || entry->target.depth != depth || entry->layer != layer ||
+			entry->target.foveated_eye != foveated_eye)
+			continue;
+		/* a foveated eye's target is keyed on its allocation, not its scale:
+		the eased render quality changes the map's sizes from frame to frame,
+		inside the same allocation */
+		if (foveated_eye && entry->target.allocated_width == allocated_width &&
+			entry->target.allocated_height == allocated_height)
 		{
+			entry->target.scale[0] = scale[0];
+			entry->target.scale[1] = scale[1];
+			entry->target.gl_width = (unsigned long)(width * scale[0] + 0.5f);
+			entry->target.gl_height = (unsigned long)(height * scale[1] + 0.5f);
 			return entry;
 		}
+		if (!foveated_eye && entry->target.scale[0] == scale[0] && entry->target.scale[1] == scale[1])
+			return entry;
 	}
 	entry = calloc(1, sizeof(*entry));
 	entry->layer = layer;
@@ -708,14 +766,18 @@ static struct render_target_entry *render_target_get_layer(const D3DSurface *sur
 	entry->target.scale[1] = scale[1];
 	entry->target.gl_width = (unsigned long)(width * scale[0] + 0.5f);
 	entry->target.gl_height = (unsigned long)(height * scale[1] + 0.5f);
+	entry->target.foveated_eye = foveated_eye;
+	entry->target.allocated_width = foveated_eye ? allocated_width : entry->target.gl_width;
+	entry->target.allocated_height = foveated_eye ? allocated_height : entry->target.gl_height;
 	{
 		struct gpu_texture_description texture = { 0 };
 
 		texture.type = GPU_TEXTURE_2D;
 		texture.format = depth ? GPU_FORMAT_DEPTH_STENCIL : GPU_FORMAT_BGRA8;
 		texture.usage = GPU_USAGE_RENDER_TARGET;
-		texture.width = (uint32_t)entry->target.gl_width;
-		texture.height = (uint32_t)entry->target.gl_height;
+		texture.foveated_eye = foveated_eye;
+		texture.width = (uint32_t)entry->target.allocated_width;
+		texture.height = (uint32_t)entry->target.allocated_height;
 		texture.depth = 1;
 		texture.levels = 1;
 		entry->target.texture = gpu_texture_create(&texture);
@@ -873,6 +935,22 @@ static BOOL draw_targets(gpu_texture *color_texture, gpu_texture *depth_texture)
 
 /* what the shader translators emit for this context */
 static struct nv2a_dialect shader_dialect;
+
+/* foveated eye passes this frame (halo_stereo_frame's foveated_width, from
+host_stereo_foveated_size): the size the eyes' screen-sized targets are
+allocated at, which their rate maps fill from the top left. Only on Metal,
+whose backend binds the maps (gpu_metal.m) */
+static int foveated_eye_allocation(unsigned long *width, unsigned long *height)
+{
+	const struct halo_stereo_frame *stereo = halo_stereo_frame();
+
+	if (!shader_dialect.msl || !head_eyes_frame() || !stereo->foveated || stereo->foveated_width <= 0 ||
+		stereo->foveated_height <= 0)
+		return 0;
+	*width = (unsigned long)stereo->foveated_width;
+	*height = (unsigned long)stereo->foveated_height;
+	return 1;
+}
 
 static void shader_dialect_initialize(struct nv2a_dialect *dialect, const struct gpu_capabilities *capabilities)
 {
@@ -4259,7 +4337,7 @@ static void stereo_targets_release(void)
 			*bucket = entry->next_in_bucket;
 		}
 		*link = entry->next;
-		bytes += entry->target.gl_width * entry->target.gl_height * (entry->target.depth ? 5 : 4);
+		bytes += entry->target.allocated_width * entry->target.allocated_height * (entry->target.depth ? 5 : 4);
 		gpu_texture_destroy(entry->target.texture);
 		free(entry);
 		freed++;

@@ -119,9 +119,15 @@ struct halo_stereo_frame
 	/* HEAD mode's full view with display.foveation: 1 while the views render
 	through the Compositor's rate maps. eye_width and eye_height are then the
 	maps' screen (logical) size, and display.render_scale doesn't apply: the
-	render quality takes its place. The game's eye passes still render
-	unfoveated at that size (composite-only foveation) */
+	render quality takes its place */
 	int32_t foveated;
+	/* and with debug.foveation_eye_passes (host_stereo_foveated_size): the
+	size each eye's screen-sized targets are allocated at, the drawable's
+	color texture per view, which the eye's rate map fills from the top left
+	(its physical size, at most this); the game's eye passes render through
+	the map. 0 when the eyes render unfoveated at eye_width by eye_height
+	(composite-only foveation, or none) */
+	int32_t foveated_width, foveated_height;
 };
 
 void halo_stereo_frame_begin(void);                    /* latches this frame's state */

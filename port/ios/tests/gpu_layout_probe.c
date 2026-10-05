@@ -18,6 +18,7 @@ int main(void)
 	FIELD(gpu_capabilities, shader_language);
 	FIELD(gpu_capabilities, max_texture_size);
 	SIZE(gpu_texture_description);
+	FIELD(gpu_texture_description, foveated_eye);
 	FIELD(gpu_texture_description, width);
 	FIELD(gpu_texture_description, levels);
 	SIZE(gpu_constant_store);
@@ -85,5 +86,7 @@ int main(void)
 	FIELD(halo_stereo_frame, eye_width);
 	FIELD(halo_stereo_frame, eye_height);
 	FIELD(halo_stereo_frame, foveated);
+	FIELD(halo_stereo_frame, foveated_width);
+	FIELD(halo_stereo_frame, foveated_height);
 	return 0;
 }
