@@ -216,7 +216,7 @@ void host_theater_attach(void *renderer)
 	/* the once-only logs, theater's and stereo's, repeat for each opening */
 	theater_frames = 0;
 	screen_presents = 0;
-	host_stereo_space_opened();
+	host_stereo_space_opened(renderer);
 	host_logf(HOST_LOG_INFO, "theater: the immersive space is open");
 	if (!session && ar_world_tracking_provider_is_supported())
 	{

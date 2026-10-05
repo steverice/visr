@@ -137,6 +137,11 @@ static const struct config_setting config_settings[] =
 		"Apple Vision Pro: \"off\" (flat), \"head\" (in stereo, the head turns the view),\n"
 		"\"screen\" (in stereo on the theater screen), or \"side_by_side\" (a debug view\n"
 		"of both eyes in the window)." },
+	{ "display.frame_repeat", _config_integer, "0", "HALO_FRAME_REPEAT", _environment_value, _platform_ios,
+		"Apple Vision Pro, display.stereo = \"head\" or \"screen\": how many extra\n"
+		"display refreshes each frame stays up, 0 to 3: 0 draws a frame every\n"
+		"refresh (90 a second), 1 every other (45 a second) for when 90 costs too\n"
+		"much. Set when the immersive space opens." },
 	{ "display.first_person_body", _config_boolean, "true", "HALO_FIRST_PERSON_BODY", _environment_set_is_true, _platform_ios,
 		"With display.stereo = \"head\": draw the Master Chief's legs below the\n"
 		"view (no torso, head or third-person arms), so looking down shows your\n"

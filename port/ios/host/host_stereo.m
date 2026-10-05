@@ -471,9 +471,42 @@ static void stereo_frame(struct halo_stereo_frame *frame) API_AVAILABLE(visionos
 }
 #endif
 
-void host_stereo_space_opened(void)
+/* display.frame_repeat, clamped to 0..3: how many extra refreshes each of
+the Compositor's frames stays up in stereo (0: every refresh, 90 Hz; 1: 45
+Hz). Theater mode's mono screen keeps every refresh */
+int host_stereo_frame_repeat(void)
 {
 #if TARGET_OS_VISION
+	char value[16];
+	int repeat;
+
+	if (!head_configured())
+	{
+		host_config_string("display.stereo", "off", value, sizeof(value));
+		if (strcmp(value, "screen"))
+			return 0;
+	}
+	repeat = (int)host_config_real("display.frame_repeat", 0.0);
+	return repeat < 0 ? 0 : repeat > 3 ? 3 : repeat;
+#else
+	return 0;
+#endif
+}
+
+void host_stereo_space_opened(void *layer_renderer)
+{
+#if TARGET_OS_VISION
+	/* the frame rate: the layer renderer's repeat count, set for each
+	opening (a new layer renderer starts at 0) */
+	if (layer_renderer)
+	{
+		cp_layer_renderer_t renderer = (__bridge cp_layer_renderer_t)layer_renderer;
+		int repeat = host_stereo_frame_repeat();
+
+		cp_layer_renderer_set_minimum_frame_repeat_count(renderer, repeat);
+		host_logf(HOST_LOG_INFO, "stereo: the frame repeat count is %d (asked %d): a frame every %d refresh%s",
+			cp_layer_renderer_get_minimum_frame_repeat_count(renderer), repeat, repeat + 1, repeat ? "es" : "");
+	}
 	stereo_frames = 0;
 	screen_frames = 0;
 	stereo_presents = 0;
@@ -481,6 +514,8 @@ void host_stereo_space_opened(void)
 	ui_shown = -1;
 	inset_logged = 0;
 	depth_reported = 0;
+#else
+	(void)layer_renderer;
 #endif
 }
 

@@ -95,6 +95,7 @@ DEFAULTS = {
     "display.theater_distance": "4.0",
     "display.theater_environment": '"passthrough"',
     "display.stereo": '"off"',
+    "display.frame_repeat": "0",
     "display.film_depth_share": "0.25",
     "display.film_convergence": "1.75",
     "display.screen_depth_share": "0.3",
