@@ -2778,10 +2778,15 @@ static void raster_state_fill(BOOL has_depth, struct gpu_viewport *viewport, str
 
 		if (right > target_inset_columns[0] + target_inset_columns[1])
 			right = target_inset_columns[0] + target_inset_columns[1];
-		/* (an empty rectangle is no scissor at all: one pixel outside the
-		square instead) */
-		scissor->x = right > left ? left : target_inset_columns[0] > 0 ? target_inset_columns[0] - 1 : 0;
-		scissor->width = right > left ? right - left : 1;
+		/* a viewport wholly outside the columns would leave an empty
+		rectangle, which is no scissor at all. No game draw does that (the
+		inset's pass draws full-screen viewports), so keep the viewport's
+		own scissor then rather than invent a sentinel pixel */
+		if (right > left)
+		{
+			scissor->x = left;
+			scissor->width = right - left;
+		}
 	}
 
 	depth_stencil->depth_test = has_depth && rs[D3DRS_ZENABLE];
