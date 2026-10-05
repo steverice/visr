@@ -160,9 +160,19 @@ def opengles_framework(folder):
     return folder
 
 
+def mac_build_folder(environment=None):
+    """where the Catalyst build goes: build/mac/app in the checkout, or, on a host that runs developer-built
+    apps only from one folder (the MacBook's Santa: HALO_MAC_BUILD, set by remote-job-run.sh), a folder per
+    checkout there"""
+    environment = os.environ if environment is None else environment
+    if environment.get('HALO_MAC_BUILD'):
+        return Path(environment['HALO_MAC_BUILD']) / ROOT.name / 'app'
+    return ROOT / 'build/mac/app'
+
+
 def build_mac(args):
     """The iOS project built for Mac Catalyst: configured as iOS, built with the macOS SDK"""
-    build=ROOT/'build/mac/app'
+    build=mac_build_folder()
     frameworks=opengles_framework(ROOT/'build/mac/frameworks')
     import time
     run('cmake','-S','port/ios','-B',build,'-G','Xcode','-DCMAKE_SYSTEM_NAME=iOS','-DCMAKE_OSX_SYSROOT=iphoneos',

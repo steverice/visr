@@ -37,3 +37,11 @@ def test_a_stub_with_another_install_name_is_refused():
 def test_a_stub_naming_an_ios_target_the_rewrite_misses_is_refused():
     with pytest.raises(ValueError, match="iOS target"):
         ios_build.maccatalyst_stub(STUB + "uuids:\n  - target: arm64e-ios\n")
+
+
+def test_the_catalyst_build_goes_in_the_checkout_by_default():
+    assert ios_build.mac_build_folder({}) == ios_build.ROOT / "build/mac/app"
+
+
+def test_a_host_s_designated_folder_takes_the_catalyst_build(tmp_path):
+    assert ios_build.mac_build_folder({"HALO_MAC_BUILD": str(tmp_path)}) == tmp_path / ios_build.ROOT.name / "app"

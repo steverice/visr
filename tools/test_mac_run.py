@@ -743,3 +743,12 @@ def test_native_run_ignores_warnings_but_the_ipad_scheme_keeps_them(tmp_path, mo
     assert environment["MTL_DEBUG_LAYER_WARNING_MODE"] == "ignore"
     assert environment["MTL_DEBUG_LAYER"] == "1" and environment["MTL_DEBUG_LAYER_ERROR_MODE"] == "nslog"
     assert mac_run.validation_environment(True, False)["MTL_DEBUG_LAYER_WARNING_MODE"] == "nslog"
+
+
+def test_the_native_app_comes_from_the_checkout_by_default():
+    assert mac_run.native_app_default({}) == mac_run.ROOT / "build/mac/app/Release-maccatalyst/HaloCE.app"
+
+
+def test_the_native_app_comes_from_a_host_s_designated_folder(tmp_path):
+    assert mac_run.native_app_default({"HALO_MAC_BUILD": str(tmp_path)}) == \
+        tmp_path / mac_run.ROOT.name / "app/Release-maccatalyst/HaloCE.app"

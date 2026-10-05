@@ -647,7 +647,15 @@ def run_simulator(args):
     print(f"results: {args.out}")
 
 
-NATIVE_APP = ROOT / "build/mac/app/Release-maccatalyst/HaloCE.app"
+def native_app_default(environment=None):
+    """the Catalyst app tools/ios_build.py --mac built: in the checkout, or under $HALO_MAC_BUILD (a host
+    that runs developer-built apps only from one folder: the MacBook's Santa)"""
+    environment = os.environ if environment is None else environment
+    if environment.get("HALO_MAC_BUILD"):
+        return Path(environment["HALO_MAC_BUILD"]) / ROOT.name / "app/Release-maccatalyst/HaloCE.app"
+    return ROOT / "build/mac/app/Release-maccatalyst/HaloCE.app"
+
+
 NATIVE_EXECUTABLE = "Contents/MacOS/HaloCE"
 # what the iPad runner's SDL reports on a 2x screen, pinned for the native app (host_main.m)
 NATIVE_DISPLAY = "1366x1024@2"
@@ -760,7 +768,7 @@ def seed_native_data(args, data):
 
 
 def run_native(args):
-    args.app = args.app or NATIVE_APP
+    args.app = args.app or native_app_default()
     if not (args.app / NATIVE_EXECUTABLE).is_file():
         sys.exit(f"no native app at {args.app}; run tools/ios_build.py --mac first")
     with (args.app / "Contents/Info.plist").open("rb") as file:
