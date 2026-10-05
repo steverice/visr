@@ -69,12 +69,16 @@ void halo_hud_group_end(void);
 /* hud_calculate_point, with the element's corner (_hud_anchor_*): outside
 every span, the draws that follow take the corner's group (top left the
 weapon's, top right the unit's, bottom left the tracker's) until the next
-span begins or ends, the next element's corner or the next frame; bottom
-right and the center are the catch-all's. Inside the unit's span it splits that span by
+span begins or ends, the next element's corner, the HUD's end
+(halo_hud_group_forget_corner) or the next frame; bottom right and the
+center are the catch-all's. Inside the unit's span it splits that span by
 corner the same way: top left is the seats' group (a driver's seat labels,
 so no group crosses the layout's center), the center the catch-all's, and
 the rest stay the unit's */
 void halo_hud_group_corner(short corner);
+/* interface_draw_hud, as the HUD ends: a corner taken outside the spans
+doesn't reach past it */
+void halo_hud_group_forget_corner(void);
 /* the group a HUD-layer draw goes to now */
 int halo_hud_group_current(void);
 /* d3d8_device.c, per HUD-layer draw: its screen extent in layout lines (the

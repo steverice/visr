@@ -146,6 +146,8 @@ for path, spans in (('source/interface/hud_weapon.c', ('HALO_HUD_GROUP_WEAPON',)
         raise SystemExit(f'{path}: each of {", ".join(spans)} must open a span that ends')
 if 'halo_hud_group_corner(corner);' not in (ROOT / 'source/interface/hud_draw.c').read_text():
     raise SystemExit("hud_draw.c: hud_calculate_point must hand the element's corner to halo_hud_group_corner")
+if 'halo_hud_group_forget_corner();' not in function_body('source/interface/interface.c', 'interface_draw_hud'):
+    raise SystemExit('interface.c: interface_draw_hud must end with halo_hud_group_forget_corner()')
 # head-tracked stereo's first-person body: the render-only node matrices with the head and the
 # third-person arms collapsed, and when the body draws (the probe includes
 # port/linux/game/first_person_body.c)

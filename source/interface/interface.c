@@ -761,6 +761,8 @@ void interface_draw_hud(
 
 	hud_draw_screen();
 	game_engine_post_rasterize();
+	/* port: a corner the HUD took outside its group spans ends with it (halo_stereo.h) */
+	halo_hud_group_forget_corner();
 
 	return;
 }

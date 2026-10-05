@@ -99,6 +99,11 @@ int halo_hud_group_current(void)
 	return corner_group;
 }
 
+void halo_hud_group_forget_corner(void)
+{
+	corner_group = HALO_HUD_GROUP_NONE;
+}
+
 void halo_hud_group_extent(float x0, float y0, float x1, float y1)
 {
 	halo_hud_group_extent_in(halo_hud_group_current(), x0, y0, x1, y1);

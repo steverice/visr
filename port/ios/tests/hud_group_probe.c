@@ -130,6 +130,10 @@ int main(void)
 	halo_hud_group_corner(0);
 	check(halo_hud_group_current() == HALO_HUD_GROUP_WEAPON, "other spans aren't split by corner");
 	halo_hud_group_end();
+	/* the HUD's end forgets a corner taken outside the spans */
+	halo_hud_group_corner(0);
+	halo_hud_group_forget_corner();
+	check(halo_hud_group_current() == HALO_HUD_GROUP_NONE, "the HUD's end forgets the last corner");
 
 	/* the next frame's HUD pass */
 	halo_hud_group_begin(HALO_HUD_GROUP_WEAPON);
