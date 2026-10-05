@@ -142,6 +142,14 @@ void *host_sdl_metal_layer(void)
 	return metal_view ? SDL_Metal_GetLayer(metal_view) : NULL;
 }
 
+static int pinned_width, pinned_height;
+
+void host_sdl_pin_window_pixels(int width, int height)
+{
+	pinned_width = width;
+	pinned_height = height;
+}
+
 void host_sdl_window_size_in_pixels(uint32_t window, int *width, int *height)
 {
 	SDL_Window *object = handle_get(window, _handle_window);
@@ -157,6 +165,12 @@ void host_sdl_window_size_in_pixels(uint32_t window, int *width, int *height)
 		return;
 	}
 #endif
+	if (object && pinned_width)
+	{
+		*width = pinned_width;
+		*height = pinned_height;
+		return;
+	}
 	if (object)
 		SDL_GetWindowSizeInPixels(object, width, height);
 }

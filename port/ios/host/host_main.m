@@ -45,6 +45,13 @@ int main(int argc,char **argv) {
         /* tvOS apps may only write to Caches (purgeable). */
         NSString *documents=[NSSearchPathForDirectoriesInDomains(NSCachesDirectory,NSUserDomainMask,YES).firstObject stringByAppendingPathComponent:@"Halo"];
         [NSFileManager.defaultManager createDirectoryAtPath:documents withIntermediateDirectories:YES attributes:nil error:nil];
+#elif TARGET_OS_MACCATALYST
+        /* Not sandboxed, so NSDocumentDirectory would be the user's own ~/Documents:
+           HALO_DATA_ROOT (a runner's data folder), else Application Support/<bundle ID>. */
+        NSString *documents=NSProcessInfo.processInfo.environment[@"HALO_DATA_ROOT"];
+        if(!documents.length)documents=[NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory,NSUserDomainMask,YES).firstObject
+            stringByAppendingPathComponent:NSBundle.mainBundle.bundleIdentifier];
+        [NSFileManager.defaultManager createDirectoryAtPath:documents withIntermediateDirectories:YES attributes:nil error:nil];
 #else
         NSString *documents=NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject;
 #endif
@@ -84,6 +91,16 @@ int main(int argc,char **argv) {
             float density=mode->pixel_density>0?mode->pixel_density:1;
             width=(480*longer/shorter)&~1;
             pixel_width=(int)(longer*density+0.5f);pixel_height=(int)(shorter*density+0.5f);
+        }
+        /* The runner's pinned display (HALO_HOST_DISPLAY=1366x1024@2, what the iPad runner's SDL
+           reports): the guest's display and drawable size, whatever the window's (host_sdl.c). */
+        const char *pin=getenv("HALO_HOST_DISPLAY");int pin_w=0,pin_h=0;float pin_scale=0;
+        if(pin && sscanf(pin,"%dx%d@%f",&pin_w,&pin_h,&pin_scale)==3 && pin_w>0 && pin_h>0 && pin_scale>0){
+            int longer=pin_w>pin_h?pin_w:pin_h,shorter=pin_w>pin_h?pin_h:pin_w;
+            width=(480*longer/shorter)&~1;
+            pixel_width=(int)(longer*pin_scale+0.5f);pixel_height=(int)(shorter*pin_scale+0.5f);
+            host_sdl_pin_window_pixels(pixel_width,pixel_height);
+            host_logf(HOST_LOG_INFO,"display pinned to %s: %dx%d pixels, width %d",pin,pixel_width,pixel_height,width);
         }
         char env_data[1200],env_save[1200],env_width[64],env_pixel_width[64],env_pixel_height[64];
         snprintf(env_data,sizeof(env_data),"HALO_DATA_ROOT=%s",data_root);

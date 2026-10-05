@@ -12,7 +12,7 @@ static _Atomic int backgrounded;
 void host_lifecycle_install(void) {
     /* an iPad app on a Mac (tools/mac_run.py) may draw in the background, and
        a test run must not stop because its window went behind another */
-    if(NSProcessInfo.processInfo.isiOSAppOnMac)return;
+    if(NSProcessInfo.processInfo.isiOSAppOnMac || NSProcessInfo.processInfo.isMacCatalystApp)return;
     [NSNotificationCenter.defaultCenter addObserverForName:UISceneDidEnterBackgroundNotification object:nil
         queue:nil usingBlock:^(NSNotification *notification){
             (void)notification;
