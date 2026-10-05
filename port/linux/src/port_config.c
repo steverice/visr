@@ -456,6 +456,9 @@ static const struct config_setting config_settings[] =
 		"Show the frame number and the game time in a corner of the screen, to\n"
 		"point at a moment; with debug.fixed_timestep the same frame is the same\n"
 		"moment in every run. Not in screenshots." },
+	{ "debug.terminal_on_screen", _config_boolean, "false", "HALO_TERMINAL_ON_SCREEN", _environment_set_is_true, _platform_ios,
+		"Draw the console's output (what print and commands print) over the\n"
+		"game, as the desktop builds do; false keeps it in the log only." },
 	{ "debug.gl_debug", _config_boolean, "false", "HALO_GL_DEBUG", _environment_set_is_true, _platform_all,
 		"Report OpenGL errors in the log." },
 	{ "debug.metal_state_cache", _config_boolean, "true", "HALO_METAL_STATE_CACHE", _environment_value, _platform_ios,

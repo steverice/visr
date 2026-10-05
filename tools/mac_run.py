@@ -118,6 +118,7 @@ DEFAULTS = {
     "debug.texture_override_directory": '""',
     "debug.texture_log": "false",
     "debug.texture_no_cache": "false",
+    "debug.terminal_on_screen": "false",
 }
 
 

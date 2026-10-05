@@ -375,6 +375,11 @@ union argb_color *interface_get_rgb_color(
 	return color;
 }
 
+#ifdef HALO_IOS
+/* port/linux/src/port_config.c's */
+int config_boolean(const char *name);
+#endif
+
 void interface_draw_fullscreen_overlays(
 	void)
 {
@@ -387,6 +392,18 @@ void interface_draw_fullscreen_overlays(
 	terminal_draw();
 	main_framerate_render();
 	render_debug_profile();
+#else
+	/* port: debug.terminal_on_screen draws the console's output (what
+	print and the console's commands print) on iOS too, for reminders
+	bound to cheats.txt's buttons in a headset */
+	{
+		static int terminal_on_screen = -1;
+
+		if (terminal_on_screen < 0)
+			terminal_on_screen = config_boolean("debug.terminal_on_screen") != 0;
+		if (terminal_on_screen)
+			terminal_draw();
+	}
 #endif
 
 	return;
