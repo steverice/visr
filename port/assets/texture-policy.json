@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "policy_version": 1,
+  "results": {"graphic": "s4g", "surface": "bpf", "companion": "bpf", "bump": "bpf"},
+  "fallback": {"low": 12, "high": 30, "sigma": 1.0, "iterations": 3},
+  "graphic_names": ["decal", "decals", "display", "diplays", "readout", "numbers", "compass", "text", "symbol",
+                    "registry", "subscreen", "emblem", "scanlines", "nos", "monitor", "monitors", "screen", "sign",
+                    "keypad", "label", "glyph", "font", "logo", "insignia", "patches"],
+  "graphic_groups": ["smet"],
+  "decal_surface_prefixes": ["effects\\decals\\"],
+  "overrides": [
+    {"tag": "levels\\a10\\bitmaps\\tech rack mount", "result": "s4g",
+     "reason": "amber keypad sheet (frames 2160, 2280, 5880, 6120); user 2026-10-04"},
+    {"tag": "characters\\monitor\\bitmaps\\monitor_base", "result": "bpf",
+     "reason": "343 Guilty Spark's body; 'monitor' in the name is a false positive"}
+  ]
+}
