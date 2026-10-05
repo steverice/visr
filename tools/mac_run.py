@@ -266,6 +266,10 @@ TARGET = "HaloRunner"
 CONTAINERS = Path.home() / "Library/Containers"
 DESTINATION = "platform=macOS,arch=arm64,variant=Designed for iPad"
 
+# The run scheme turns off Xcode's GPU validation and frame capture. A scheme
+# that doesn't say leaves Metal's API validation on, even with the debugger off:
+# every Metal run got an MTLDebugDevice, whose checks cost most of a frame's CPU.
+# --metal-validation turns validation on through the environment instead.
 PROJECT = """name: {target}
 options:
   bundleIdPrefix: org.haloce
@@ -298,6 +302,8 @@ schemes:
     run:
       config: Debug
       debugEnabled: false
+      enableGPUValidationMode: disabled
+      enableGPUFrameCaptureMode: disabled
 {environment}"""
 
 # Metal's API validation (gpu_metal.m), reported to the logs rather than
