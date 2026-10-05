@@ -206,9 +206,13 @@ at most this often, in frames; after the limit (a quality the layer never
 quite reaches), the full log regardless */
 #define FOVEATION_EASING_FRAMES 45
 #define FOVEATION_EASING_LIMIT 450
+/* past the limit, a changed map is logged in full at most this often, in
+seconds */
+#define FOVEATION_RELOG_SECONDS 1.0
 
 static NSString *foveation_logged_key;
 static unsigned long foveation_frames, foveation_easing_logged;
+static NSTimeInterval foveation_logged_at;
 
 /* a screen point through a map's layer */
 static MTLCoordinate2D foveation_physical(id<MTLRasterizationRateMap> map, NSUInteger layer, float x, float y)
@@ -298,7 +302,9 @@ static void foveation_measure(cp_drawable_t drawable) API_AVAILABLE(visionos(26.
 		}
 		return;
 	}
-	key = [NSMutableString stringWithFormat:@"%.2f %.2f %zu %zu", quality, runtime, map_count, views];
+	/* the key leaves out the runtime quality, which can jitter across a
+	rounding boundary; the sizes it sets are in the key */
+	key = [NSMutableString stringWithFormat:@"%.2f %zu %zu", quality, map_count, views];
 	line = [NSMutableString stringWithFormat:@"stereo: foveation at quality %.3f (runtime %.3f, default %.3f), "
 		"layout %s (offered %s): %zu map%s for %zu view%s", quality, runtime, default_quality, layout, offered, map_count,
 		map_count == 1 ? "" : "s", views, views == 1 ? "" : "s"];
@@ -356,7 +362,12 @@ static void foveation_measure(cp_drawable_t drawable) API_AVAILABLE(visionos(26.
 	}
 	if (foveation_logged_key && [key isEqualToString:foveation_logged_key])
 		return;
+	/* a quality the layer never quite settles at: at most once a second */
+	if (foveation_logged_key && foveation_frames >= FOVEATION_EASING_LIMIT &&
+		NSProcessInfo.processInfo.systemUptime - foveation_logged_at < FOVEATION_RELOG_SECONDS)
+		return;
 	foveation_logged_key = key;
+	foveation_logged_at = NSProcessInfo.processInfo.systemUptime;
 	host_logf(HOST_LOG_INFO, "%s", line.UTF8String);
 	/* the same five screen points through every layer of every map */
 	for (size_t index = 0; index < map_count; index++)
