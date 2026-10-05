@@ -1,8 +1,9 @@
 /* The few settings the host itself needs (theater mode's, host_theater.m),
 read from config.toml in the data folder (the working directory). The game
 owns the file: it writes every setting with its default and its description
-(port/linux/src/port_config.c), so the host only reads, and only the simple
-"key = value" lines of one section. */
+(port/linux/src/port_config.c), so the host reads only the simple
+"key = value" lines of one section, and writes only the one boolean the
+Settings app's switch sets (host_texture_settings.m), keeping every other line. */
 #include "host_config.h"
 
 #include <ctype.h>
@@ -88,4 +89,64 @@ void host_config_string(const char *name, const char *fallback, char *out, size_
 	}
 	else
 		snprintf(out, size, "%s", value);
+}
+
+int host_config_write_boolean(const char *name, int value)
+{
+	const char *dot = strchr(name, '.');
+	char section[64], key[64], header[80], setting[96], line[512];
+	FILE *in, *out;
+	int in_section = 0, done = 0, seen_section = 0, ends_line = 1;
+	size_t key_length;
+
+	if (!dot || (size_t)(dot - name) >= sizeof(section) || strlen(dot + 1) >= sizeof(key))
+		return 0;
+	memcpy(section, name, (size_t)(dot - name));
+	section[dot - name] = 0;
+	snprintf(key, sizeof(key), "%s", dot + 1);
+	snprintf(header, sizeof(header), "[%s]", section);
+	snprintf(setting, sizeof(setting), "%s = %s\n", key, value ? "true" : "false");
+	key_length = strlen(key);
+	if (!(out = fopen("config.toml.tmp", "w")))
+		return 0;
+	if ((in = fopen("config.toml", "r")))
+	{
+		while (fgets(line, sizeof(line), in))
+		{
+			const char *text = line + strspn(line, " \t");
+
+			if (*text == '[')
+			{
+				if (in_section && !done)   /* the key was missing from its section: add it at the end */
+				{
+					fputs(setting, out);
+					done = 1;
+				}
+				in_section = !strncmp(text, header, strlen(header));
+				seen_section |= in_section;
+			}
+			else if (in_section && !done && !strncmp(text, key, key_length) &&
+				(text[key_length] == ' ' || text[key_length] == '\t' || text[key_length] == '='))
+			{
+				fputs(setting, out);
+				done = 1;
+				continue;
+			}
+			fputs(line, out);
+			ends_line = line[strlen(line) - 1] == '\n';
+		}
+		fclose(in);
+	}
+	if (!done && !ends_line)         /* a last line without its newline */
+		fputs("\n", out);
+	if (!done && seen_section)       /* the section was the file's last */
+		fputs(setting, out);
+	else if (!done)
+		fprintf(out, "\n%s\n%s", header, setting);
+	if (fclose(out) || rename("config.toml.tmp", "config.toml"))
+	{
+		remove("config.toml.tmp");
+		return 0;
+	}
+	return 1;
 }

@@ -761,10 +761,11 @@ static gpu_texture texture_override_find(const char *directory, uint64_t hash, u
 /* ---------- upscaled textures, per level (texture_upscale_state.h) */
 static struct texture_upscale_state texture_upscale;
 
-/* port: called from cache_files.c when a map has loaded, before its textures upload */
+/* port: called from cache_files.c when a map has loaded, before its textures upload; the switch is read again
+   from config.toml here (the Settings app may have changed it), so it takes effect at a level load only */
 void texture_upscale_map_loaded(void)
 {
-	texture_upscale_state_map_loaded(&texture_upscale, config_boolean("display.upscaled_textures"));
+	texture_upscale_state_map_loaded(&texture_upscale, config_reload_boolean("display.upscaled_textures"));
 	if (config_boolean("debug.texture_log"))
 		platform_log("textures: upscaled textures %s for this level",
 			texture_upscale_state_enabled(&texture_upscale) ? "on" : "off");

@@ -65,6 +65,15 @@ run(BUILD/'texture-cache-probe')
 run('xcrun', 'clang', '-O2', '-fsanitize=address,undefined', '-Iport/linux/src',
     'port/ios/tests/texture_upscale_state_probe.c', '-o', BUILD/'texture-upscale-state-probe')
 run(BUILD/'texture-upscale-state-probe')
+# the host's write of one setting into config.toml, for the Settings app's switch (port/ios/host/host_config.c)
+run('xcrun', 'clang', '-O2', '-fsanitize=address,undefined', '-Iport/ios/host', 'port/ios/tests/host_config_write_probe.c',
+    'port/ios/host/host_config.c', '-o', BUILD/'host-config-write-probe')
+run(BUILD/'host-config-write-probe')
+# the game's reread of one setting at a level load, the environment still winning (port/linux/src/port_config.c)
+run('xcrun', 'clang', '-O2', '-fsanitize=address,undefined', '-DHALO_ILP32', '-Iport/linux/src',
+    '-Iport/third_party/tomlc17', *shlex.split(subprocess.check_output(['pkg-config', '--cflags', 'sdl3'], text=True)),
+    'port/ios/tests/config_reload_probe.c', 'port/third_party/tomlc17/tomlc17.c', '-o', BUILD/'config-reload-probe')
+run(BUILD/'config-reload-probe')
 
 # Parse untrusted XISO metadata and exercise extraction/cancellation under sanitizers.
 run('python3', 'tools/ios_xiso_test.py')
