@@ -46,6 +46,10 @@ run(BUILD/'display-probe')
 run('xcrun', 'clang', '-O2', '-fsanitize=address,undefined', '-Iport/linux/src',
     'port/ios/tests/virtual_clock_probe.c', '-o', BUILD/'virtual-clock-probe')
 run(BUILD/'virtual-clock-probe')
+# the Metal backend's redundant-state filter (metal_state_cache.h)
+run('xcrun', 'clang', '-O2', '-fsanitize=address,undefined', '-Iport/ios/host',
+    'port/ios/tests/metal_state_probe.c', '-o', BUILD/'metal-state-probe')
+run(BUILD/'metal-state-probe')
 
 # Parse untrusted XISO metadata and exercise extraction/cancellation under sanitizers.
 run('python3', 'tools/ios_xiso_test.py')

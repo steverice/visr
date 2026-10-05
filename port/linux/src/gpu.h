@@ -429,6 +429,10 @@ enum
 	/* display.immersive: the picture goes on a screen in an immersive space
 	(Metal, visionOS 26 and later) */
 	GPU_INITIALIZE_IMMERSIVE = 256,
+	/* debug.metal_state_cache = false: the Metal backend makes every encoder
+	call a draw has, without skipping the ones that set what the encoder
+	already holds (metal_state_cache.h) */
+	GPU_INITIALIZE_NO_STATE_CACHE = 512,
 };
 /* probe the context, which must be current, and set it up */
 void gpu_initialize(uint32_t flags, struct gpu_capabilities *capabilities);

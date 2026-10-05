@@ -22,6 +22,7 @@ but never returns to its run loop, which would otherwise drain them.
 
 #include "gpu.h"
 #include "ios_host.h"
+#include "metal_state_cache.h"
 
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
@@ -174,6 +175,10 @@ static BOOL visibility_wait;
 /* the open command buffer and render pass */
 static id<MTLCommandBuffer> commands;
 static id<MTLRenderCommandEncoder> encoder;
+/* what encoder holds, to skip calls that set it again (metal_state_cache.h;
+debug.metal_state_cache) */
+static struct metal_state_cache state_cache;
+_Static_assert(GPU_STAGE_COUNT == 4 && GPU_ATTRIBUTE_COUNT == 16, "metal_state_cache.h's slots");
 static gpu_texture pass_color, pass_depth;
 static unsigned long pass_commands;
 /* the open command buffer's serial; every earlier one has been committed */
@@ -386,6 +391,7 @@ static void pass_finish(BOOL frame_end)
 	pass_depth_texture = nil;
 	[encoder endEncoding];
 	encoder = nil;
+	metal_state_reset(&state_cache);
 	visibility.entry_open = 0;
 	pass_color = pass_depth = 0;
 	pass_commands = 0;
@@ -987,6 +993,7 @@ static BOOL pass_begin(gpu_texture color, gpu_texture depth, const struct gpu_cl
 	}
 	pass_traffic_count(pass);
 	encoder = [command_buffer() renderCommandEncoderWithDescriptor:pass];
+	metal_state_reset(&state_cache);
 	if (metal_debug)
 		encoder.label = [NSString stringWithFormat:@"targets %u/%u", color, depth];
 	pass_color = color;
@@ -1174,6 +1181,8 @@ static void gpu_metal_clear(const struct gpu_clear *clear, const struct gpu_rect
 		/* the test's next draw opens a new entry rather than counting into
 		this one again in the same pass */
 		visibility.entry_open = 0;
+		/* the next draw sets again what the quad changed */
+		metal_state_clear_quad(&state_cache);
 	}
 }
 
@@ -1617,9 +1626,14 @@ static void bind_constants(const struct gpu_constant_store *constants, const str
 	}
 	record = buffer_record(snapshot.buffer);
 	use_buffer(record);
-	[encoder setVertexBuffer:record->buffer offset:snapshot.offset atIndex:0];
-	[encoder setVertexBuffer:record->buffer offset:snapshot.offset + sizeof(constants->c) atIndex:1];
-	[encoder setFragmentBuffer:record->buffer offset:snapshot.offset + sizeof(constants->c) atIndex:0];
+	if (metal_state_object(&state_cache, METAL_STATE_VERTEX_BUFFER, (__bridge void *)record->buffer, snapshot.offset))
+		[encoder setVertexBuffer:record->buffer offset:snapshot.offset atIndex:0];
+	if (metal_state_object(&state_cache, METAL_STATE_VERTEX_BUFFER + 1, (__bridge void *)record->buffer,
+		snapshot.offset + sizeof(constants->c)))
+		[encoder setVertexBuffer:record->buffer offset:snapshot.offset + sizeof(constants->c) atIndex:1];
+	if (metal_state_object(&state_cache, METAL_STATE_FRAGMENT_BUFFER, (__bridge void *)record->buffer,
+		snapshot.offset + sizeof(constants->c)))
+		[encoder setFragmentBuffer:record->buffer offset:snapshot.offset + sizeof(constants->c) atIndex:0];
 }
 
 static void bind_attributes(const struct gpu_draw *draw)
@@ -1642,17 +1656,21 @@ static void bind_attributes(const struct gpu_draw *draw)
 			every unused attribute a constant) */
 			entry->stream = GPU_STREAM_CONSTANT;
 			memcpy(table.constants[index], draw->constant_values[index], sizeof(table.constants[index]));
-			[encoder setVertexBuffer:empty_buffer offset:0 atIndex:VERTEX_STREAM_BINDING + index];
+			if (metal_state_object(&state_cache, METAL_STATE_ATTRIBUTE_BUFFER + index, (__bridge void *)empty_buffer, 0))
+				[encoder setVertexBuffer:empty_buffer offset:0 atIndex:VERTEX_STREAM_BINDING + index];
 			continue;
 		}
 		entry->stream = attribute->stream;
 		entry->offset = draw->streams[attribute->stream].offset + attribute->offset;
 		entry->stride = draw->streams[attribute->stream].stride ? draw->streams[attribute->stream].stride :
 			attribute_size(attribute->format);
+		/* use_buffer whether or not the binding is skipped: renaming reads it */
 		use_buffer(record);
-		[encoder setVertexBuffer:record->buffer offset:0 atIndex:VERTEX_STREAM_BINDING + index];
+		if (metal_state_object(&state_cache, METAL_STATE_ATTRIBUTE_BUFFER + index, (__bridge void *)record->buffer, 0))
+			[encoder setVertexBuffer:record->buffer offset:0 atIndex:VERTEX_STREAM_BINDING + index];
 	}
 	[encoder setVertexBytes:&table length:sizeof(table) atIndex:2];
+	metal_state_always(&state_cache);
 }
 
 static void bind_stages(const struct gpu_draw *draw)
@@ -1664,14 +1682,18 @@ static void bind_stages(const struct gpu_draw *draw)
 		const struct gpu_stage *packet = &draw->stages[stage];
 		MetalTexture *record = packet->type ? texture_record(packet->texture) : nil;
 		id<MTLTexture> texture = record ? record->texture : nil;
+		id<MTLSamplerState> sampler;
 
 		/* a stage with no texture, or one with no storage yet, samples black,
 		as GL's texture 0 or an incomplete texture does */
 		if (!texture)
 			texture = empty_textures[packet->type <= GPU_TEXTURE_CUBE ? packet->type : 0];
 		use_texture(record);
-		[encoder setFragmentTexture:texture atIndex:stage];
-		[encoder setFragmentSamplerState:packet->type ? sampler_state(&packet->sampler) : empty_sampler atIndex:stage];
+		if (metal_state_object(&state_cache, METAL_STATE_TEXTURE + stage, (__bridge void *)texture, 0))
+			[encoder setFragmentTexture:texture atIndex:stage];
+		sampler = packet->type ? sampler_state(&packet->sampler) : empty_sampler;
+		if (metal_state_object(&state_cache, METAL_STATE_SAMPLER + stage, (__bridge void *)sampler, 0))
+			[encoder setFragmentSamplerState:sampler atIndex:stage];
 	}
 }
 
@@ -1776,29 +1798,54 @@ static uint32_t gpu_metal_draw(const struct gpu_draw *draw, const struct gpu_con
 			visibility.entry_open = 1;
 			((uint64_t *)visibility_buffer.contents)[entry] = 0;
 			[encoder setVisibilityResultMode:MTLVisibilityResultModeBoolean offset:entry * sizeof(uint64_t)];
+			metal_state_always(&state_cache);
 		}
-		[encoder setRenderPipelineState:pipeline];
-		[encoder setDepthStencilState:depth_state(&draw->depth_stencil)];
-		[encoder setStencilReferenceValue:draw->depth_stencil.stencil_reference & 0xff];
-		[encoder setViewport:(MTLViewport){ (double)draw->viewport.x, (double)draw->viewport.y,
-			(double)draw->viewport.width, (double)draw->viewport.height, draw->viewport.min_z, draw->viewport.max_z }];
-		[encoder setScissorRect:scissor];
-		[encoder setCullMode:draw->raster.cull_mode == GPU_CULL_FRONT ? MTLCullModeFront :
-			draw->raster.cull_mode == GPU_CULL_BACK ? MTLCullModeBack : MTLCullModeNone];
-		[encoder setFrontFacingWinding:draw->raster.front_face == GPU_FRONT_COUNTER_CLOCKWISE ?
-			MTLWindingCounterClockwise : MTLWindingClockwise];
-		/* glPolygonOffset(slope, constant); filled polygons only, as on ES */
-		if (draw->raster.depth_bias_enable)
-			[encoder setDepthBias:-draw->raster.depth_bias_constant slopeScale:-draw->raster.depth_bias_slope clamp:0.0f];
-		else
-			[encoder setDepthBias:0.0f slopeScale:0.0f clamp:0.0f];
-		[encoder setBlendColorRed:(float)((draw->blend.color >> 16) & 0xff) / 255.0f
-			green:(float)((draw->blend.color >> 8) & 0xff) / 255.0f blue:(float)(draw->blend.color & 0xff) / 255.0f
-			alpha:(float)(draw->blend.color >> 24) / 255.0f];
+		if (metal_state_object(&state_cache, METAL_STATE_PIPELINE, (__bridge void *)pipeline, 0))
+			[encoder setRenderPipelineState:pipeline];
+		{
+			id<MTLDepthStencilState> depth_stencil = depth_state(&draw->depth_stencil);
+			uint32_t reference = draw->depth_stencil.stencil_reference & 0xff;
+			MTLViewport viewport = { (double)draw->viewport.x, (double)draw->viewport.y,
+				(double)draw->viewport.width, (double)draw->viewport.height, draw->viewport.min_z, draw->viewport.max_z };
+			MTLCullMode cull = draw->raster.cull_mode == GPU_CULL_FRONT ? MTLCullModeFront :
+				draw->raster.cull_mode == GPU_CULL_BACK ? MTLCullModeBack : MTLCullModeNone;
+			MTLWinding winding = draw->raster.front_face == GPU_FRONT_COUNTER_CLOCKWISE ?
+				MTLWindingCounterClockwise : MTLWindingClockwise;
+			/* glPolygonOffset(slope, constant); filled polygons only, as on ES */
+			float bias[3] = { 0.0f, 0.0f, 0.0f };
+			float blend[4] = { (float)((draw->blend.color >> 16) & 0xff) / 255.0f,
+				(float)((draw->blend.color >> 8) & 0xff) / 255.0f, (float)(draw->blend.color & 0xff) / 255.0f,
+				(float)(draw->blend.color >> 24) / 255.0f };
+
+			if (draw->raster.depth_bias_enable)
+			{
+				bias[0] = -draw->raster.depth_bias_constant;
+				bias[1] = -draw->raster.depth_bias_slope;
+			}
+			if (metal_state_object(&state_cache, METAL_STATE_DEPTH_STENCIL, (__bridge void *)depth_stencil, 0))
+				[encoder setDepthStencilState:depth_stencil];
+			if (metal_state_value(&state_cache, METAL_STATE_STENCIL_REFERENCE, &reference, sizeof(reference)))
+				[encoder setStencilReferenceValue:reference];
+			if (metal_state_value(&state_cache, METAL_STATE_VIEWPORT, &viewport, sizeof(viewport)))
+				[encoder setViewport:viewport];
+			if (metal_state_value(&state_cache, METAL_STATE_SCISSOR, &scissor, sizeof(scissor)))
+				[encoder setScissorRect:scissor];
+			if (metal_state_value(&state_cache, METAL_STATE_CULL_MODE, &cull, sizeof(cull)))
+				[encoder setCullMode:cull];
+			if (metal_state_value(&state_cache, METAL_STATE_WINDING, &winding, sizeof(winding)))
+				[encoder setFrontFacingWinding:winding];
+			if (metal_state_value(&state_cache, METAL_STATE_DEPTH_BIAS, bias, sizeof(bias)))
+				[encoder setDepthBias:bias[0] slopeScale:bias[1] clamp:bias[2]];
+			if (metal_state_value(&state_cache, METAL_STATE_BLEND_COLOR, blend, sizeof(blend)))
+				[encoder setBlendColorRed:blend[0] green:blend[1] blue:blend[2] alpha:blend[3]];
+		}
 		bind_stages(draw);
 		bind_constants(constants, uniforms);
 		bind_attributes(draw);
 		pass_commands++;
+		/* the draw call itself, made below unless a conversion leaves nothing */
+		metal_state_always(&state_cache);
+		metal_state_draw(&state_cache);
 		switch (draw->primitive)
 		{
 		case GPU_PRIMITIVE_TRIANGLE_FAN:
@@ -2302,6 +2349,13 @@ static uint32_t gpu_metal_present(gpu_texture back_buffer)
 			platform_log("Metal: %lu renames in the last 600 frames", renames);
 			renames = 0;
 		}
+		if (frames % 600 == 0 && state_cache.draws)
+		{
+			platform_log("Metal: %.1f draws a frame make %.1f encoder calls each and skip %.1f (state cache %s)",
+				(double)state_cache.draws / 600.0, (double)state_cache.issued / state_cache.draws,
+				(double)state_cache.skipped / state_cache.draws, state_cache.enabled ? "on" : "off");
+			metal_state_take_counts(&state_cache);
+		}
 		if (frames % 600 == 0)
 		{
 			platform_log("Metal: a frame has %.1f render passes, which load %.0f MB and store %.0f MB",
@@ -2333,6 +2387,7 @@ static void gpu_metal_initialize(uint32_t flags, struct gpu_capabilities *capabi
 		metal_debug = (flags & GPU_INITIALIZE_DEBUG) != 0;
 		visibility_wait = (flags & GPU_INITIALIZE_FIXED_TIMESTEP) != 0;
 		metalfx_wanted = (flags & GPU_INITIALIZE_METALFX) != 0;
+		metal_state_initialize(&state_cache, !(flags & GPU_INITIALIZE_NO_STATE_CACHE));
 #ifndef HAVE_METALFX
 		if (metalfx_wanted)
 			platform_log("Metal: this build has no MetalFX; the picture is scaled bilinearly");

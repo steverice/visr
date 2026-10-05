@@ -86,6 +86,7 @@ DEFAULTS = {
     "input.stick_dead_zone": "0.27",
     "debug.null_renderer": "false",
     "debug.gl_debug": "false",
+    "debug.metal_state_cache": "true",
     "debug.fixed_timestep": "false",
     "debug.input_record": '""',
     "debug.input_replay": '""',

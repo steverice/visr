@@ -335,6 +335,9 @@ static const struct config_setting config_settings[] =
 		"moment in every run. Not in screenshots." },
 	{ "debug.gl_debug", _config_boolean, "false", "HALO_GL_DEBUG", _environment_set_is_true, _platform_all,
 		"Report OpenGL errors in the log." },
+	{ "debug.metal_state_cache", _config_boolean, "true", "HALO_METAL_STATE_CACHE", _environment_value, _platform_ios,
+		"With the Metal renderer, skip the encoder calls that set what the\n"
+		"encoder already holds; false makes every call, to compare." },
 	{ "debug.gpu_flush_draws", _config_integer, "-1", "HALO_GPU_FLUSH_DRAWS", _environment_value, _platform_desktop,
 		"Flush the GPU's pipeline every this many draws: -1 for every 3 on Intel\n"
 		"graphics with Mesa's driver (which can hang without), 0 never." },
