@@ -3,12 +3,12 @@
 
 The icon is original vector art: a dark backdrop with a faint grid, and a HUD
 mark on top in two layers (middle and front), so visionOS and tvOS can float
-the layers apart. Three concepts are drawn; `--concept` picks the one that goes
-into the catalogs.
+the layers apart. Several concepts are drawn; `--concept` picks the one that
+goes into the catalogs.
 
-    python3 tools/visr_icon.py --catalogs                 # render the default concept into port/ios/Assets*.xcassets
-    python3 tools/visr_icon.py --concept visor --catalogs # render another concept
-    python3 tools/visr_icon.py --previews DIR             # every concept: layers, a Home Screen mockup, a visionOS mockup
+    python3 tools/visr_icon.py --catalogs                   # render the default concept into port/ios/Assets*.xcassets
+    python3 tools/visr_icon.py --concept reticle --catalogs # render another concept
+    python3 tools/visr_icon.py --previews DIR               # every concept's layers and mockups, and the comparison sheets
 
 Needs `rsvg-convert` (librsvg) and `magick` (ImageMagick) on PATH.
 """
@@ -165,6 +165,135 @@ def wordmark_front():
     return f'<g filter="url(#glow)">{wordmark()}</g>'
 
 
+# The Halo: CE visor and helmet, traced from a frame of the game's c40 cutscene rendered from the user's own disc
+# (`c40-02820`, the Chief facing the camera). `tools/visr_trace.py` segments the gold visor, the helmet and the lit
+# rims of the brow pads, levels the head's slight roll, mirrors each mask about the visor's center line (the model
+# is symmetric), and fits these paths. Units are the 1024-unit mark: the helmet is 900 wide, the visor 710.
+VISOR_PATH = "M-75 -76C-94 -76 -114 -72 -133 -70C-153 -68 -172 -65 -192 -63C-211 -61 -231 -59 -250 -56C-269 -53 -292 -55 -308 -46C-323 -37 -335 -19 -342 -2C-350 15 -352 36 -354 55C-356 75 -357 95 -356 114C-354 133 -353 154 -346 172C-339 189 -325 205 -313 220C-302 236 -291 255 -275 265C-259 274 -238 276 -219 278C-200 281 -180 279 -160 279C-141 279 -121 279 -101 279C-82 279 -62 279 -43 279C-23 279 -3 279 16 279C36 279 55 279 75 279C94 279 114 279 134 279C153 279 173 279 192 279C212 278 234 282 251 275C269 269 284 255 297 242C311 228 323 211 332 194C342 178 350 159 354 141C358 122 356 101 355 82C355 62 354 42 349 24C345 5 341 -19 329 -31C317 -44 295 -48 276 -53C258 -57 237 -58 218 -60C198 -62 179 -65 160 -67C140 -69 121 -73 101 -74C82 -75 62 -75 43 -75C23 -75 3 -73 -16 -73C-36 -73 -55 -77 -75 -76Z"
+HELMET_PATH = "M-340 -266L-415 -146L-418 -135L-411 -113L-442 -67L-406 31L-406 155L-372 205L-438 240L-450 343L450 343L438 240L372 205L406 155L406 31L442 -67L411 -113L418 -135L415 -146L338 -267L269 -272L247 -303L82 -344L15 -338L-82 -344L-247 -303L-269 -272L-329 -271Z"
+BROW_RIMS = "M129 -271L128 -258L123 -250L124 -209L119 -163L123 -144L134 -139L138 -119L150 -118L155 -122L152 -145L162 -209L180 -223L195 -225L257 -216L305 -203L320 -190L331 -172L349 -153L386 -123L390 -110L397 -105L397 -96L420 -90L422 -100L411 -114L418 -141L338 -267L329 -271L143 -279Z M-129 -271L-143 -279L-329 -271L-338 -267L-418 -141L-411 -114L-422 -100L-420 -90L-397 -96L-397 -105L-390 -110L-386 -123L-349 -153L-331 -172L-320 -190L-305 -203L-257 -216L-195 -225L-180 -223L-162 -209L-152 -145L-155 -122L-150 -118L-138 -119L-134 -139L-123 -144L-119 -163L-124 -209L-123 -250L-128 -258Z"
+HELMET_CLIP_Y = 344
+
+
+GLASS_TINTS = {
+    "cyan": (("#8af0ff", 0.55), ("#1aa6c9", 0.30), ("#05394a", 0.20)),
+    "gold": (("#fff0b0", 0.95), ("#e0a53a", 0.92), ("#5a3a0c", 0.95)),
+}
+
+
+def visor_defs(view, visor, tint="cyan"):
+    """gradients and clips shared by the traced variants"""
+    (c0, o0), (c1, o1), (c2, o2) = GLASS_TINTS[tint]
+    rim = ("#fff6d8", "#f2c35a") if tint == "gold" else (ICE, CYAN)
+    return (f'<defs><clipPath id="visorclip-{view}"><path d="{visor}"/></clipPath>'
+            f'<radialGradient id="glass-{view}" cx="0.42" cy="0.78" r="0.75" fx="0.38" fy="0.85">'
+            f'<stop offset="0" stop-color="{c0}" stop-opacity="{o0}"/><stop offset="0.5" stop-color="{c1}" stop-opacity="{o1}"/>'
+            f'<stop offset="1" stop-color="{c2}" stop-opacity="{o2}"/></radialGradient>'
+            f'<linearGradient id="edge-{view}" x1="0" y1="0" x2="1" y2="1">'
+            f'<stop offset="0" stop-color="{rim[0]}"/><stop offset="0.45" stop-color="{rim[1]}"/>'
+            f'<stop offset="1" stop-color="{rim[1]}" stop-opacity="0.35"/></linearGradient></defs>')
+
+
+def specular(view, visor, strength=1.0):
+    """curved highlights, as on a convex glass: a wide arc under the top edge and a short bright one on the
+    upper left, clipped to the glass"""
+    return (f'<defs><linearGradient id="spec-{view}" x1="0" y1="0" x2="1" y2="0">'
+            f'<stop offset="0" stop-color="#ffffff" stop-opacity="{0.15 * strength:.2f}"/>'
+            f'<stop offset="0.3" stop-color="#ffffff" stop-opacity="{0.8 * strength:.2f}"/>'
+            f'<stop offset="0.7" stop-color="#ffffff" stop-opacity="{0.35 * strength:.2f}"/>'
+            f'<stop offset="1" stop-color="#ffffff" stop-opacity="0"/></linearGradient></defs>'
+            f'<g clip-path="url(#visorclip-{view})" fill="none" stroke="url(#spec-{view})" stroke-linecap="round">'
+            f'<ellipse cx="0" cy="330" rx="560" ry="372" stroke-width="22"/>'
+            f'<path d="M-300 70Q-250 -10 -150 -22" stroke="#ffffff" stroke-opacity="{0.85 * strength:.2f}" stroke-width="20"/></g>')
+
+
+def visor_glass(view, visor, tint="cyan"):
+    return visor_defs(view, visor, tint) + f'<path d="{visor}" fill="url(#glass-{view})"/>'
+
+
+def visor_edge(view, visor, width=26):
+    """the visor's rim: bright where it catches the light at the upper left, fading to the lower right"""
+    return (f'<g filter="url(#glow)"><path d="{visor}" fill="none" stroke="url(#edge-{view})" stroke-width="{width}" '
+            f'stroke-linejoin="round"/></g>')
+
+
+def helmet_shell(view, helmet, clip_y):
+    """the helmet as a dark shape barely lighter than the backdrop, with a cyan rim light along its upper left edge"""
+    return (f'<defs><linearGradient id="shell-{view}" x1="0" y1="0" x2="0" y2="1">'
+            f'<stop offset="0" stop-color="#16343f"/><stop offset="1" stop-color="#081820"/></linearGradient>'
+            f'<linearGradient id="fade-{view}" x1="0" y1="-500" x2="0" y2="{clip_y}" gradientUnits="userSpaceOnUse">'
+            f'<stop offset="0.75" stop-color="#fff"/><stop offset="1" stop-color="#000"/></linearGradient>'
+            f'<mask id="shellmask-{view}" maskUnits="userSpaceOnUse" x="-512" y="-512" width="1024" height="1024">'
+            f'<rect x="-512" y="-512" width="1024" height="1024" fill="url(#fade-{view})"/></mask>'
+            f'<linearGradient id="rim-{view}" x1="0" y1="0" x2="1" y2="1">'
+            f'<stop offset="0" stop-color="{CYAN}" stop-opacity="0.9"/><stop offset="0.6" stop-color="{CYAN}" stop-opacity="0.15"/>'
+            f'<stop offset="1" stop-color="{CYAN}" stop-opacity="0"/></linearGradient></defs>'
+            f'<g mask="url(#shellmask-{view})"><path d="{helmet}" fill="url(#shell-{view})"/>'
+            f'<g filter="url(#glow)"><path d="{helmet}" fill="none" stroke="url(#rim-{view})" stroke-width="12" stroke-linejoin="round"/></g></g>')
+
+
+def hud_reflection(cx=0, cy=0, r=60, opacity=0.6):
+    ring = "".join(f'<path d="{arc(r, q + 20, q + 70)}" transform="translate({cx} {cy})"/>' for q in (0, 90, 180, 270))
+    hairs = (f"M{cx} {cy - r * 1.6}V{cy - r * 1.25} M{cx} {cy + r * 1.25}V{cy + r * 1.6} "
+             f"M{cx - r * 1.6} {cy}H{cx - r * 1.25} M{cx + r * 1.25} {cy}H{cx + r * 1.6}")
+    return (f'<g filter="url(#glow)" fill="none" stroke="{CYAN}" stroke-opacity="{opacity}" stroke-width="{r / 5:.1f}">'
+            f'{ring}<path d="{hairs}"/></g><circle cx="{cx}" cy="{cy}" r="{r / 3.5:.1f}" fill="{AMBER}"/>')
+
+
+def brow_rims(opacity=0.85):
+    """the lit lower rims of the two brow pads above the visor"""
+    return f'<g filter="url(#glow)"><path d="{BROW_RIMS}" fill="{CYAN}" fill-opacity="{opacity}"/></g>'
+
+
+# visor-traced: the visor alone, enlarged and centered
+TRACED_ALONE = 'transform="scale(1.2) translate(0 -103)"'
+
+
+def visor_traced_middle():
+    return f'<g {TRACED_ALONE}>{visor_glass("f", VISOR_PATH)}</g>'
+
+
+def visor_traced_front():
+    return (f'<g {TRACED_ALONE}>{visor_defs("f2", VISOR_PATH)}{specular("f2", VISOR_PATH)}'
+            f'{visor_edge("f2", VISOR_PATH, 22)}</g>')
+
+
+# visor-helmet: the visor set in the helmet: a dark shell with a rim light, and the brow pads' lit edges
+HELMET_VIEW = 'transform="scale(0.94)"'
+
+
+def visor_helmet_middle():
+    return f'<g {HELMET_VIEW}>{helmet_shell("h", HELMET_PATH, HELMET_CLIP_Y)}{brow_rims()}{visor_glass("h", VISOR_PATH)}</g>'
+
+
+def visor_helmet_front():
+    return (f'<g {HELMET_VIEW}>{visor_defs("h2", VISOR_PATH)}{specular("h2", VISOR_PATH)}'
+            f'{visor_edge("h2", VISOR_PATH, 16)}</g>')
+
+
+def visor_helmet_gold_middle():
+    return f'<g {HELMET_VIEW}>{helmet_shell("g", HELMET_PATH, HELMET_CLIP_Y)}{brow_rims()}{visor_glass("g", VISOR_PATH, "gold")}</g>'
+
+
+def visor_helmet_gold_front():
+    return (f'<g {HELMET_VIEW}>{visor_defs("g2", VISOR_PATH, "gold")}{specular("g2", VISOR_PATH)}'
+            f'{visor_edge("g2", VISOR_PATH, 12)}</g>')
+
+
+# visor-closeup: a close crop of the helmet, so the gold glass fills the icon, with the brow pads at the top and
+# a cyan HUD reticle reflected in the glass
+CLOSE = 'transform="scale(1.3) translate(0 -70)"'
+
+
+def visor_closeup_middle():
+    return f'<g {CLOSE}>{helmet_shell("c", HELMET_PATH, HELMET_CLIP_Y)}{brow_rims()}{visor_glass("c", VISOR_PATH, "gold")}</g>'
+
+
+def visor_closeup_front():
+    return (f'<g {CLOSE}>{visor_defs("c2", VISOR_PATH, "gold")}{specular("c2", VISOR_PATH)}'
+            f'<g clip-path="url(#visorclip-c2)">{hud_reflection(110, 120, 40, 0.9)}</g>{visor_edge("c2", VISOR_PATH, 10)}</g>')
+
+
 CONCEPTS = {
     "reticle": ("A broken reticle ring with tick marks, crosshairs and a chevron; amber center pip.",
                 reticle_middle, reticle_front),
@@ -172,6 +301,14 @@ CONCEPTS = {
               visor_middle, visor_front),
     "wordmark": ("The letters VISR in chamfered strokes inside HUD corner brackets.",
                  wordmark_middle, wordmark_front),
+    "visor-traced": ("The Halo: CE visor traced front-on from the game, as cyan glass with a lit rim and a specular streak.",
+                     visor_traced_middle, visor_traced_front),
+    "visor-helmet": ("The traced visor in cyan glass, set in a dark helmet shell with a cyan rim light.",
+                     visor_helmet_middle, visor_helmet_front),
+    "visor-helmet-gold": ("The traced visor in gold glass, set in the dark helmet shell with a cyan rim light.",
+                          visor_helmet_gold_middle, visor_helmet_gold_front),
+    "visor-closeup": ("A close crop of the traced helmet: gold visor glass filling the icon, a cyan HUD reticle reflected in it.",
+                      visor_closeup_middle, visor_closeup_front),
 }
 
 
@@ -262,6 +399,16 @@ def vision_catalog(concept):
     stack_layers(stack, concept, ("Front", "Middle", "Back"), [(2, 1024, 1024)], "solidimagestacklayer", "vision", 1.0)
 
 
+LABEL_FONT = "/System/Library/Fonts/Menlo.ttc"  # ImageMagick has no default font here
+SHEETS = {
+    # the first three concepts, each as iOS, visionOS, and 120 and 60 px Home Screen sizes
+    "concepts.png": (("reticle", "visor", "wordmark"), (("ios", 360), ("visionos", 360), ("ios", 120), ("ios", 60)), False),
+    # the visor outlines beside the reticle, down to the 40 and 29 px Settings and Spotlight sizes
+    "concepts-visor-2.png": (("reticle", "visor-traced", "visor-helmet", "visor-helmet-gold", "visor-closeup"),
+                           (("ios", 360), ("visionos", 360), ("ios", 180), ("ios", 40), ("ios", 29)), True),
+}
+
+
 def previews(out):
     out.mkdir(parents=True, exist_ok=True)
     for concept, (description, _, _) in CONCEPTS.items():
@@ -279,21 +426,21 @@ def previews(out):
                         "-fill", "white", "-draw", "circle 512,512 512,0", ")", "-alpha", "off",
                         "-compose", "CopyOpacity", "-composite", str(out / f"{concept}-visionos.png")], check=True)
         (out / f"{concept}.txt").write_text(description + "\n")
-    # one sheet: each concept as iOS, visionOS, and 120 and 60 px Home Screen sizes
-    rows = []
-    for concept in CONCEPTS:
-        row = out / f"{concept}-row.png"
-        subprocess.run(["magick", "-background", "#202428",
-                        "(", str(out / f"{concept}-ios.png"), "-resize", "360x360", ")",
-                        "(", str(out / f"{concept}-visionos.png"), "-resize", "360x360", ")",
-                        "(", str(out / f"{concept}-ios.png"), "-resize", "120x120", ")",
-                        "(", str(out / f"{concept}-ios.png"), "-resize", "60x60", ")",
-                        "-bordercolor", "#202428", "-border", "12", "-gravity", "center", "+append", str(row)], check=True)
-        rows.append(str(row))
-    subprocess.run(["magick", "-background", "#202428", *rows, "-gravity", "west", "-append",
-                    "-bordercolor", "#202428", "-border", "24", str(out / "concepts.png")], check=True)
-    for row in rows:
-        Path(row).unlink()
+    for sheet, (concepts, cells, labeled) in SHEETS.items():
+        rows = []
+        for concept in concepts:
+            row = out / f"{concept}-row.png"
+            label = ["(", "-font", LABEL_FONT, "-fill", "#c8d4da", "-pointsize", "26", f"label:{concept}",
+                     "-gravity", "west", "-extent", "300x", ")"] if labeled else []
+            images = [arg for kind, size in cells
+                      for arg in ("(", str(out / f"{concept}-{kind}.png"), "-resize", f"{size}x{size}", ")")]
+            subprocess.run(["magick", "-background", "#202428", *label, *images,
+                            "-bordercolor", "#202428", "-border", "12", "-gravity", "center", "+append", str(row)], check=True)
+            rows.append(str(row))
+        subprocess.run(["magick", "-background", "#202428", *rows, "-gravity", "west", "-append",
+                        "-bordercolor", "#202428", "-border", "24", str(out / sheet)], check=True)
+        for row in rows:
+            Path(row).unlink()
 
 
 def main():
