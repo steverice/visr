@@ -628,6 +628,10 @@ static void offscreen_target_scale(unsigned long width, unsigned long height, DW
 	}
 }
 
+/* the zoom's inset shades its central square and this share of its side
+on either side (target_inset_columns) */
+#define INSET_MARGIN_SHARE (1.0f / 16.0f)
+
 /* the layer a screen-sized target is drawn for now: in a stereo frame each
 eye, the HUD and the zoom's inset have their own textures (the one layer
 key: a new layer is a change to halo_stereo.h), else the one the game
@@ -701,16 +705,19 @@ static struct render_target_entry *render_target_get_layer(const D3DSurface *sur
 		texture.depth = 1;
 		texture.levels = 1;
 		entry->target.texture = gpu_texture_create(&texture);
-		/* the zoom's inset: what it shades against the square the presenter
-		shows (Task 9's cost) */
+		/* the zoom's inset: its size against the square the presenter shows,
+		and what its draws shade, scissored to the square and its margin
+		(draw_targets) */
 		if (layer == HALO_STEREO_LAYER_INSET && !depth)
 		{
-			float side = (float)entry->target.gl_height;
+			float width = (float)entry->target.gl_width;
+			float side = (float)entry->target.gl_height < width ? (float)entry->target.gl_height : width;
+			float shaded = side + 2.0f * ceilf(side * INSET_MARGIN_SHARE);
 
-			platform_log("stereo: the inset's target %lux%lu shades %.2f times the %.0f-pixel square it shows",
-				entry->target.gl_width, entry->target.gl_height,
-				(float)entry->target.gl_width / (side < (float)entry->target.gl_width ? side : (float)entry->target.gl_width),
-				side);
+			platform_log("stereo: the inset's target %lux%lu is %.2f times the %.0f-pixel square it shows; "
+				"its draws shade %.2f times it (the square and the blur's margin)",
+				entry->target.gl_width, entry->target.gl_height, width / side, side,
+				(shaded < width ? shaded : width) / side);
 		}
 	}
 	entry->next = render_targets;
@@ -748,6 +755,14 @@ static unsigned long render_target_write_serial;
 static float target_scale[2] = { 1.0f, 1.0f };
 /* the bound color target is stereo's HUD layer (draw_targets) */
 static BOOL target_hud_layer;
+/* the bound color target is the zoom's inset: the columns of its central
+square, the part the presenter shows (halo_stereo.h), and a margin of
+INSET_MARGIN_SHARE of its side on either side, in target pixels; width 0
+otherwise (draw_targets). Its draws are scissored to them, so the rest of
+the screen-sized target isn't shaded. The margin is what the zoom's blur
+reads past the square's edges: without it, an edge band about 1% of the
+side wide came out brighter (Task 9's a30 pistol capture) */
+static int32_t target_inset_columns[2];
 /* something drew into the HUD layer this frame under render.c's UI span
 (halo_stereo_set_ui_span) */
 static BOOL hud_layer_ui;
@@ -774,6 +789,16 @@ static BOOL draw_targets(gpu_texture *color_texture, gpu_texture *depth_texture)
 		color->target.written = ++render_target_write_serial;
 	}
 	target_hud_layer = color && color->layer == HALO_STEREO_LAYER_HUD;
+	target_inset_columns[0] = target_inset_columns[1] = 0;
+	if (color && color->layer == HALO_STEREO_LAYER_INSET && color->target.gl_width > color->target.gl_height)
+	{
+		int32_t width = (int32_t)color->target.gl_width;
+		int32_t columns = (int32_t)color->target.gl_height +
+			2 * (int32_t)ceilf((float)color->target.gl_height * INSET_MARGIN_SHARE);
+
+		target_inset_columns[1] = columns < width ? columns : width;
+		target_inset_columns[0] = (width - target_inset_columns[1]) / 2;
+	}
 	/* viewports and clears are in the targets' units (render_target_get) */
 	target_scale[0] = color ? color->target.scale[0] : depth->target.scale[0];
 	target_scale[1] = color ? color->target.scale[1] : depth->target.scale[1];
@@ -2742,6 +2767,19 @@ static void raster_state_fill(BOOL has_depth, struct gpu_viewport *viewport, str
 	scissor->y = viewport->y;
 	scissor->width = viewport->width;
 	scissor->height = viewport->height;
+	/* port: the zoom's inset shades only its central square and margin */
+	if (target_inset_columns[1] > 0)
+	{
+		int32_t left = scissor->x > target_inset_columns[0] ? scissor->x : target_inset_columns[0];
+		int32_t right = scissor->x + scissor->width;
+
+		if (right > target_inset_columns[0] + target_inset_columns[1])
+			right = target_inset_columns[0] + target_inset_columns[1];
+		/* (an empty rectangle is no scissor at all: one pixel outside the
+		square instead) */
+		scissor->x = right > left ? left : target_inset_columns[0] > 0 ? target_inset_columns[0] - 1 : 0;
+		scissor->width = right > left ? right - left : 1;
+	}
 
 	depth_stencil->depth_test = has_depth && rs[D3DRS_ZENABLE];
 	depth_stencil->depth_write = depth_stencil->depth_test && rs[D3DRS_ZWRITEENABLE];
