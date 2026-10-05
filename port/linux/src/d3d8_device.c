@@ -845,6 +845,8 @@ static BOOL draw_targets(gpu_texture *color_texture, gpu_texture *depth_texture)
 		color->last_rendered = device.frame + 1;
 		color->target.written = ++render_target_write_serial;
 	}
+	if (color && color->layer == HALO_STEREO_LAYER_RETICLE)
+		halo_stereo_reticle_drew();
 	target_hud_layer = color && layer_is_hud(color->layer);
 	target_hud_measured = color && (color->layer == HALO_STEREO_LAYER_HUD ||
 		color->layer >= HALO_STEREO_LAYER_HUD_GROUP);

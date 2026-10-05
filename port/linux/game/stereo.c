@@ -1003,13 +1003,16 @@ void halo_stereo_reticle_overlay(int on)
 		if (stereo_layer == HALO_STEREO_LAYER_HUD && (inset_frame || halo_stereo_hud_split())) {
 			stereo_layer = inset_frame ? HALO_STEREO_LAYER_INSET : HALO_STEREO_LAYER_RETICLE;
 			reticle_overlay_on = 1;
-			if (!inset_frame)
-				reticle_drawn = 1;
 		}
 	} else if (reticle_overlay_on) {
 		stereo_layer = HALO_STEREO_LAYER_HUD;
 		reticle_overlay_on = 0;
 	}
+}
+
+void halo_stereo_reticle_drew(void)
+{
+	reticle_drawn = 1;
 }
 
 int halo_stereo_reticle_drawn(void)

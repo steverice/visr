@@ -211,8 +211,10 @@ halo_stereo_inset_overlay; off puts the HUD layer back. Nothing else draws
 into the reticle's layer */
 void halo_stereo_reticle_overlay(int on);
 /* 1 once a crosshair drew into the reticle's layer this frame (render.c
-flashes it as it does the HUD layer) */
+flashes it as it does the HUD layer); d3d8_device.c calls
+halo_stereo_reticle_drew as a draw goes to that layer */
 int halo_stereo_reticle_drawn(void);
+void halo_stereo_reticle_drew(void);
 /* the inset's camera, from the game's camera before the head turned it
 (render.c): on foot it turns with the head as the eyes' cameras do
 (halo_stereo_head_orient), since the look is the head's; in a
