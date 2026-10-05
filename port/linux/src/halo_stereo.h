@@ -120,9 +120,11 @@ struct halo_stereo_frame
 
 void halo_stereo_frame_begin(void);                    /* latches this frame's state */
 const struct halo_stereo_frame *halo_stereo_frame(void);
-/* -1 mono, 0/1 an eye, 2 the HUD, 3 the zoom's inset, 4 the reticle. The HUD layer (and the reticle's and each HUD group's target) holds premultiplied color
-and, in alpha, how much of the picture still shows under it (d3d8_device.c,
-hud_layer_blend): the presenters put it over each eye as rgb + eye * alpha */
+/* -1 mono, 0/1 an eye, 2 the HUD, 3 the zoom's inset, 4 the reticle. The
+HUD layer (and the reticle's and each HUD group's target) holds
+premultiplied color and, in alpha, how much of the picture still shows
+under it (d3d8_device.c, hud_layer_blend): the presenters put it over each
+eye as rgb + eye * alpha */
 void halo_stereo_layer(int layer);
 int halo_stereo_current_layer(void);
 /* 1 in a stereo pass that draws the frame's moment again after eye 0 (eye

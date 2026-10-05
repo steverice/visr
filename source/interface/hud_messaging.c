@@ -474,7 +474,6 @@ static void render_state_bitmap(
 /* ---------- globals */
 
 static struct hud_messaging_globals_definition *hud_messaging_globals;
-void platform_log(char const *format, ...); /* port */
 struct hud_messaging_parameters_definition *hud_msg_def;
 static char button_mappings[_icon_custom_1 - _icon_action] =
 {
@@ -1388,20 +1387,6 @@ void hud_messaging_update(
 			local_player_count() > 1,
 			0.0f,
 			&screen_point);
-		/* port: the corner CE places the help text and messages from, once
-		per corner seen (the stereo spec's "The HUD in the periphery") */
-		{
-			static short logged_corner = NONE;
-
-			if (hud_msg_def->absolute_placement.corner != logged_corner)
-			{
-				logged_corner = hud_msg_def->absolute_placement.corner;
-				platform_log("hud: the help text and messages are placed from corner %d (%s), offset %d, %d",
-					logged_corner, logged_corner >= 0 && logged_corner < NUMBER_OF_HUD_ANCHORS ?
-					global_hud_anchor_names[logged_corner] : "?", hud_msg_def->placement.offset.x,
-					hud_msg_def->placement.offset.y);
-			}
-		}
 		line_top = screen_point.y;
 		font = font_definition_get(font_index);
 		if (split_screen)
