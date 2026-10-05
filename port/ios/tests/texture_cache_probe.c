@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include "texture_cache.h"
 
@@ -83,17 +84,28 @@ static void manifest_round_trip(void)
 	struct texture_cache_record records[2] = { record(&g, TEXTURE_POLICY_S4G, TEXTURE_POLICY_COLOR),
 		record(&g, TEXTURE_POLICY_BPF, TEXTURE_POLICY_BUMP_MAP) }, *loaded;
 	char path[256];
+	size_t count;
 
 	assert(mkdtemp(directory));
 	records[1].hash = 0xfedcba9876543210ull;
 	assert(texture_cache_manifest_save(directory, records, 2) == 0);
-	assert(texture_cache_manifest_load(directory, &loaded) == 2);
+	assert(texture_cache_manifest_load(directory, &loaded, &count) == 0 && count == 2);
 	assert(!memcmp(&loaded[0], &records[0], sizeof(records[0])) && !memcmp(&loaded[1], &records[1], sizeof(records[1])));
 	free(loaded);
 	snprintf(path, sizeof(path), "%s/manifest.tsv", directory);
 	unlink(path);
-	assert(texture_cache_manifest_load(directory, &loaded) == 0);       /* no manifest: an empty cache */
-	free(loaded);
+	assert(texture_cache_manifest_load(directory, &loaded, &count) == 0 && count == 0 && !loaded);   /* no manifest: an empty cache */
+	assert(mkdir(path, 0700) == 0);                                     /* a manifest that cannot be read: an error, not empty */
+	count = 7;
+	assert(texture_cache_manifest_load(directory, &loaded, &count) == -1 && count == 0 && !loaded);
+	rmdir(path);
+	assert(texture_cache_manifest_save(directory, records, 2) == 0);
+	assert(chmod(path, 0) == 0);
+	if (geteuid())                                                       /* root reads anything */
+		assert(texture_cache_manifest_load(directory, &loaded, &count) == -1 && count == 0 && !loaded);
+	chmod(path, 0600);
+	unlink(path);
+	assert(texture_cache_manifest_load("/nonexistent-texture-cache-dir", &loaded, &count) == 0 && count == 0 && !loaded);
 	rmdir(directory);
 }
 

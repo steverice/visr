@@ -63,16 +63,18 @@ enum texture_cache_action texture_cache_action(const struct texture_cache_record
 	return TEXTURE_CACHE_KEEP;
 }
 
-size_t texture_cache_manifest_load(const char *directory, struct texture_cache_record **records)
+int texture_cache_manifest_load(const char *directory, struct texture_cache_record **records, size_t *count_out)
 {
 	char path[1024], line[256];
 	FILE *file;
 	size_t count = 0, capacity = 0;
+	int failed = 0;
 
 	*records = NULL;
+	*count_out = 0;
 	manifest_path(directory, path, sizeof(path));
 	if (!(file = fopen(path, "r")))
-		return 0;
+		return errno == ENOENT ? 0 : -1;   /* no manifest: an empty cache; one that cannot be read is an error */
 	while (fgets(line, sizeof(line), file))
 	{
 		struct texture_cache_record r;
@@ -89,13 +91,24 @@ size_t texture_cache_manifest_load(const char *directory, struct texture_cache_r
 			struct texture_cache_record *grown = realloc(*records, (capacity = capacity ? capacity * 2 : 256) * sizeof(r));
 
 			if (!grown)
+			{
+				failed = 1;
 				break;
+			}
 			*records = grown;
 		}
 		(*records)[count++] = r;
 	}
+	failed |= ferror(file) != 0;
 	fclose(file);
-	return count;
+	if (failed)
+	{
+		free(*records);
+		*records = NULL;
+		return -1;
+	}
+	*count_out = count;
+	return 0;
 }
 
 int texture_cache_manifest_save(const char *directory, const struct texture_cache_record *records, size_t count)

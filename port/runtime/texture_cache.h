@@ -47,6 +47,6 @@ uint64_t texture_recipe_global_key(const struct texture_recipe_globals *, enum t
 uint64_t texture_recipe_key(const struct texture_recipe_globals *, const struct texture_recipe *);
 enum texture_cache_action texture_cache_action(const struct texture_cache_record *stored /* NULL: none */,
 	const struct texture_cache_record *desired, uint64_t stored_global_now);
-/* the manifest: <directory>/manifest.tsv, one record per line; load returns the count, *records malloc'd */
-size_t texture_cache_manifest_load(const char *directory, struct texture_cache_record **records);
+/* the manifest: <directory>/manifest.tsv, one record per line; load returns 0 with *records malloc'd and *count set (a missing manifest: 0 records), or -1 if it exists but cannot be read (no records) */
+int texture_cache_manifest_load(const char *directory, struct texture_cache_record **records, size_t *count);
 int texture_cache_manifest_save(const char *directory, const struct texture_cache_record *records, size_t count);
