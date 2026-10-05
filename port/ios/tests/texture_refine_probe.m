@@ -55,6 +55,37 @@ static void synthetic(struct texture_refine_context *context)
 	puts("texture_refine_probe: synthetic ok");
 }
 
+/* a 1-texel-wide original (8 x 1, scale 2, wrap, bpf): every upsampled buffer must be the full 16 x 2, as NumPy's
+   broadcast of its skipped axis makes it. Expected values from step-tools' consistency.py and the bump rule's steps
+   (bump.refine after its h_orig, which is given here); generated once and pasted */
+static void one_wide(struct texture_refine_context *context)
+{
+	static const float reference[] = { 0.300000012f, 0.349999994f, 0.400000006f, 0.449999988f, 0.5f, 0.550000012f, 0.600000024f, 0.649999976f };
+	static const float top[] = { 0.5f, 0.845283747f, 0.885423303f, 0.397783548f, 0.70620054f, 0.100030698f, 0.22489354f, 0.388233811f, 0.146618143f, 0.840174675f, 0.586048007f, 0.79375881f, 0.899417341f, 0.316985637f, 0.627639353f, 0.108328909f, 0.168869406f, 0.473471254f, 0.195206568f, 0.877478242f, 0.6680668f, 0.72847873f, 0.894708812f, 0.244757324f, 0.54310149f, 0.134967014f, 0.128350392f, 0.559950888f, 0.258066863f, 0.897106588f, 0.742215931f, 0.652500212f };
+	static const float bpf[] = { 0.37264657f, 0.37264657f, 0.270245105f, 0.270245105f, 0.314242333f, 0.314242333f, 0.373400509f, 0.373647034f, 0.386050761f, 0.395419449f, 0.402636945f, 0.428505927f, 0.55221343f, 0.361814767f, 0.557783902f, 0.31771791f, 0.384360611f, 0.539856613f, 0.399274915f, 0.667114139f, 0.540537715f, 0.548121452f, 0.558558762f, 0.558558762f, 0.576445043f, 0.576445043f, 0.635757625f, 0.635757625f, 0.679754913f, 0.679754913f, 0.577353418f, 0.577353418f };
+	static const float mask[] = { 1.0f, 1.0f, 0.969702721f, 0.576526761f, 0.485378206f, 1.0f, 1.0f, 1.0f };
+	static const float original_height[] = { 0.0f, 1.56665385f, 1.94769526f, 0.854759753f, -0.885040879f, -1.95506024f, -1.54552901f, 0.0336278006f };
+	static const float top_height[] = { 1.5f, 0.680394173f, 1.14726329f, -0.340803146f, 0.254950702f, -1.20171547f, -0.757269144f, -1.49744213f, -1.41333354f, -1.08889842f, -1.40468502f, -0.16822879f, -0.735391259f, 0.831561506f, 0.279768556f, 1.4402554f, 1.16334879f, 1.37157476f, 1.49978793f, 0.657821f, 1.13085341f, -0.365316242f, 0.230060786f, -1.21663952f, -0.778932989f, -1.49575818f, -1.42158246f, -1.0713985f, -1.39563942f, -0.143143281f, -0.713305414f, 0.852434456f };
+	static const float bump_bpf[] = { 0.0f, -0.511704206f, 0.859161675f, 0.0f, -0.511704206f, 0.859161675f, 0.0f, -0.875002265f, 0.484118789f, 0.0f, -0.875002265f, 0.484118789f, 0.0f, -0.818267047f, 0.574838281f, 0.0f, -0.818267047f, 0.574838281f, 0.0f, -0.305180997f, 0.952294409f, 0.0f, -0.305180997f, 0.952294409f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.396035284f, 0.918235302f, 0.0f, 0.396035284f, 0.918235302f, 0.0f, 0.748257816f, 0.663408041f, 0.0f, 0.748257816f, 0.663408041f, 0.0f, 0.851261079f, 0.524742365f, 0.0f, 0.851261079f, 0.524742365f, 0.0f, 0.87363565f, 0.48658067f, 0.0f, 0.87363565f, 0.48658067f, 0.0f, 0.849348128f, 0.527833104f, 0.0f, 0.849348128f, 0.527833104f, 0.0f, 0.741229713f, 0.671251476f, 0.0f, 0.741229713f, 0.671251476f, 0.0f, 0.372726977f, 0.927941024f, 0.0f, 0.372726977f, 0.927941024f, 0.0f, -0.822264612f, 0.569105387f, 0.0f, -0.822264612f, 0.569105387f, 0.0f, -0.876412988f, 0.48156026f, 0.0f, -0.876412988f, 0.48156026f, 0.0f, -0.514774978f, 0.857325315f, 0.0f, -0.514774978f, 0.857325315f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f };
+	static const float bump_mask[] = { 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
+	struct texture_refine_params params = { 12, 30, 1, 3 };
+	float out[16 * 2], got_mask[8], normals[16 * 2 * 3];
+	size_t i;
+
+	memcpy(out, top, sizeof(out));
+	assert(texture_refine_color(context, out, reference, 1, 8, 1, 2, 1, &params, 1, got_mask) == 0);
+	for (i = 0; i < 16 * 2; i++)
+		assert(fabsf(out[i] - bpf[i]) < 1e-4f);
+	for (i = 0; i < 8; i++)
+		assert(fabsf(got_mask[i] - mask[i]) < 1e-4f);
+	assert(texture_refine_bump(context, top_height, original_height, 1, 8, 2, &params, 1, normals, got_mask) == 0);
+	for (i = 0; i < 16 * 2 * 3; i++)
+		assert(fabsf(normals[i] - bump_bpf[i]) < 1e-4f);
+	for (i = 0; i < 8; i++)
+		assert(fabsf(got_mask[i] - bump_mask[i]) < 1e-4f);
+	puts("texture_refine_probe: one-wide ok");
+}
+
 static int fixture(struct texture_refine_context *context, NSString *path)
 {
 	NSData *data = [NSData dataWithContentsOfFile:path];
@@ -128,6 +159,7 @@ int main(int argc, char **argv)
 			return 0;
 		}
 		synthetic(context);
+		one_wide(context);
 		if (argc > 1)
 			for (NSString *name in [[NSFileManager.defaultManager contentsOfDirectoryAtPath:@(argv[1]) error:nil]
 				sortedArrayUsingSelector:@selector(compare:)])
