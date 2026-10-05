@@ -525,6 +525,11 @@ static const struct config_setting config_settings[] =
 		"With display.stereo = \"side_by_side\": show the eyes SCREEN mode's\n"
 		"gameplay would have (a 3D TV on the default screen, 64 mm eyes) in place\n"
 		"of head-tracked ones." },
+	{ "debug.side_by_side_tangents", _config_string, "\"\"", "HALO_SIDE_BY_SIDE_TANGENTS", _environment_value,
+		_platform_ios,
+		"With display.stereo = \"side_by_side\": the left eye's frustum as\n"
+		"\"left,right,up,down\" tangents (the right eye's mirrored left to right),\n"
+		"for asymmetric eyes like the headset's; empty for 0.8 on every side." },
 	{ "debug.screen_lean", _config_real, "0.0", "HALO_SCREEN_LEAN", _environment_value, _platform_ios,
 		"With debug.side_by_side_screen: a fixed lean of the head, in meters to the\n"
 		"right (up to 0.25), as if you leaned in front of the screen." },

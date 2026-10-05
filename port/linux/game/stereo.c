@@ -53,6 +53,7 @@ brings bars in for titles (cinematics.c), following the held film.
 */
 
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "../src/halo_stereo.h"
@@ -217,6 +218,13 @@ negative until read */
 static struct screen_mapping film_mapping = { -1.0f, 0.0f, 0.0f }, gameplay_mapping;
 static int screen_framing_band = 1, side_by_side_screen, stereo_stats;
 static float side_by_side_lean;
+/* debug.side_by_side_tangents, read once (mapping_settings): eye 0's left,
+right, up and down tangents in the side-by-side view, eye 1 taking left and
+right swapped; all four at SIDE_BY_SIDE_TANGENT when the setting is empty.
+Asymmetric bounds, as the headset's are, show what symmetric ones hide */
+static float side_by_side_tangents[4] = {
+	SIDE_BY_SIDE_TANGENT, SIDE_BY_SIDE_TANGENT, SIDE_BY_SIDE_TANGENT, SIDE_BY_SIDE_TANGENT
+};
 /* display.lod_scale, read once (mapping_settings): HEAD mode's multiplier
 on the pixel size the game picks model detail by (halo_stereo_lod_scale) */
 #define LOD_SCALE_MIN 0.5f
@@ -334,6 +342,22 @@ static void mapping_settings(void)
 	side_by_side_lean = (float)config_real("debug.screen_lean");
 	if (side_by_side_lean != side_by_side_lean)
 		side_by_side_lean = 0.0f;
+	{
+		const char *tangents = config_string("debug.side_by_side_tangents");
+		float parsed[4];
+
+		if (tangents && tangents[0] != '\0') {
+			if (sscanf(tangents, "%f,%f,%f,%f", &parsed[0], &parsed[1], &parsed[2], &parsed[3]) == 4 &&
+				parsed[0] > 0.0f && parsed[1] > 0.0f && parsed[2] > 0.0f && parsed[3] > 0.0f &&
+				parsed[0] <= 4.0f && parsed[1] <= 4.0f && parsed[2] <= 4.0f && parsed[3] <= 4.0f) {
+				memcpy(side_by_side_tangents, parsed, sizeof(parsed));
+				platform_log("stereo: debug.side_by_side_tangents left %.3f, right %.3f, up %.3f, down %.3f",
+					parsed[0], parsed[1], parsed[2], parsed[3]);
+			} else
+				platform_log("stereo: debug.side_by_side_tangents \"%s\" is not four tangents in (0, 4] "
+					"(\"left,right,up,down\"); using %.1f", tangents, SIDE_BY_SIDE_TANGENT);
+		}
+	}
 	stereo_stats = config_boolean("debug.gpu_stats") != 0;
 	lod_scale_setting = clamped_setting("display.lod_scale", (float)config_real("display.lod_scale"),
 		LOD_SCALE_MIN, LOD_SCALE_MAX, "times the Xbox's pixel scale");
@@ -669,7 +693,11 @@ void halo_stereo_frame_begin(void)
 			struct halo_stereo_eye *e = &stereo_frame.eyes[eye];
 
 			e->offset[0] = eye == 0 ? -SIDE_BY_SIDE_OFFSET : SIDE_BY_SIDE_OFFSET;
-			e->left = e->right = e->up = e->down = SIDE_BY_SIDE_TANGENT;
+			/* eye 1 mirrors eye 0 left to right */
+			e->left = side_by_side_tangents[eye == 0 ? 0 : 1];
+			e->right = side_by_side_tangents[eye == 0 ? 1 : 0];
+			e->up = side_by_side_tangents[2];
+			e->down = side_by_side_tangents[3];
 		}
 		/* the default screen and typical eyes; debug.screen_lean leans */
 		if (film || screen) {

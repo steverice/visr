@@ -121,6 +121,7 @@ DEFAULTS = {
     "debug.fixed_timestep": "false",
     "debug.side_by_side_screen": "false",
     "debug.screen_lean": "0.0",
+    "debug.side_by_side_tangents": '""',
     "debug.input_record": '""',
     "debug.input_replay": '""',
     "debug.benchmark": "false",

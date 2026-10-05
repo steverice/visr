@@ -679,12 +679,24 @@ static void render_player_frame_stereo(
 			short saved_cluster_index;
 			struct render_camera mirror_camera;
 			struct render_frustum mirror_frustum;
+			real_rectangle2d mirror_bounds;
 
 			saved_cluster_index = (short)render.cluster_index;
 			render_camera_mirror(&eye_camera, &mirror, &mirror_camera);
+			/* port: render_camera_mirror negates the reflected up (right' =
+			reflect(right), up' = -reflect(up)), so the eye's ray at vertical
+			tangent y leaves the mirror at -y, and the floor's lookup of the
+			target (by the eye's screen position) is flipped to match. Mono's
+			bounds are symmetric, so reusing them was exact; an eye's need not
+			be (the headset's up and down differ), and then the reflection
+			sits a fixed angle off and slides against the floor as the head
+			moves. The vertical pair flips; the horizontal pair stays */
+			mirror_bounds = eye_bounds;
+			mirror_bounds.y0 = -eye_bounds.y1;
+			mirror_bounds.y1 = -eye_bounds.y0;
 			render_camera_build_frustum(
 				&mirror_camera,
-				&eye_bounds,
+				&mirror_bounds,
 				&mirror_frustum,
 				TRUE);
 
