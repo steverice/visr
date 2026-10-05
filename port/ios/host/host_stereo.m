@@ -640,6 +640,8 @@ static void stereo_frame(struct halo_stereo_frame *frame) API_AVAILABLE(visionos
 	}
 	cp_drawable_t drawable = host_theater_drawable(0, &origin_from_device, &anchored);
 	head_frame_open = head_configured();
+	/* the rate maps, whatever this frame shows: a10 opens on a film */
+	foveation_measure(drawable);
 	/* on the screen, the head moves only the eyes: no turn, and the game
 	renders at the screen's picture size (host_theater_picture_size) */
 	if (frame->mode == HALO_STEREO_SCREEN)
@@ -652,7 +654,6 @@ static void stereo_frame(struct halo_stereo_frame *frame) API_AVAILABLE(visionos
 	views = cp_drawable_get_view_count(drawable);
 	if (views == 0)
 		return;
-	foveation_measure(drawable);
 	/* the simulator has one view: both eyes are it */
 	for (eye = 0; eye < 2; eye++)
 	{
