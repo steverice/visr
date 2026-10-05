@@ -564,3 +564,15 @@ def test_native_run_without_maps_says_how_to_seed(tmp_path, monkeypatch, native)
     monkeypatch.setattr(mac_run, "launch_native", fake_launches([]))
     with pytest.raises(SystemExit, match="--maps"):
         mac_run.run_native(native_args(tmp_path, native))
+
+
+def test_a_throwaway_run_that_open_could_not_start_leaves_the_folder_unseeded(tmp_path, monkeypatch, native):
+    maps = seeding(monkeypatch, tmp_path)
+
+    def open_fails(app, data, out, environment, limit):
+        raise SystemExit("open could not start the app (exit 1)")
+    monkeypatch.setattr(mac_run, "launch_native", open_fails)
+    with pytest.raises(SystemExit, match="open could not start"):
+        mac_run.run_native(native_args(tmp_path, native, maps=maps))
+    assert not (tmp_path / "data/maps").exists()
+    assert (tmp_path / "data/maps.partial/a10.map").is_file()

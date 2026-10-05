@@ -658,7 +658,12 @@ def seed_native_data(args, data):
                                  set=["debug.fixed_timestep=true"], init=["map_name a10"])
     prepare(warm_up, data, rewrite=True)
     seed_out = args.out.parent / f"{args.out.name}-seed"
-    finished = launch_native(args.app, data, seed_out, {}, 600)
+    try:
+        finished = launch_native(args.app, data, seed_out, {}, 600)
+    except SystemExit:
+        # open itself failed: unseed here too, or the next run would trust the folder
+        (data / "maps").rename(partial)
+        raise
     collect(data, seed_out)
     log = seed_out / "ios-runtime.log"
     if not finished or (game_exit(log.read_text(errors="replace")) if log.is_file() else None) != 0:
