@@ -14,9 +14,14 @@ such result folders against each other.
 `run --simulator UDID` runs a simulator build (an iOS or visionOS simulator app,
 tools/ios_build.py --simulator) in that simulator instead, with the same
 config.toml, init.txt and result folders, so its runs compare with the Mac's.
+
+`run --runner native` runs the Mac Catalyst build (tools/ios_build.py --mac) instead: no Xcode,
+no device registration, started with `open` on a persistent data folder per host, with the
+display pinned to what the iPad runner sees, so its results compare with the iPad runner's.
 """
 
 import argparse
+import os
 import plistlib
 import re
 import shutil
@@ -479,7 +484,7 @@ def container_documents(args):
     return find_container(CONTAINERS, args.bundle_id)
 
 
-def prepare(args, documents):
+def prepare(args, documents, rewrite=False):
     documents.mkdir(parents=True, exist_ok=True)
     if args.xiso and not (documents / "maps").is_dir():
         run_command("cp", "-c", args.xiso, documents / args.xiso.name)
@@ -500,7 +505,10 @@ def prepare(args, documents):
         key, value = assignment.split("=", 1)
         settings[key.strip()] = value.strip()
     config = documents / "config.toml"
-    config.write_text(merge_config(config.read_text() if config.is_file() else "", settings))
+    # rewrite: from DEFAULTS and this run's settings only (the native runner's persistent data
+    # folder); otherwise merged into the container's file, as the iPad runner always has
+    old = "" if rewrite or not config.is_file() else config.read_text()
+    config.write_text(merge_config(old, settings))
     init = documents / "init.txt"
     if args.init:
         init.write_text("\n".join(args.init) + "\n")
@@ -562,12 +570,148 @@ def run_simulator(args):
     print(f"results: {args.out}")
 
 
+NATIVE_APP = ROOT / "build/mac/app/Release-maccatalyst/HaloCE.app"
+NATIVE_EXECUTABLE = "Contents/MacOS/HaloCE"
+# what the iPad runner's SDL reports on a 2x screen, pinned for the native app (host_main.m)
+NATIVE_DISPLAY = "1366x1024@2"
+# the game's exit (host_exit, host_main.m) in ios-runtime.log: open --wait-apps returns 0 whatever it was
+GAME_EXIT = re.compile(r"game exit (-?\d+)$")
+# characters a pgrep pattern (extended regular expression) treats specially
+ERE_SPECIAL = re.compile(r"([.^$*+?()\[\]{}|\\])")
+
+
+def native_data_folder(bundle_id, environment=None, home=None):
+    """the native runner's data folder (one per host, kept between runs): $HALO_NATIVE_DATA (a remote
+    host's, remote-job-run.sh), else ~/Library/Application Support/BUNDLE_ID/runner-data"""
+    environment = os.environ if environment is None else environment
+    if environment.get("HALO_NATIVE_DATA"):
+        return Path(environment["HALO_NATIVE_DATA"])
+    return (home or Path.home()) / "Library/Application Support" / bundle_id / "runner-data"
+
+
+def native_command(app, data, out, environment):
+    """the open command that starts the native app on data, pinned, with environment for the game"""
+    variables = {"HALO_DATA_ROOT": str(data), "HALO_HOST_DISPLAY": NATIVE_DISPLAY, "HALO_RUNNER": "1",
+                 **environment}
+    command = ["open", "--new", "--wait-apps"]
+    for name, value in variables.items():
+        command += ["--env", f"{name}={value}"]
+    return command + ["--stdout", str(out / "open-stdout.log"), "--stderr", str(out / "open-stderr.log"),
+                      str(app)]
+
+
+def native_pattern(app):
+    """a pgrep -f pattern matching the native app's executable"""
+    return ERE_SPECIAL.sub(r"\\\1", f"{Path(app).resolve()}/{NATIVE_EXECUTABLE}")
+
+
+def native_pids(app):
+    """the processes running the native app's executable"""
+    result = subprocess.run(["pgrep", "-f", native_pattern(app)], capture_output=True, text=True)
+    return [int(pid) for pid in result.stdout.split()]
+
+
+def game_exit(log):
+    """the status the game exited with, from its log, or None if it never got to exit"""
+    for line in reversed(log.splitlines()):
+        match = GAME_EXIT.search(line)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def launch_native(app, data, out, environment, limit):
+    """start the native app with open and wait for it to quit: True when it did within limit
+    seconds, False when it was still running and was killed"""
+    out.mkdir(parents=True, exist_ok=True)
+    command = native_command(app, data, out, environment)
+    print("+", " ".join(command), flush=True)
+    opener = subprocess.Popen(command)
+    try:
+        status = opener.wait(timeout=limit)
+    except subprocess.TimeoutExpired:
+        subprocess.run(["pkill", "-f", native_pattern(app)])
+        try:
+            opener.wait(timeout=60)
+        except subprocess.TimeoutExpired:
+            opener.kill()
+        return False
+    if status != 0:
+        sys.exit(f"open could not start {app} (exit {status}): a user must be logged in to this Mac's "
+                 f"screen; see {out}/open-stderr.log")
+    return True
+
+
+def seed_native_data(args, data):
+    """clone the extracted maps into a new data folder, then play one throwaway a10 run: a host's
+    first a10 GL run in a newly seeded folder has fallen behind on g-force and the mini (REMOTE.md).
+    The clone lands in maps.partial and is renamed when complete, so an interrupted one is redone."""
+    if not args.maps or not Path(args.maps).is_dir():
+        sys.exit(f"no maps in {data}: pass --maps with a folder of extracted maps to seed it from")
+    data.mkdir(parents=True, exist_ok=True)
+    partial = data / "maps.partial"
+    shutil.rmtree(partial, ignore_errors=True)
+    run_command("cp", "-c", "-R", Path(args.maps), partial)
+    partial.rename(data / "maps")
+    print(f"seeded {data}: one throwaway a10 run", flush=True)
+    warm_up = argparse.Namespace(xiso=None, screenshot_every=0, dump_shaders=False, replay=None, exit_after=40.0,
+                                 set=["debug.fixed_timestep=true"], init=["map_name a10"])
+    prepare(warm_up, data, rewrite=True)
+    seed_out = args.out.parent / f"{args.out.name}-seed"
+    finished = launch_native(args.app, data, seed_out, {}, 600)
+    collect(data, seed_out)
+    log = seed_out / "ios-runtime.log"
+    if not finished or (game_exit(log.read_text(errors="replace")) if log.is_file() else None) != 0:
+        # unseed, so the next run seeds again rather than trusting a folder whose first run failed
+        (data / "maps").rename(partial)
+        sys.exit(f"the throwaway a10 run in the new data folder {data} failed; its logs are in {seed_out}")
+
+
+def run_native(args):
+    args.app = args.app or NATIVE_APP
+    if not (args.app / NATIVE_EXECUTABLE).is_file():
+        sys.exit(f"no native app at {args.app}; run tools/ios_build.py --mac first")
+    with (args.app / "Contents/Info.plist").open("rb") as file:
+        bundle_id = plistlib.load(file)["CFBundleIdentifier"]
+    if args.bundle_id and args.bundle_id != bundle_id:
+        sys.exit(f"{args.app} was built for {bundle_id}, not {args.bundle_id}; "
+                 f"rebuild it with tools/ios_build.py --mac --bundle-id {args.bundle_id}")
+    pids = native_pids(args.app)
+    if pids:
+        sys.exit(f"{args.app} is already running (pid {', '.join(map(str, pids))}); a second copy would "
+                 f"share its data folder. Stop it, or wait for it to finish")
+    data = native_data_folder(bundle_id)
+    if not (data / "maps").is_dir():
+        seed_native_data(args, data)
+    prepare(args, data, rewrite=True)
+    limit = args.time_limit or args.exit_after + 120
+    finished = launch_native(args.app, data, args.out,
+                             validation_environment(args.metal_validation, args.metal_shader_validation), limit)
+    collect(data, args.out)
+    if not finished:
+        sys.exit(f"the native app was still running {limit} seconds after launch and was killed; "
+                 f"logs are in {args.out}")
+    log = args.out / "ios-runtime.log"
+    status = game_exit(log.read_text(errors="replace")) if log.is_file() else None
+    if status != 0:
+        sys.exit(f"the game did not exit cleanly (game exit {status}); logs are in {args.out}")
+    print(f"results: {args.out}")
+
+
 def run(args):
     if args.simulator:
+        if args.runner == "native":
+            sys.exit("--simulator runs the simulator app; drop --runner native")
         run_simulator(args)
         return
+    if args.runner == "native":
+        if args.team or args.xiso:
+            sys.exit("--runner native needs no --team, and seeds its data folder from --maps, not --xiso")
+        run_native(args)
+        return
+    args.bundle_id = args.bundle_id or "org.haloce.macrunner"
     if not args.team:
-        sys.exit("--team is required, except with --simulator")
+        sys.exit("--team is required, except with --simulator or --runner native")
     args.app = args.app or ROOT / "build/ios/app-device/Release-iphoneos/HaloCE.app"
     if not (args.app / "HaloCE").is_file():
         sys.exit(f"no CMake-built app at {args.app}; run tools/ios_build.py --team ... first")
@@ -591,15 +735,20 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     run_parser = commands.add_parser("run", help="run the game once and collect its results")
     run_parser.add_argument("--team", help="Apple development team ID (not needed with --simulator)")
-    run_parser.add_argument("--bundle-id", default="org.haloce.macrunner")
+    run_parser.add_argument("--runner", choices=("ipad", "native"), default="ipad",
+                            help='ipad: the "Designed for iPad" app, installed and started by Xcode (the default); '
+                                 "native: the Mac Catalyst app (tools/ios_build.py --mac), started with open")
+    run_parser.add_argument("--bundle-id",
+                            help="ipad: the runner's bundle ID (default org.haloce.macrunner); "
+                                 "native: checked against the app's own")
     run_parser.add_argument("--app", type=Path,
                             help="the CMake-built device app (tools/ios_build.py --team ...; the default), or "
                                  "with --simulator the simulator app (default: the visionOS one)")
     run_parser.add_argument("--simulator", metavar="UDID",
                             help="run the simulator app in this simulator (xcrun simctl list devices)")
     run_parser.add_argument("--maps", type=Path,
-                            help="with --simulator: a folder of imported maps to copy into a new container, "
-                                 "in place of importing --xiso")
+                            help="a folder of extracted maps: with --simulator, copied into a new container; "
+                                 "with --runner native, cloned into a new data folder, in place of importing --xiso")
     run_parser.add_argument("--out", type=Path, required=True, help="folder to copy the results to")
     run_parser.add_argument("--xiso", type=Path, help="the player's XISO, imported on the first run")
     run_parser.add_argument("--exit-after", type=float, default=60.0, help="seconds before the game quits")
