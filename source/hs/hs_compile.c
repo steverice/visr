@@ -1438,9 +1438,10 @@ static boolean hs_parse_tag_reference(
 	long expression_index)
 {
 	struct hs_syntax_node *expression = hs_syntax_get(expression_index);
-	struct scenario *scenario = global_scenario_get();
+	struct scenario *scenario = hs_compile_globals.initialized && !hs_compile_globals.compiling_scenario ?
+		global_scenario_try_and_get() : global_scenario_get();
 	tag group_tag;
-	short reference_index;
+	short reference_index = 0;
 
 	match_assert(
 		"c:\\halo\\SOURCE\\hs\\hs_compile.c",
@@ -1449,7 +1450,7 @@ static boolean hs_parse_tag_reference(
 
 	group_tag = hs_tag_reference_type_group_tags[expression->type - _hs_type_sound];
 	for (reference_index = 0;
-		reference_index < scenario->hs_references.count;
+		scenario && reference_index < scenario->hs_references.count;
 		reference_index++)
 	{
 		struct hs_reference *reference = TAG_BLOCK_GET_ELEMENT(
@@ -1464,6 +1465,19 @@ static boolean hs_parse_tag_reference(
 			expression->data = reference->reference.index;
 			break;
 		}
+	}
+
+	/* port: a line typed at the console (or in cheats.txt, init.txt) that names
+	a tag the scenario's scripts don't reference would compile with tag index -1,
+	and running it halts the game ("i don't think ffffffff is a tag index"), so
+	it is a compile error instead; the scenario's own compile (and the
+	postprocess of its compiled scripts at load, outside any compile, where
+	compiling_scenario is stale) is unchanged */
+	if (hs_compile_globals.initialized && !hs_compile_globals.compiling_scenario && (!scenario || reference_index >= scenario->hs_references.count))
+	{
+		hs_compile_globals.error = "this tag is not referenced by the scenario's scripts.";
+		hs_compile_globals.error_offset = expression->source_offset;
+		return FALSE;
 	}
 
 	return TRUE;
