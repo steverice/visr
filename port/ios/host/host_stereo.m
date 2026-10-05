@@ -279,11 +279,21 @@ static void foveation_measure(cp_drawable_t drawable) API_AVAILABLE(visionos(26.
 	{
 		if (foveation_easing_logged == 0 || foveation_frames - foveation_easing_logged >= FOVEATION_EASING_FRAMES)
 		{
-			id<MTLRasterizationRateMap> first = map_count ? cp_drawable_get_rasterization_rate_map(drawable, 0) : nil;
-			MTLSize physical = first ? [first physicalSizeForLayer:0] : (MTLSize){ 0, 0, 0 };
+			/* each map's screen size beside its physical one: whether the
+			screen size follows the eased quality too */
+			NSMutableString *text = [NSMutableString stringWithFormat:@"stereo: foveation easing: runtime quality "
+				"%.3f toward %.3f", runtime, quality];
 
-			host_logf(HOST_LOG_INFO, "stereo: foveation easing: runtime quality %.3f toward %.3f, map 0's physical "
-				"layer 0 %lux%lu", runtime, quality, (unsigned long)physical.width, (unsigned long)physical.height);
+			for (size_t index = 0; index < map_count; index++)
+			{
+				id<MTLRasterizationRateMap> map = cp_drawable_get_rasterization_rate_map(drawable, index);
+				MTLSize screen = map.screenSize, physical = [map physicalSizeForLayer:0];
+
+				[text appendFormat:@"; map %zu: screen %lux%lu, physical layer 0 %lux%lu", index,
+					(unsigned long)screen.width, (unsigned long)screen.height, (unsigned long)physical.width,
+					(unsigned long)physical.height];
+			}
+			host_logf(HOST_LOG_INFO, "%s", text.UTF8String);
 			foveation_easing_logged = foveation_frames;
 		}
 		return;
