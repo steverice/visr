@@ -315,10 +315,12 @@ int texture_policy_add_bitmap(struct texture_policy_catalog *c, const struct tex
 	{
 		struct tag_ref *grown = realloc(e->tags, (e->tag_count + 1) * sizeof(*grown));
 
-		if (!grown || !(grown[e->tag_count].tag = strdup(b->tag)))
+		if (!grown)
 			return -1;
-		grown[e->tag_count].index = b->index;
-		e->tags = grown;
+		e->tags = grown;   /* realloc may have freed the old block: keep the new one before anything else can fail */
+		if (!(e->tags[e->tag_count].tag = strdup(b->tag)))
+			return -1;
+		e->tags[e->tag_count].index = b->index;
 		e->tag_count++;
 	}
 	for (j = 0; j < b->ref_count; j++)
@@ -393,7 +395,10 @@ int texture_policy_add_map(struct texture_policy_catalog *c, const unsigned char
 	int result = -1;
 
 #define OFF(p) ((size_t)tag_data + ((size_t)(uint32_t)(p) - TAG_BASE))
-#define NEED(o, n) do { if ((size_t)(o) > size || (size_t)(n) > size - (size_t)(o)) { snprintf(error, error_size, "map: offset past the end"); goto done; } } while (0)
+#define FAIL(message) do { snprintf(error, error_size, "%s", message); goto done; } while (0)
+#define NEED(o, n) do { if ((size_t)(o) > size || (size_t)(n) > size - (size_t)(o)) FAIL("map: offset past the end"); } while (0)
+	if (error_size)
+		error[0] = 0;
 	if (size < 0x800 || u32(data, 4) != 5)
 	{
 		snprintf(error, error_size, "not an Xbox map (cache version 5)");
@@ -404,7 +409,7 @@ int texture_policy_add_map(struct texture_policy_catalog *c, const unsigned char
 	instances = u32(data, tag_data);
 	count = u32(data, tag_data + 12);
 	if (!(tags = calloc(count ? count : 1, sizeof(*tags))) || !(placed = calloc(count ? count : 1, sizeof(*placed))))
-		goto done;
+		FAIL("out of memory");
 	for (i = 0; i < count; i++)
 	{
 		size_t entry = OFF(instances) + (size_t)i * 0x20, name_at;
@@ -416,7 +421,7 @@ int texture_policy_add_map(struct texture_policy_catalog *c, const unsigned char
 		name_at = OFF(u32(data, entry + 0x10));
 		NEED(name_at, 1);
 		if (!memchr(data + name_at, 0, size - name_at))
-			goto done;
+			FAIL("map: a tag name runs past the end");
 		tags[i].name = (const char *)data + name_at;
 		tags[i].pointer = u32(data, entry + 0x14);
 		if (tags[i].pointer >= TAG_BASE && tags[i].pointer < TAG_BASE + TAG_REGION)
@@ -456,7 +461,7 @@ int texture_policy_add_map(struct texture_policy_catalog *c, const unsigned char
 				struct holder *grown = realloc(holders, capacity * sizeof(*grown));
 
 				if (!grown)
-					goto done;
+					FAIL("out of memory");
 				holders = grown;
 				holder_capacity = capacity;
 			}
@@ -492,7 +497,7 @@ int texture_policy_add_map(struct texture_policy_catalog *c, const unsigned char
 			if (push_ref(&refs, &ref_count, &holders[n].ref))
 			{
 				free(refs);
-				goto done;
+				FAIL("out of memory");
 			}
 			tested |= holders[n].alpha_tested;
 		}
@@ -547,6 +552,7 @@ done:
 	free(holders);
 	return result;
 #undef OFF
+#undef FAIL
 #undef NEED
 }
 
@@ -559,6 +565,8 @@ int texture_policy_add_map_file(struct texture_policy_catalog *c, const char *pa
 	z_stream z;
 	int status, result = -1;
 
+	if (error_size)
+		error[0] = 0;
 	if (!file)
 	{
 		snprintf(error, error_size, "%s: cannot open", path);
@@ -574,11 +582,17 @@ int texture_policy_add_map_file(struct texture_policy_catalog *c, const char *pa
 	}
 	capacity = (size_t)length * 4;
 	if (!(out = malloc(capacity)))
+	{
+		snprintf(error, error_size, "%s: out of memory", path);
 		goto done;
+	}
 	memcpy(out, raw, 0x800);
 	memset(&z, 0, sizeof(z));
 	if (inflateInit(&z) != Z_OK)
+	{
+		snprintf(error, error_size, "%s: inflateInit failed", path);
 		goto done;
+	}
 	z.next_in = raw + 0x800;
 	z.avail_in = (uInt)(length - 0x800);
 	z.next_out = out + 0x800;

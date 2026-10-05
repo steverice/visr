@@ -22,7 +22,7 @@ int main(int argc, char **argv)
 {
 	struct texture_policy_catalog *catalog = texture_policy_catalog_new();
 	struct texture_policy_decision *decisions;
-	char *names[64], path[2048], error[256];
+	char *names[64], path[2048], error[256] = "";
 	size_t count = 0, i, n;
 	struct dirent *item;
 	DIR *folder;
