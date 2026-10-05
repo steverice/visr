@@ -74,6 +74,10 @@ run('xcrun', 'clang', '-O2', '-fsanitize=address,undefined', '-DHALO_ILP32', '-I
     '-Iport/third_party/tomlc17', *shlex.split(subprocess.check_output(['pkg-config', '--cflags', 'sdl3'], text=True)),
     'port/ios/tests/config_reload_probe.c', 'port/third_party/tomlc17/tomlc17.c', '-o', BUILD/'config-reload-probe')
 run(BUILD/'config-reload-probe')
+# bp and bpf on the GPU (port/ios/host/texture_refine.m); skips itself where there is no Metal device
+run('xcrun', 'clang', '-O2', '-fobjc-arc', '-Iport/ios/host', 'port/ios/tests/texture_refine_probe.m',
+    'port/ios/host/texture_refine.m', '-framework', 'Foundation', '-framework', 'Metal', '-o', BUILD/'texture-refine-probe')
+run(BUILD/'texture-refine-probe')
 
 # Parse untrusted XISO metadata and exercise extraction/cancellation under sanitizers.
 run('python3', 'tools/ios_xiso_test.py')
