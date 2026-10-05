@@ -97,6 +97,23 @@ run(BUILD/'texture-refine-probe')
 run('xcrun', 'clang', '-O2', '-fsanitize=address,undefined', '-Iport/linux/src',
     'port/ios/tests/render_random_probe.c', '-o', BUILD/'render-random-probe')
 run(BUILD/'render-random-probe')
+# and the call sites the probe can't see: each in-game and pregame frame brackets its work, and
+# the stereo frame's passes take their seeds from render_random.c
+def function_body(path, name):
+    text = (ROOT / path).read_text()
+    match = re.search(r'\n(?:static )?void ' + name + r'\(\s*\w[^)]*\)\n\{\n(.*?)\n\}\n', text, re.S)
+    if not match:
+        raise SystemExit(f'{path}: no function {name}')
+    return match.group(1)
+for path, name, calls in (
+        ('source/main/main.c', 'main_game_render', ('halo_render_random_begin();', 'halo_render_random_end();')),
+        ('source/main/main.c', 'main_pregame_render', ('halo_render_random_begin();', 'halo_render_random_end();')),
+        ('source/render/render.c', 'render_player_frame_stereo',
+         ('halo_render_random_stereo_pass(eye);', 'halo_render_random_stereo_end();'))):
+    body = function_body(path, name)
+    positions = [body.find(call) for call in calls]
+    if -1 in positions or positions != sorted(positions):
+        raise SystemExit(f'{path}: {name} must call {" then ".join(calls)}')
 # head-tracked stereo's look: the world holds still in the room while the head pans, and
 # the right stick's turn (the probe includes port/linux/game/stereo.c)
 run('xcrun', 'clang', '-O2', '-fsanitize=address,undefined', '-DHALO_IOS=1', '-Iport/linux/src', '-Iport/ios/host',
