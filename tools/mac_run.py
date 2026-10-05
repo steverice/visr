@@ -1116,10 +1116,13 @@ def main():
                                  "with --runner native, cloned into a new data folder, in place of importing --xiso")
     run_parser.add_argument("--out", type=Path, required=True, help="folder to copy the results to")
     run_parser.add_argument("--xiso", type=Path, help="the player's XISO, imported on the first run")
-    run_parser.add_argument("--exit-after", type=float, default=60.0, help="seconds before the game quits")
+    run_parser.add_argument("--exit-after", type=float, default=60.0,
+                            help="seconds before the game quits; of game time (30 frames each) "
+                                 "with debug.fixed_timestep")
     run_parser.add_argument("--time-limit", type=float, default=0.0,
                             help="seconds after launch before the run is killed (default --exit-after + 120); "
-                                 "with debug.fixed_timestep --exit-after counts frames, which validation slows")
+                                 "with debug.fixed_timestep --exit-after counts seconds of game time, 30 frames each "
+                                 "(600 = 18,000 frames), which validation slows")
     run_parser.add_argument("--set", action="append", default=[], metavar="SECTION.KEY=VALUE",
                             help="a config.toml setting, value in TOML syntax (repeatable)")
     run_parser.add_argument("--init", action="append", default=[], metavar="COMMAND",
