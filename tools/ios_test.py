@@ -92,6 +92,11 @@ run(BUILD/'config-reload-probe')
 run('xcrun', 'clang', '-O2', '-fobjc-arc', '-Iport/ios/host', 'port/ios/tests/texture_refine_probe.m',
     'port/ios/host/texture_refine.m', '-framework', 'Foundation', '-framework', 'Metal', '-o', BUILD/'texture-refine-probe')
 run(BUILD/'texture-refine-probe')
+# the render's own local random sequence: frames drawn between ticks leave the game's local
+# numbers alone (the probe includes port/linux/game/render_random.c)
+run('xcrun', 'clang', '-O2', '-fsanitize=address,undefined', '-Iport/linux/src',
+    'port/ios/tests/render_random_probe.c', '-o', BUILD/'render-random-probe')
+run(BUILD/'render-random-probe')
 # head-tracked stereo's look: the world holds still in the room while the head pans, and
 # the right stick's turn (the probe includes port/linux/game/stereo.c)
 run('xcrun', 'clang', '-O2', '-fsanitize=address,undefined', '-DHALO_IOS=1', '-Iport/linux/src', '-Iport/ios/host',

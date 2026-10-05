@@ -852,6 +852,11 @@ void lock_global_random_seed(
 	void);
 void unlock_global_random_seed(
 	void);
+/* port: port/linux/game/render_random.c */
+void halo_render_random_begin(
+	void);
+void halo_render_random_end(
+	void);
 unsigned long get_random_seed(
 	void);
 

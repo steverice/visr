@@ -1826,6 +1826,7 @@ void main_pregame_render(
 	static struct render_window window;
 
 	collision_log_continue_period(TRUE);
+	halo_render_random_begin(); /* port: render_random.c */
 	sound_render();
 	{
 		real_point3d position = { 0.0f, 0.0f, 0.0f };
@@ -1855,6 +1856,7 @@ void main_pregame_render(
 			&window,
 			main_globals.movie);
 	}
+	halo_render_random_end(); /* port: render_random.c */
 	collision_log_end_period();
 
 	return;
@@ -3112,6 +3114,7 @@ static void main_game_render(
 	short last_local_player_index;
 
 	lock_global_random_seed();
+	halo_render_random_begin(); /* port: render_random.c */
 	collision_log_continue_period(TRUE);
 	sound_render();
 	force_single_screen = game_engine_force_single_screen();
@@ -3193,6 +3196,7 @@ static void main_game_render(
 	}
 
 	collision_log_end_period();
+	halo_render_random_end(); /* port: render_random.c */
 	unlock_global_random_seed();
 	return;
 }
