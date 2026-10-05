@@ -137,6 +137,13 @@ if eye_set < 0 or render_source.rfind('structure_visibility_find_mirror', 0, eye
                      "around the eye's render_window, and clear it after")
 if 'halo_stereo_eye_position()' not in (ROOT / 'source/render/render_sky.c').read_text():
     raise SystemExit("render_sky.c: render_sky must center the sky on the eye's position in an eye pass")
+# far scenery (a10's ring) moves with the eye, so it too sits at infinity (the probe includes
+# port/linux/game/stereo_far.c), and render_objects.c hands it every object's node matrices
+run('xcrun', 'clang', '-O2', '-fsanitize=address,undefined', '-Iport/linux/src',
+    'port/ios/tests/stereo_far_probe.c', '-o', BUILD/'stereo-far-probe')
+run(BUILD/'stereo-far-probe')
+if 'halo_stereo_far_matrices(' not in (ROOT / 'source/render/render_objects.c').read_text():
+    raise SystemExit('render_objects.c: objects must pass their node matrices through halo_stereo_far_matrices')
 # the head-tracked presenter's shaders, compiled from its source string at run time: compile
 # them here, as the visionOS build's preprocessor leaves them (host_stereo_vignette.h's mask is
 # macro text, which a math macro could otherwise rewrite unseen)

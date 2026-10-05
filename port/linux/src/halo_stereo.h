@@ -272,6 +272,20 @@ each eye. The pointer is the caller's, valid only while it is set */
 union real_point3d;
 void halo_stereo_set_eye_position(const union real_point3d *position);
 const union real_point3d *halo_stereo_eye_position(void);
+/* Far scenery (port/linux/game/stereo_far.c): objects that stand in for
+something far bigger and farther than their model, as a10's ring
+(scenery\halo\halo, about 120 m across, 134 m beyond the bridge's window),
+which stereo would otherwise show at its real size and distance. 1 if the
+tag name is on the list */
+int halo_stereo_far_scenery(const char *tag_name);
+/* render_objects.c, as an object draws: in an eye pass
+(halo_stereo_eye_position), a far scenery object's node matrices translated
+by the eye's position less the center camera's (center), a render-only copy,
+so each eye sees it where the center camera does: no disparity, at
+infinity. Otherwise matrices, unchanged */
+struct real_matrix4x3;
+const struct real_matrix4x3 *halo_stereo_far_matrices(const char *tag_name,
+	const struct real_matrix4x3 *matrices, short node_count, const union real_point3d *center);
 /* 1 when this frame is the film for a cutscene: the letterbox, held
 through the film's hold after it drops. The 16:9 narrowing (main.c) and the
 title bars (cinematics.c) follow this, not the letterbox flag itself, so the

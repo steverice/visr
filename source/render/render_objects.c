@@ -545,6 +545,16 @@ static void render_object_list(
 						halo_first_person_body_log(object_index, node_matrices, node_count);
 					}
 				}
+				/* port: in a stereo eye pass, far scenery (a10's ring) draws a render-only copy that moves
+				with the eye, so it has no disparity and reads as far away (port/linux/game/stereo_far.c) */
+				if (!data->shadow && halo_stereo_eye_position())
+				{
+					node_matrices = halo_stereo_far_matrices(
+						tag_get_name(object->definition_index),
+						node_matrices,
+						(short)(object->object.node_matrices.size / (short)sizeof(real_matrix4x3)),
+						&render.camera.position);
+				}
 
 				match_assert(
 					"c:\\halo\\SOURCE\\render\\render_objects.c",
