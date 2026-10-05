@@ -2,6 +2,8 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #include "ios_host.h"
+#include "guest_image.h"
+#include "host_display_pin.h"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 #include <errno.h>
@@ -25,7 +27,7 @@ void host_log(int priority,const char *text) { host_logf(priority,"%s",text); }
 void host_fatal(const char *format,...) {
     va_list ap;va_start(ap,format);char text[1024];vsnprintf(text,sizeof(text),format,ap);va_end(ap);
     host_logf(HOST_LOG_ERROR,"FATAL: %s",text);
-    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,"Halo",text,NULL);exit(1);
+    if(!getenv("HALO_RUNNER"))SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,"Halo",text,NULL);exit(1);
 }
 void host_abort(const char *reason) { host_logf(HOST_LOG_ERROR,"guest abort: %s",reason);abort(); }
 void host_exit(int code) {host_logf(HOST_LOG_INFO,"game exit %d",code);exit(code);}
@@ -63,6 +65,8 @@ int main(int argc,char **argv) {
            and debug.gpu_stats among it, which otherwise only a debugger's console shows. */
         if(access("stderr.log",F_OK)==0){int fd=open("stderr.log",O_WRONLY|O_APPEND);if(fd>=0){dup2(fd,2);close(fd);}}
         host_logf(HOST_LOG_INFO,"Halo iOS native guest starting");
+        /* names the exact game image a result folder came from (tools/mac_run.py compare-inputs) */
+        host_logf(HOST_LOG_INFO,"guest image sha256 %s",HALO_GUEST_SHA256);
 #if TARGET_OS_VISION
         /* Closing the window is how a visionOS app is left, and an app reopened
            into a new scene would have no game window: quit (the game saves at
@@ -94,14 +98,17 @@ int main(int argc,char **argv) {
         }
         /* The runner's pinned display (HALO_HOST_DISPLAY=1366x1024@2, what the iPad runner's SDL
            reports): the guest's display and drawable size, whatever the window's (host_sdl.c). */
-        const char *pin=getenv("HALO_HOST_DISPLAY");int pin_w=0,pin_h=0;float pin_scale=0;
-        if(pin && sscanf(pin,"%dx%d@%f",&pin_w,&pin_h,&pin_scale)==3 && pin_w>0 && pin_h>0 && pin_scale>0){
-            int longer=pin_w>pin_h?pin_w:pin_h,shorter=pin_w>pin_h?pin_h:pin_w;
-            width=(480*longer/shorter)&~1;
-            pixel_width=(int)(longer*pin_scale+0.5f);pixel_height=(int)(shorter*pin_scale+0.5f);
+        const char *pin_text=getenv("HALO_HOST_DISPLAY");
+        struct host_display_pin pin;
+        int pinned=host_display_pin_parse(pin_text,&pin);
+        if(pinned<0)host_fatal("HALO_HOST_DISPLAY=%s is not WIDTHxHEIGHT@SCALE (the runner pins 1366x1024@2)",pin_text);
+        if(pinned){
+            width=pin.screen_width;pixel_width=pin.pixel_width;pixel_height=pin.pixel_height;
             host_sdl_pin_window_pixels(pixel_width,pixel_height);
-            host_logf(HOST_LOG_INFO,"display pinned to %s: %dx%d pixels, width %d",pin,pixel_width,pixel_height,width);
+            host_logf(HOST_LOG_INFO,"display pinned to %s: %dx%d pixels, width %d",pin_text,pixel_width,pixel_height,width);
         }
+        /* what the guest is told, under either runner (tools/mac_run.py compare-inputs) */
+        host_logf(HOST_LOG_INFO,"guest display: width %d, pixels %dx%d",width,pixel_width,pixel_height);
         char env_data[1200],env_save[1200],env_width[64],env_pixel_width[64],env_pixel_height[64];
         snprintf(env_data,sizeof(env_data),"HALO_DATA_ROOT=%s",data_root);
         snprintf(env_save,sizeof(env_save),"HALO_SAVE_ROOT=%s",save_root);
