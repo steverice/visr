@@ -342,9 +342,17 @@ def scheme_environment(variables):
 # open -a returns before a cold Xcode has the project open, and a freshly
 # loaded project lists its run destinations a little later still
 # Xcode keeps one project of a name open: another checkout's runner project would
-# block this one from opening, and be driven in its place
+# block this one from opening, and be driven in its place. Match by path, not
+# name: Xcode can list another runner project as ".../HaloRunner.xcodeproj/
+# project.xcworkspace", named "project.xcworkspace", and one whose worktree was
+# deleted stays open that way, leaving this project's run "not yet started" for
+# good. Close each on its own, since such a stale one can fail to answer.
 CLOSE_OTHERS = """tell application "{xcode}"
-	close (every workspace document whose name is "{target}.xcodeproj" and path is not "{project}") saving no
+	repeat with other in (every workspace document whose path contains "/{target}.xcodeproj" and path does not start with "{project}")
+		try
+			close other saving no
+		end try
+	end repeat
 end tell
 """
 

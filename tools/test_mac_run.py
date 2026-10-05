@@ -237,10 +237,19 @@ def test_launch_script_drives_this_checkout_s_project_only(tmp_path):
     """Xcode keeps one project named HaloRunner open: another worktree's would be driven instead"""
     project = tmp_path / "build/mac-runner/HaloRunner.xcodeproj"
     close = mac_run.CLOSE_OTHERS.format(xcode="/Applications/Xcode.app", target="HaloRunner", project=project)
-    assert f'whose name is "HaloRunner.xcodeproj" and path is not "{project}"' in close
+    assert f'whose path contains "/HaloRunner.xcodeproj" and path does not start with "{project}"' in close
     launch = mac_run.LAUNCH.format(xcode="/Applications/Xcode.app", target="HaloRunner", project=project)
     assert "whose path contains" not in launch
     assert launch.count(f'whose path is "{project}"') == 2
+
+
+def test_close_script_closes_a_runner_project_xcode_lists_as_its_workspace():
+    """Xcode listed a deleted worktree's runner project as "project.xcworkspace", so closing by
+    name missed it and this project's run stayed "not yet started" """
+    project = "/w/upstream-merge/build/mac-runner/HaloRunner.xcodeproj"
+    close = mac_run.CLOSE_OTHERS.format(xcode="/Applications/Xcode.app", target="HaloRunner", project=project)
+    assert "whose name is" not in close
+    assert "try\n\t\t\tclose other saving no" in close
 
 
 def test_launch_script_retries_when_xcode_cannot_run():
