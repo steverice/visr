@@ -252,10 +252,13 @@ ticks between two cutscenes (under a white fade), which would otherwise flip
 the view to the full view and back */
 #define FILM_HOLD_FRAMES 10
 static int film_hold;
-/* the zoom's inset this frame (halo_stereo_inset_begin); the last state
-logged (-1: none yet); the HUD's draws routed into it
+/* the zoom's inset this frame (halo_stereo_inset_begin): whether the
+frame is zoomed in the full view, which keeps the zoom's screen effects out
+of the eyes and routes the crosshairs out of the HUD layer, and whether the
+inset's pass runs, which it doesn't while its quad won't show; the last
+state logged (-1: none yet); the HUD's draws routed into it
 (halo_stereo_inset_overlay) */
-static int inset_frame, inset_logged = -1, inset_overlay_on;
+static int inset_frame, inset_pass, inset_logged = -1, inset_overlay_on;
 /* the last stereo frame's HUD layer went whole on the UI's quad */
 static int ui_shown_last;
 
@@ -610,6 +613,7 @@ void halo_stereo_frame_begin(void)
 	stereo_layer = HALO_STEREO_LAYER_MONO;
 	ui_span = 0;
 	inset_frame = 0;
+	inset_pass = 0;
 	inset_overlay_on = 0;
 	reticle_set(NULL, NULL, NULL);
 	hud_tangents[0] = hud_tangents[1] = 0.0f;
@@ -868,9 +872,12 @@ int halo_stereo_inset_begin(int zoomed)
 	int mode = stereo_frame.mode;
 
 	inset_frame = zoomed && stereo_frame.eye_count == 2 && !halo_stereo_film() && !halo_stereo_screen_gameplay() &&
-		(mode == HALO_STEREO_HEAD || mode == HALO_STEREO_SIDE_BY_SIDE) && !ui_shown_last &&
-		/* the presenter's rule for an aim off the view (host_stereo_hud.c) */
-		reticle_direction[2] <= -0.1f;
+		(mode == HALO_STEREO_HEAD || mode == HALO_STEREO_SIDE_BY_SIDE);
+	/* the pass alone waits while its quad won't show: under the last frame's
+	menu, or with a seat's aim off the view (the presenter's rule,
+	host_stereo_hud.c). The eyes still leave the zoom out, so they don't
+	blink a masked view around a menu */
+	inset_pass = inset_frame && !ui_shown_last && reticle_direction[2] <= -0.1f;
 	/* the first time, and each change under debug.gpu_stats */
 	if (inset_frame != inset_logged && (inset_logged < 0 ? inset_frame : stereo_stats))
 		platform_log(inset_frame ? "stereo: zoomed: the zoomed view on the inset, %.0f%% of the eyes' height, its "
@@ -879,7 +886,7 @@ int halo_stereo_inset_begin(int zoomed)
 			HALO_STEREO_INSET_DISTANCE_METERS);
 	if (inset_frame || inset_logged >= 0)
 		inset_logged = inset_frame;
-	return inset_frame;
+	return inset_pass;
 }
 
 void halo_stereo_set_ui_shown(int shown)
@@ -898,7 +905,7 @@ float halo_stereo_inset_field_of_view(float magnification)
 
 int halo_stereo_inset(void)
 {
-	return inset_frame;
+	return inset_pass;
 }
 
 int halo_stereo_eye_unzoomed(void)

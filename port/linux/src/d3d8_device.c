@@ -4091,8 +4091,10 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 			passed only if that was this frame */
 			if (hud)
 				present.hud = hud->target.texture;
-			/* the zoom's inset, only if it drew this frame */
-			if (inset)
+			/* the zoom's inset, only if its pass ran this frame (the HUD's
+			crosshairs still go to its layer while the pass waits under a
+			menu, halo_stereo_inset_begin) */
+			if (inset && halo_stereo_inset())
 				present.inset = inset->target.texture;
 			/* the eyes' planes (the eye loop's, halo_stereo_set_depth_range), in
 			meters: one world unit is 3.048 m */

@@ -485,7 +485,21 @@ static void zoom_inset(void)
 	/* not when the presenter wouldn't show it */
 	halo_stereo_set_ui_shown(1);
 	check(!halo_stereo_inset_begin(1), "under the last frame's menu (the UI quad) the pass doesn't run");
+	halo_stereo_layer(0);
+	check(halo_stereo_eye_unzoomed(), "but eye 0 still leaves out the zoom's screen effects under the menu");
+	halo_stereo_layer(HALO_STEREO_LAYER_HUD);
+	halo_stereo_inset_overlay(1);
+	check(halo_stereo_current_layer() == HALO_STEREO_LAYER_INSET,
+		"and the crosshairs stay out of the HUD layer (the UI quad)");
+	halo_stereo_inset_overlay(0);
+	/* the first frame after unpausing: the menu was the last frame's */
+	frames(1);
+	check(!halo_stereo_inset_begin(1), "the first frame after unpausing still waits for the pass");
+	halo_stereo_layer(0);
+	check(halo_stereo_eye_unzoomed(), "and its eye 0 leaves out the zoom's screen effects too: no masked blink");
+	halo_stereo_layer(HALO_STEREO_LAYER_MONO);
 	halo_stereo_set_ui_shown(0);
+	frames(1);
 	check(halo_stereo_inset_begin(1), "and runs again once the menu's gone");
 	halo_stereo_layer(0);
 	check(halo_stereo_eye_unzoomed() && !halo_stereo_repeat_pass(),
@@ -534,7 +548,10 @@ static void zoom_inset(void)
 		reticle_direction[0] = 0.3f;
 		reticle_direction[1] = 0.0f;
 		reticle_direction[2] = 0.95f;
-		check(!halo_stereo_inset_begin(1), "but not while the seat's aim points behind the eyes");
+		check(!halo_stereo_inset_begin(1), "but its pass doesn't run while the seat's aim points behind the eyes");
+		halo_stereo_layer(1);
+		check(halo_stereo_eye_unzoomed(), "while the eyes still leave out the zoom's screen effects");
+		halo_stereo_layer(HALO_STEREO_LAYER_MONO);
 		memcpy(reticle_direction, saved, sizeof(saved));
 	}
 	forward[0] = 1.0f;

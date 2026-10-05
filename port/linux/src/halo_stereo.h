@@ -87,9 +87,12 @@ and its offset from the camera in world units */
 #define HALO_STEREO_INSET_LINES 480.0f
 /* render.c's eye loop, before the eyes and after halo_stereo_head_orient:
 whether the local player is zoomed this frame; returns 1 if the frame
-renders the inset. Not while the last frame's HUD layer held a menu
-(halo_stereo_set_ui_shown), nor while a seat's aim (halo_stereo_reticle)
-points behind the eyes: the presenter wouldn't show it */
+renders the inset's pass. The pass waits while the last frame's HUD layer
+held a menu (halo_stereo_set_ui_shown) or a seat's aim
+(halo_stereo_reticle) points behind the eyes, where the presenter wouldn't
+show it; the frame is still the inset's for the eyes
+(halo_stereo_eye_unzoomed) and the HUD (halo_stereo_inset_overlay), so the
+eyes never show the zoom's mask */
 int halo_stereo_inset_begin(int zoomed);
 /* d3d8_device.c, as it presents a stereo frame: whether the HUD layer went
 whole on the UI's quad (a menu, the console, a progress bar) */
@@ -103,8 +106,8 @@ float halo_stereo_inset_field_of_view(float magnification);
 magnification, from the weapon of the unit that aims (a seat's gun too); 1
 unzoomed */
 float halo_zoom_magnification(short local_player_index);
-/* 1 while this frame renders the inset (from halo_stereo_inset_begin to
-the frame's end) */
+/* 1 while this frame renders the inset's pass (halo_stereo_inset_begin's
+result, to the frame's end) */
 int halo_stereo_inset(void);
 /* 1 in an eye's layer of a frame with the inset: the zoom's screen effects
 (interface.c) stay out of the eyes */
