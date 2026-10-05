@@ -4114,7 +4114,8 @@ static void write_depth_screenshot(struct render_target_entry *target, const cha
 /* the names of the HUD's groups, for logs and screenshots (halo_stereo.h) */
 static const char *hud_group_name(int group)
 {
-	static const char *const names[HALO_HUD_GROUP_COUNT] = { "weapon", "unit", "tracker", "prompt", "messages" };
+	static const char *const names[HALO_HUD_GROUP_COUNT] = { "weapon", "unit", "tracker", "prompt", "messages",
+		"seats" };
 
 	return group >= 0 && group < HALO_HUD_GROUP_COUNT ? names[group] : "none";
 }

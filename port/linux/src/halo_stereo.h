@@ -58,6 +58,9 @@ enum halo_hud_group
 	HALO_HUD_GROUP_TRACKER,            /* the motion sensor */
 	HALO_HUD_GROUP_PROMPT,             /* help text, objectives and state messages (pickup prompts) */
 	HALO_HUD_GROUP_MESSAGES,           /* the message list (pickups, checkpoints) */
+	/* the unit span's elements CE anchors top left: a vehicle driver's seat
+	labels and their bars (halo_hud_group_corner) */
+	HALO_HUD_GROUP_SEATS,
 	HALO_HUD_GROUP_COUNT
 };
 /* spans nest: the innermost wins */
@@ -67,7 +70,10 @@ void halo_hud_group_end(void);
 every span, the draws that follow take the corner's group (top left the
 weapon's, top right the unit's, bottom left the tracker's) until the next
 span begins or ends, the next element's corner or the next frame; bottom
-right and the center are the catch-all's */
+right and the center are the catch-all's. Inside the unit's span it splits that span by
+corner the same way: top left is the seats' group (a driver's seat labels,
+so no group crosses the layout's center), the center the catch-all's, and
+the rest stay the unit's */
 void halo_hud_group_corner(short corner);
 /* the group a HUD-layer draw goes to now */
 int halo_hud_group_current(void);

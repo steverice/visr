@@ -76,6 +76,8 @@ static void sample_extents(float width, float extents[HALO_HUD_GROUP_COUNT][4])
 				value = group == HALO_HUD_GROUP_UNIT ? width - inset - (592.0f - value) : inset + (value - 48.0f);
 			extents[group][axis] = value;
 		}
+	/* on foot there are no seat labels */
+	memset(extents[HALO_HUD_GROUP_SEATS], 0, sizeof(extents[0]));
 }
 
 static void print_quads(float width, int ui, const float reticle[3])
@@ -171,7 +173,7 @@ static void layout_checks(float width)
 	count = host_stereo_hud_layout(width, 0, ahead, hud_tangents, (const float (*)[4])extents, quads);
 	printf("layout %.0f lines across (%.3f:1), band scale %.3f mm a line\n", width, width / 480.0f,
 		1000.0f * host_stereo_hud_band_scale(width, (const float (*)[4])extents));
-	check(count == 2 + HALO_HUD_GROUP_COUNT, "a quad for the reticle, each group and the catch-all");
+	check(count == 1 + HALO_HUD_GROUP_COUNT, "a quad for the reticle, each group that drew (all but the seats) and the catch-all");
 	check(quads[0].frame == HOST_STEREO_HUD_HEAD && quads[0].layer == HOST_STEREO_HUD_LAYER_RETICLE,
 		"the reticle's layer comes first, head-locked");
 	check(fabsf(quads[0].center[0]) < 1e-6f && fabsf(quads[0].center[1]) < 1e-6f &&
@@ -184,7 +186,8 @@ static void layout_checks(float width)
 	check(quads[count - 1].catch_all && quads[count - 1].frame == HOST_STEREO_HUD_HEAD,
 		"the catch-all comes last, head-locked");
 	for (group = 0; group < HALO_HUD_GROUP_COUNT; group++)
-		whole &= shows_whole(quad_of(quads, count, HOST_STEREO_HUD_LAYER_GROUP + group), width, extents[group]);
+		if (group != HALO_HUD_GROUP_SEATS)
+			whole &= shows_whole(quad_of(quads, count, HOST_STEREO_HUD_LAYER_GROUP + group), width, extents[group]);
 	check(whole, "each group's quad shows its whole rectangle, from its own target");
 	/* the groups' quads: all but the reticle and the catch-all */
 	for (index = 1; index < count - 1; index++)
@@ -275,28 +278,69 @@ static void layout_checks(float width)
 			shows_whole(prompt, width, wide[HALO_HUD_GROUP_PROMPT]),
 			"a wider weapon icon and a longer prompt show whole, each on its group's quad");
 	}
-	/* a vehicle's driver seat: the unit group holds the seat labels, which
-	CE draws top left, and the bars top right; its quad keeps them where
-	they are across the screen, labels left of the center and bars right,
-	all on the one quad (the Mac's b30 driver seat measured 60 to 597 lines
-	at 640) */
+	/* a vehicle's driver seat (the Mac's b30 Warthog: the passenger's label
+	and bar at 60 to 140 lines across, 37 to 90 down, the Warthog's bar at
+	463 to 597, 36 to 70), and a Scorpion's, which adds the cannon's
+	counters top left (CE puts the rider labels under them): the labels are
+	the seats' group, in the weapon's slot, left of the center, the bars the
+	unit's, right of it; no group crosses the center and no two quads
+	overlap */
 	{
+		float inset = floorf(48.0f * width / 640.0f);
 		float driver[HALO_HUD_GROUP_COUNT][4] = { { 0 } };
-		const struct host_stereo_hud_quad *unit;
-		float degrees[4];
-		int n;
+		int scorpion;
 
-		driver[HALO_HUD_GROUP_UNIT][0] = 60.0f * width / 640.0f;
+		driver[HALO_HUD_GROUP_SEATS][0] = inset + 12.0f;
+		driver[HALO_HUD_GROUP_SEATS][1] = 37.0f;
+		driver[HALO_HUD_GROUP_SEATS][2] = inset + 92.0f;
+		driver[HALO_HUD_GROUP_SEATS][3] = 90.0f;
+		driver[HALO_HUD_GROUP_UNIT][0] = width - inset - 129.0f;
 		driver[HALO_HUD_GROUP_UNIT][1] = 36.0f;
-		driver[HALO_HUD_GROUP_UNIT][2] = width - (640.0f - 597.0f) * width / 640.0f;
-		driver[HALO_HUD_GROUP_UNIT][3] = 205.0f;
-		n = host_stereo_hud_layout(width, 0, ahead, hud_tangents, (const float (*)[4])driver, quads);
-		unit = quad_of(quads, n, HOST_STEREO_HUD_LAYER_GROUP + HALO_HUD_GROUP_UNIT);
-		level_extent(unit, degrees);
-		check(unit && shows_whole(unit, width, driver[HALO_HUD_GROUP_UNIT]) && degrees[0] < 0.0f && degrees[2] > 0.0f &&
-			fabsf(unit->center[0] / host_stereo_hud_band_scale(width, (const float (*)[4])driver) -
-			((driver[HALO_HUD_GROUP_UNIT][0] + driver[HALO_HUD_GROUP_UNIT][2]) / 2.0f - width / 2.0f)) < 1e-2f,
-			"a unit group across the center (a driver's seat labels and bars) keeps its place across the screen, whole");
+		driver[HALO_HUD_GROUP_UNIT][2] = width - inset + 5.0f;
+		driver[HALO_HUD_GROUP_UNIT][3] = 70.0f;
+		for (scorpion = 0; scorpion < 2; scorpion++)
+		{
+			const struct host_stereo_hud_quad *unit, *seats, *weapon;
+			float scale, du[4], ds[4], dw[4];
+			int n, a, b, overlap = 0;
+			char what[160];
+
+			if (scorpion)
+			{
+				/* the cannon's counters, and the rider labels moved under them */
+				driver[HALO_HUD_GROUP_WEAPON][0] = inset - 1.0f;
+				driver[HALO_HUD_GROUP_WEAPON][1] = 37.0f;
+				driver[HALO_HUD_GROUP_WEAPON][2] = inset + 210.0f;
+				driver[HALO_HUD_GROUP_WEAPON][3] = 88.0f;
+				driver[HALO_HUD_GROUP_SEATS][1] = 92.0f;
+				driver[HALO_HUD_GROUP_SEATS][3] = 200.0f;
+			}
+			n = host_stereo_hud_layout(width, 0, ahead, hud_tangents, (const float (*)[4])driver, quads);
+			scale = host_stereo_hud_band_scale(width, (const float (*)[4])driver);
+			unit = quad_of(quads, n, HOST_STEREO_HUD_LAYER_GROUP + HALO_HUD_GROUP_UNIT);
+			seats = quad_of(quads, n, HOST_STEREO_HUD_LAYER_GROUP + HALO_HUD_GROUP_SEATS);
+			weapon = quad_of(quads, n, HOST_STEREO_HUD_LAYER_GROUP + HALO_HUD_GROUP_WEAPON);
+			content_extent(unit, scale, du);
+			content_extent(seats, scale, ds);
+			if (weapon)
+				content_extent(weapon, scale, dw);
+			for (a = 1; a < n - 1; a++)
+				for (b = a + 1; b < n - 1; b++)
+				{
+					float da[4], db[4];
+
+					content_extent(&quads[a], scale, da);
+					content_extent(&quads[b], scale, db);
+					if (da[0] < db[2] - 1e-4f && db[0] < da[2] - 1e-4f && da[1] < db[3] - 1e-4f && db[1] < da[3] - 1e-4f)
+						overlap = 1;
+				}
+			snprintf(what, sizeof(what), "a %s driver's seat labels sit left of the center, the bars right, %s no quads "
+				"overlapping", scorpion ? "Scorpion" : "Warthog", scorpion ? "under the cannon's counters," : "with");
+			check(shows_whole(seats, width, driver[HALO_HUD_GROUP_SEATS]) &&
+				shows_whole(unit, width, driver[HALO_HUD_GROUP_UNIT]) && ds[2] < 0.0f && du[0] > 0.0f && !overlap &&
+				(!scorpion || (weapon && ds[3] <= dw[1] + 1e-3f && fabsf((seats->center[0] - seats->x_axis[0]) -
+				(weapon->center[0] - weapon->x_axis[0]) - 13.0f * scale) < 1e-5f)), what);
+		}
 	}
 	/* a group that didn't draw has no quad; with no rectangles at all only
 	the reticle and the catch-all are left */
@@ -306,7 +350,7 @@ static void layout_checks(float width)
 		memcpy(some, extents, sizeof(some));
 		memset(some[HALO_HUD_GROUP_PROMPT], 0, sizeof(some[0]));
 		count = host_stereo_hud_layout(width, 0, ahead, hud_tangents, (const float (*)[4])some, quads);
-		check(count == 1 + HALO_HUD_GROUP_COUNT && !quad_of(quads, count, HOST_STEREO_HUD_LAYER_GROUP + HALO_HUD_GROUP_PROMPT),
+		check(count == HALO_HUD_GROUP_COUNT && !quad_of(quads, count, HOST_STEREO_HUD_LAYER_GROUP + HALO_HUD_GROUP_PROMPT),
 			"an empty group has no quad");
 		check(host_stereo_hud_layout(width, 0, ahead, hud_tangents, NULL, quads) == 2,
 			"without the groups' rectangles, only the reticle and the catch-all");
@@ -340,7 +384,7 @@ static void ui_checks(float aspect)
 			same &= quads[index].frame == HOST_STEREO_HUD_LEVEL && !memcmp(quads[index].center, quad.center,
 				sizeof(quad.center)) && !memcmp(quads[index].x_axis, quad.x_axis, sizeof(quad.x_axis)) &&
 				quads[index].source[0] == 0.0f && quads[index].source[2] == 1.0f;
-		check(count == 2 + HALO_HUD_GROUP_COUNT && same && quads[0].layer == HOST_STEREO_HUD_LAYER_RETICLE &&
+		check(count == 1 + HALO_HUD_GROUP_COUNT && same && quads[0].layer == HOST_STEREO_HUD_LAYER_RETICLE &&
 			quads[count - 1].layer == HOST_STEREO_HUD_LAYER_HUD,
 			"a menu in the HUD layer puts every layer whole on the UI's quad, the HUD layer (the menu) last");
 	}

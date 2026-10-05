@@ -31,13 +31,18 @@ enum
 	HUD_ANCHOR_TOP_LEFT,
 	HUD_ANCHOR_TOP_RIGHT,
 	HUD_ANCHOR_BOTTOM_LEFT,
-	HUD_ANCHOR_BOTTOM_RIGHT
+	HUD_ANCHOR_BOTTOM_RIGHT,
+	HUD_ANCHOR_CENTER
 };
 
 static int spans[HUD_GROUP_SPAN_DEPTH];
 static int span_depth;
 /* the group of the last element's corner outside every span */
 static int corner_group = HALO_HUD_GROUP_NONE;
+/* the last element's corner inside the unit's span (-1: none yet), which
+splits it: a vehicle driver's seat labels, which CE anchors top left, are
+the seats' group, and an element anchored at the center the catch-all's */
+static int unit_corner = -1;
 static int measuring = 1;
 /* each group's rectangle (x0, y0, x1, y1), the catch-all's first; empty
 while x1 <= x0 */
@@ -56,6 +61,7 @@ void halo_hud_group_begin(int group)
 		spans[span_depth] = group;
 	span_depth++;
 	corner_group = HALO_HUD_GROUP_NONE;
+	unit_corner = -1;
 }
 
 void halo_hud_group_end(void)
@@ -63,12 +69,16 @@ void halo_hud_group_end(void)
 	if (span_depth > 0)
 		span_depth--;
 	corner_group = HALO_HUD_GROUP_NONE;
+	unit_corner = -1;
 }
 
 void halo_hud_group_corner(short corner)
 {
 	if (span_depth > 0)
+	{
+		unit_corner = corner;
 		return;
+	}
 	corner_group = corner == HUD_ANCHOR_TOP_LEFT ? HALO_HUD_GROUP_WEAPON :
 		corner == HUD_ANCHOR_TOP_RIGHT ? HALO_HUD_GROUP_UNIT :
 		corner == HUD_ANCHOR_BOTTOM_LEFT ? HALO_HUD_GROUP_TRACKER : HALO_HUD_GROUP_NONE;
@@ -77,7 +87,15 @@ void halo_hud_group_corner(short corner)
 int halo_hud_group_current(void)
 {
 	if (span_depth > 0)
-		return spans[(span_depth < HUD_GROUP_SPAN_DEPTH ? span_depth : HUD_GROUP_SPAN_DEPTH) - 1];
+	{
+		int group = spans[(span_depth < HUD_GROUP_SPAN_DEPTH ? span_depth : HUD_GROUP_SPAN_DEPTH) - 1];
+
+		if (group == HALO_HUD_GROUP_UNIT && unit_corner == HUD_ANCHOR_TOP_LEFT)
+			return HALO_HUD_GROUP_SEATS;
+		if (group == HALO_HUD_GROUP_UNIT && unit_corner == HUD_ANCHOR_CENTER)
+			return HALO_HUD_GROUP_NONE;
+		return group;
+	}
 	return corner_group;
 }
 
@@ -126,6 +144,7 @@ void halo_hud_group_frame_begin(void)
 	/* a span left open by the last frame (it never is) ends here */
 	span_depth = 0;
 	corner_group = HALO_HUD_GROUP_NONE;
+	unit_corner = -1;
 	measuring = 1;
 }
 

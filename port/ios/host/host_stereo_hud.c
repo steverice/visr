@@ -12,7 +12,10 @@
 /* The bands' slots: where each HUD group's quad goes, as Task 7c placed its
 pieces, with the group's own rectangle in place of a measured one. The
 weapon's counters and icon (with the grenades) left and the unit's meters
-right sit next to the reticle in the top band; the prompts and the
+right sit next to the reticle in the top band; a vehicle driver's seat
+labels, which CE anchors top left, share the weapon's slot, each where CE
+puts it relative to the other, so a Scorpion driver's rider labels stay
+under the cannon's counters as on the Xbox; the prompts and the
 messages, which CE draws under the counters, sit above them, centered, in
 CE's own arrangement (the prompt over the messages); the motion tracker,
 at the bottom of Halo's HUD, hangs centered in the bottom band. */
@@ -27,7 +30,7 @@ struct slot
 };
 
 static const struct slot slots[] = {
-	{ 1, 0, -1, { HALO_HUD_GROUP_WEAPON }, 1 },
+	{ 1, 0, -1, { HALO_HUD_GROUP_WEAPON, HALO_HUD_GROUP_SEATS }, 2 },
 	{ 1, 0, 1, { HALO_HUD_GROUP_UNIT }, 1 },
 	{ 1, 1, 0, { HALO_HUD_GROUP_PROMPT, HALO_HUD_GROUP_MESSAGES }, 2 },
 	{ -1, 0, 0, { HALO_HUD_GROUP_TRACKER }, 1 },
@@ -101,10 +104,7 @@ reticle's square, the bottom band's hang from one just below it; the left
 ones end just left of the center, the right ones start just right of it,
 the centered ones are centered. A band's rows stack outward from the
 reticle, each as tall as its tallest slot; a row with nothing in it takes
-no room. A side slot whose rectangle crosses the layout's center (the unit
-group in a vehicle's driver seat, whose seat labels CE draws top left and
-whose bars top right) keeps its place across the screen instead, so the
-labels stay left of the center and the bars right, as CE lays them out */
+no room */
 static void slot_place(size_t index, const float rectangle[4], const float (*group_extent)[4], float layout_width,
 	float placed[4])
 {
@@ -131,11 +131,8 @@ static void slot_place(size_t index, const float rectangle[4], const float (*gro
 		if (tallest > 0.0f)
 			inner += tallest + BAND_GAP_LINES;
 	}
-	if (slot->side != 0 && rectangle[0] < layout_width / 2.0f && rectangle[2] > layout_width / 2.0f)
-		placed[0] = rectangle[0] - layout_width / 2.0f;
-	else
-		placed[0] = slot->side < 0 ? -BAND_GAP_LINES / 2.0f - width : slot->side > 0 ? BAND_GAP_LINES / 2.0f :
-			-width / 2.0f;
+	placed[0] = slot->side < 0 ? -BAND_GAP_LINES / 2.0f - width : slot->side > 0 ? BAND_GAP_LINES / 2.0f :
+		-width / 2.0f;
 	placed[2] = placed[0] + width;
 	placed[1] = slot->band > 0 ? inner : -inner - height;
 	placed[3] = placed[1] + height;

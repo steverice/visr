@@ -108,6 +108,29 @@ int main(void)
 			"a group out of range is empty");
 	}
 
+	/* the unit's span split by corner: a driver's seat labels (top left)
+	are the seats' group, a centered element the catch-all's, the rest the
+	unit's; a nested span doesn't inherit it, and the span's end forgets it */
+	halo_hud_group_begin(HALO_HUD_GROUP_UNIT);
+	check(halo_hud_group_current() == HALO_HUD_GROUP_UNIT, "the unit's span starts as the unit's group");
+	halo_hud_group_corner(0);
+	check(halo_hud_group_current() == HALO_HUD_GROUP_SEATS, "a top-left element in the unit's span is the seats' group");
+	halo_hud_group_corner(4);
+	check(halo_hud_group_current() == HALO_HUD_GROUP_NONE, "a centered one is the catch-all's");
+	halo_hud_group_corner(1);
+	check(halo_hud_group_current() == HALO_HUD_GROUP_UNIT, "a top-right one is the unit's");
+	halo_hud_group_corner(0);
+	halo_hud_group_begin(HALO_HUD_GROUP_TRACKER);
+	check(halo_hud_group_current() == HALO_HUD_GROUP_TRACKER, "the tracker's span inside it stays the tracker's");
+	halo_hud_group_corner(2);
+	halo_hud_group_end();
+	check(halo_hud_group_current() == HALO_HUD_GROUP_UNIT, "after it, the unit's span is the unit's again");
+	halo_hud_group_end();
+	halo_hud_group_begin(HALO_HUD_GROUP_WEAPON);
+	halo_hud_group_corner(0);
+	check(halo_hud_group_current() == HALO_HUD_GROUP_WEAPON, "other spans aren't split by corner");
+	halo_hud_group_end();
+
 	/* the next frame's HUD pass */
 	halo_hud_group_begin(HALO_HUD_GROUP_WEAPON);
 	halo_hud_group_frame_begin();
