@@ -47,9 +47,36 @@ SHADER_SOURCES = ("*.glsl", "*.metal")
 SHADER_INPUTS = ("*.vsh", "*.key")
 
 
+def coalesce_tables(lines):
+    """config.toml lines with each table's repeated headers folded into its first: TOML rejects a table
+    defined twice, and the game then ignores the whole file"""
+    preamble, order, bodies, current = [], [], {}, None
+    for line in lines:
+        if line.startswith("[") and line.rstrip().endswith("]"):
+            current = line.strip()
+            if current not in bodies:
+                order.append(current)
+                bodies[current] = []
+            continue
+        (preamble if current is None else bodies[current]).append(line)
+    # a key set twice in one table is invalid too; the first (the one merge_config updates) wins
+    out = list(preamble)
+    for header in order:
+        out.append(header)
+        keys = set()
+        for line in bodies[header]:
+            match = re.match(r"^([A-Za-z0-9_]+)\s*=", line)
+            if match:
+                if match.group(1) in keys:
+                    continue
+                keys.add(match.group(1))
+            out.append(line)
+    return out
+
+
 def merge_config(text, settings):
     """config.toml text with each dotted key in settings set to its raw TOML value"""
-    lines = text.splitlines()
+    lines = coalesce_tables(text.splitlines())
     for dotted, value in settings.items():
         section, key = dotted.split(".", 1)
         header = f"[{section}]"
