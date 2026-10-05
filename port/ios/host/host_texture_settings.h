@@ -5,7 +5,8 @@
 
 /* acts on the delete switch (and turns it back off), then publishes the cache's size */
 void host_texture_settings_apply(const char *data_root);
-/* applies now, and again every time the app returns to the foreground */
+/* applies now, and again every time the app returns to the foreground; also refreshes the size (not the delete)
+   when the app enters the background, which is when the player opens Settings */
 void host_texture_settings_observe(const char *data_root);
 
 #endif
