@@ -527,16 +527,21 @@ def seeding(monkeypatch, tmp_path):
     return maps
 
 
-def test_native_run_seeds_a_new_data_folder_once_with_a_throwaway_a10_run(tmp_path, monkeypatch, native):
+def test_native_run_seeds_a_new_data_folder_once_with_throwaway_a10_and_menu_runs(tmp_path, monkeypatch, native):
     maps = seeding(monkeypatch, tmp_path)
     launches = []
     monkeypatch.setattr(mac_run, "launch_native", fake_launches(launches))
     mac_run.run_native(native_args(tmp_path, native, maps=maps))
     assert (tmp_path / "data/maps/a10.map").is_file()
-    assert [launch["init"] for launch in launches] == ["map_name a10\n", ""]
-    assert launches[0]["out"] != tmp_path / "out"
+    assert [launch["init"] for launch in launches] == ["map_name a10\n", "", ""]
+    assert launches[0]["out"] == tmp_path / "out-seed"
+    assert launches[1]["out"] == tmp_path / "out-seed-menu"
+    assert launches[2]["out"] == tmp_path / "out"
+    assert "exit_after = 20.0" in launches[1]["config"]
+    assert "fixed_timestep = true" in launches[1]["config"]
+    assert "screenshot_every = 0" in launches[1]["config"]
     mac_run.run_native(native_args(tmp_path, native, maps=maps))
-    assert len(launches) == 3    # seeded once
+    assert len(launches) == 4    # seeded once
 
 
 def test_an_interrupted_seed_is_redone(tmp_path, monkeypatch, native):
@@ -557,6 +562,23 @@ def test_a_failed_throwaway_run_leaves_the_folder_unseeded(tmp_path, monkeypatch
         mac_run.run_native(native_args(tmp_path, native, maps=maps))
     assert not (tmp_path / "data/maps").exists()
     assert (tmp_path / "out-seed/ios-runtime.log").is_file()
+
+
+def test_a_failed_menu_seed_run_leaves_the_folder_unseeded(tmp_path, monkeypatch, native):
+    maps = seeding(monkeypatch, tmp_path)
+    launches = []
+    good = fake_launches(launches)
+    bad = fake_launches(launches, exit_line="halo-ios: FATAL: no maps")
+
+    def launch(app, data, out, environment, limit):
+        return (bad if out.name == "out-seed-menu" else good)(app, data, out, environment, limit)
+    monkeypatch.setattr(mac_run, "launch_native", launch)
+    with pytest.raises(SystemExit, match="throwaway menu run"):
+        mac_run.run_native(native_args(tmp_path, native, maps=maps))
+    assert len(launches) == 2
+    assert not (tmp_path / "data/maps").exists()
+    assert (tmp_path / "data/maps.partial/a10.map").is_file()
+    assert (tmp_path / "out-seed-menu/ios-runtime.log").is_file()
 
 
 def test_native_run_without_maps_says_how_to_seed(tmp_path, monkeypatch, native):

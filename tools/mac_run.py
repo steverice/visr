@@ -719,10 +719,33 @@ def launch_native(app, data, out, environment, limit):
     return True
 
 
+def seeding_run(args, data, label, out, init, exit_after):
+    """play one throwaway run of a new data folder's seed: the menu or a10, fixed timestep, no
+    screenshots. When open fails or the game does not exit cleanly, rename maps back to maps.partial
+    (so the next run seeds again rather than trusting the folder) and exit naming the logs."""
+    settings = argparse.Namespace(xiso=None, screenshot_every=0, dump_shaders=False, replay=None,
+                                  exit_after=exit_after, set=["debug.fixed_timestep=true"], init=init)
+    prepare(settings, data, rewrite=True)
+    try:
+        finished = launch_native(args.app, data, out, {}, 600)
+    except SystemExit:
+        # open itself failed: unseed here too, or the next run would trust the folder
+        (data / "maps").rename(data / "maps.partial")
+        raise
+    collect(data, out)
+    log = out / "ios-runtime.log"
+    if not finished or (game_exit(log.read_text(errors="replace")) if log.is_file() else None) != 0:
+        (data / "maps").rename(data / "maps.partial")
+        sys.exit(f"the throwaway {label} run in the new data folder {data} failed; its logs are in {out}")
+
+
 def seed_native_data(args, data):
-    """clone the extracted maps into a new data folder, then play one throwaway a10 run: a host's
-    first a10 GL run in a newly seeded folder has fallen behind on g-force and the mini (REMOTE.md).
-    The clone lands in maps.partial and is renamed when complete, so an interrupted one is redone."""
+    """clone the extracted maps into a new data folder, then play two throwaway runs. The a10 run
+    comes first: a host's first a10 GL run in a newly seeded folder has fallen behind on g-force and
+    the mini (REMOTE.md). The menu run comes second: the first menu run in a new folder writes
+    last_language.dat and savegame.bin and precaches the ui map once more, so it differs from every
+    later menu run, and the iPad runner's container is always past that state. The clone lands in
+    maps.partial and is renamed when complete, so an interrupted one is redone."""
     if not args.maps or not Path(args.maps).is_dir():
         sys.exit(f"no maps in {data}: pass --maps with a folder of extracted maps to seed it from")
     data.mkdir(parents=True, exist_ok=True)
@@ -730,23 +753,10 @@ def seed_native_data(args, data):
     shutil.rmtree(partial, ignore_errors=True)
     run_command("cp", "-c", "-R", Path(args.maps), partial)
     partial.rename(data / "maps")
-    print(f"seeded {data}: one throwaway a10 run", flush=True)
-    warm_up = argparse.Namespace(xiso=None, screenshot_every=0, dump_shaders=False, replay=None, exit_after=40.0,
-                                 set=["debug.fixed_timestep=true"], init=["map_name a10"])
-    prepare(warm_up, data, rewrite=True)
-    seed_out = args.out.parent / f"{args.out.name}-seed"
-    try:
-        finished = launch_native(args.app, data, seed_out, {}, 600)
-    except SystemExit:
-        # open itself failed: unseed here too, or the next run would trust the folder
-        (data / "maps").rename(partial)
-        raise
-    collect(data, seed_out)
-    log = seed_out / "ios-runtime.log"
-    if not finished or (game_exit(log.read_text(errors="replace")) if log.is_file() else None) != 0:
-        # unseed, so the next run seeds again rather than trusting a folder whose first run failed
-        (data / "maps").rename(partial)
-        sys.exit(f"the throwaway a10 run in the new data folder {data} failed; its logs are in {seed_out}")
+    print(f"seeded {data}: a throwaway a10 run, then a throwaway menu run (the first menu run in a new "
+          f"folder writes the language and savegame files and precaches ui once more)", flush=True)
+    seeding_run(args, data, "a10", args.out.parent / f"{args.out.name}-seed", ["map_name a10"], 40.0)
+    seeding_run(args, data, "menu", args.out.parent / f"{args.out.name}-seed-menu", [], 20.0)
 
 
 def run_native(args):
