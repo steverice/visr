@@ -3348,6 +3348,75 @@ static float stereo_cut_brightness(int shown, const struct gpu_stereo_present *p
 	stereo_cut_frames--;
 	return brightness;
 }
+
+/* Stereo's frame times, for the benchmarks (avp-benchmark.sh reads the
+"frames shown for" line, as pacing_schedule's): the Compositor paces stereo,
+so its frames are measured by their presentation times, and a frame's CPU
+time is the time since the last present less the time spent waiting for the
+Compositor's frame. The refresh period is the shortest interval between
+presentations over the report's frames divided by the repeat count plus one
+(an on-time frame's), or 90 Hz's when that falls outside 60 to 120 Hz.
+Every 600 stereo frames. */
+static struct
+{
+	CFTimeInterval last_presentation;
+	CFTimeInterval shortest;
+	uint64_t gpu_counted;
+	CFTimeInterval intervals[PACING_TIMED_FRAMES];
+	double cpu_times[PACING_TIMED_FRAMES], gpu_times[PACING_TIMED_FRAMES];
+	unsigned long timed, frames;
+} stereo_pacing;
+
+static void stereo_pacing_count(void)
+{
+	CFTimeInterval now = CACurrentMediaTime();
+	CFTimeInterval waited = host_theater_take_waited();
+	CFTimeInterval presentation = host_theater_presentation_time();
+	CFTimeInterval interval = 0.0;
+	uint64_t gpu_total = atomic_load(&pacing_gpu_nanoseconds);
+	double cpu = pacing.work_started > 0.0 ? now - pacing.work_started - waited : 0.0;
+	double gpu = (double)(gpu_total - stereo_pacing.gpu_counted) / 1e9;
+
+	stereo_pacing.gpu_counted = gpu_total;
+	if (presentation > 0.0 && stereo_pacing.last_presentation > 0.0)
+		interval = presentation - stereo_pacing.last_presentation;
+	if (presentation > 0.0)
+		stereo_pacing.last_presentation = presentation;
+	/* a quarter second or more is a load or the background, not a frame */
+	if (interval > 0.0 && interval < 0.25 && cpu > 0.0 && stereo_pacing.timed < PACING_TIMED_FRAMES)
+	{
+		if (stereo_pacing.shortest <= 0.0 || interval < stereo_pacing.shortest)
+			stereo_pacing.shortest = interval;
+		stereo_pacing.intervals[stereo_pacing.timed] = interval;
+		stereo_pacing.cpu_times[stereo_pacing.timed] = cpu;
+		stereo_pacing.gpu_times[stereo_pacing.timed] = gpu;
+		stereo_pacing.timed++;
+	}
+	if (++stereo_pacing.frames % 600 == 0 && stereo_pacing.timed)
+	{
+		int repeat = host_theater_frame_repeat();
+		CFTimeInterval period = stereo_pacing.shortest / (double)(repeat + 1);
+		unsigned long shown[6] = { 0 };
+		double cpu_median, cpu_high, gpu_median, gpu_high;
+		unsigned long index;
+
+		if (period < 1.0 / 120.0 || period > 1.0 / 60.0)
+			period = 1.0 / 90.0;
+		for (index = 0; index < stereo_pacing.timed; index++)
+		{
+			long up = lround(stereo_pacing.intervals[index] / period);
+
+			shown[up < 1 ? 1 : up > 5 ? 5 : up]++;
+		}
+		pacing_percentiles(stereo_pacing.cpu_times, stereo_pacing.timed, &cpu_median, &cpu_high);
+		pacing_percentiles(stereo_pacing.gpu_times, stereo_pacing.timed, &gpu_median, &gpu_high);
+		platform_log("stereo: frames shown for 1/2/3/4/5+ refreshes at %.1f Hz: %lu/%lu/%lu/%lu/%lu (repeat count %d); "
+			"frame CPU %.1f ms, GPU %.1f ms (medians; 95th %.1f, %.1f)", 1.0 / period, shown[1], shown[2], shown[3],
+			shown[4], shown[5], repeat, cpu_median, gpu_median, cpu_high, gpu_high);
+		stereo_pacing.timed = 0;
+		stereo_pacing.shortest = 0.0;
+	}
+}
 #endif
 
 static uint32_t gpu_metal_present_stereo(const struct gpu_stereo_present *present)
@@ -3379,6 +3448,7 @@ static uint32_t gpu_metal_present_stereo(const struct gpu_stereo_present *presen
 			if (inset && inset->texture)
 				use_texture(inset);
 			commit(YES);
+			stereo_pacing_count();
 			host_stereo_present(queue, color[0]->texture, color[1]->texture, depth[0]->texture, depth[1]->texture,
 				hud ? hud->texture : nil, present->hud_aspect, present->hud_ui, present->reticle, present->hud_tangents,
 				inset ? inset->texture : nil, present->near_meters, present->far_meters,
@@ -3414,6 +3484,7 @@ static uint32_t gpu_metal_present_stereo(const struct gpu_stereo_present *presen
 			if (hud && hud->texture)
 				use_texture(hud);
 			commit(YES);
+			stereo_pacing_count();
 			host_theater_present_eyes(queue, color[0]->texture, color[1]->texture, hud ? hud->texture : nil,
 				present->fade, stereo_cut_brightness(1, present));
 			frames++;

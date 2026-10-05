@@ -38,6 +38,13 @@ size_t host_theater_drawable_count(void);
 anchored) and whether ARKit placed it; either pointer may be NULL */
 cp_drawable_t host_theater_drawable(size_t index, simd_float4x4 *origin_from_device, int *anchored);
 void host_theater_frame_end(void);
+/* for stereo's frame times (gpu_metal.m): the seconds the game spent
+waiting for the Compositor's frames (host_theater_frame_begin) since the
+last call; the open frame's presentation time (CACurrentMediaTime's clock,
+0 without one); and the layer's frame repeat count */
+double host_theater_take_waited(void);
+double host_theater_presentation_time(void);
+int host_theater_frame_repeat(void);
 /* the screen's pose in the room for the open frame's drawable (placed first
 if a present hasn't placed it yet) and its half width and half height in
 meters, at the picture's shape (host_theater_picture_size); the screen's

@@ -58,6 +58,12 @@ static cp_drawable_t open_drawables[MAXIMUM_DRAWABLES];
 static simd_float4x4 open_origin_from_device[MAXIMUM_DRAWABLES];
 static BOOL open_anchored[MAXIMUM_DRAWABLES];
 
+/* for stereo's frame times (gpu_metal.m): the seconds spent waiting for
+the Compositor's frames since the last take, and the open frame's
+presentation time */
+static CFTimeInterval frame_waited;
+static CFTimeInterval open_presentation;
+
 /* forgets the open frame without ending it: the space closed under it */
 static void frame_drop(void)
 {
@@ -445,6 +451,7 @@ int host_theater_frame_begin(int fresh)
 		if (!host_theater_active() || cp_layer_renderer_get_state(layer_renderer) != cp_layer_renderer_state_running)
 			return 0;
 		/* waits for the Compositor's next frame, which paces the game to it */
+		CFTimeInterval wait_began = CACurrentMediaTime();
 		cp_frame_t frame = cp_layer_renderer_query_next_frame(layer_renderer);
 		if (!frame)
 			return 0;
@@ -455,6 +462,8 @@ int host_theater_frame_begin(int fresh)
 		cp_frame_end_update(frame);
 		/* the poses are freshest at the optimal input time */
 		cp_time_wait_until(cp_frame_timing_get_optimal_input_time(timing));
+		frame_waited += CACurrentMediaTime() - wait_began;
+		open_presentation = cp_time_to_cf_time_interval(cp_frame_timing_get_presentation_time(timing));
 		cp_frame_start_submission(frame);
 		cp_drawable_array_t drawables = cp_frame_query_drawables(frame);
 		size_t count = cp_drawable_array_get_count(drawables);
@@ -519,6 +528,24 @@ cp_drawable_t host_theater_drawable(size_t index, simd_float4x4 *origin_from_dev
 	if (anchored)
 		*anchored = open_anchored[index];
 	return open_drawables[index];
+}
+
+double host_theater_take_waited(void)
+{
+	CFTimeInterval waited = frame_waited;
+
+	frame_waited = 0.0;
+	return waited;
+}
+
+double host_theater_presentation_time(void)
+{
+	return open_frame ? open_presentation : 0.0;
+}
+
+int host_theater_frame_repeat(void)
+{
+	return layer_renderer ? cp_layer_renderer_get_minimum_frame_repeat_count(layer_renderer) : 0;
 }
 
 void host_theater_frame_end(void)
