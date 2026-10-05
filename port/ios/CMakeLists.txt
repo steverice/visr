@@ -69,7 +69,8 @@ add_custom_command(
     COMMENT "Embedding the texture upscale policy")
 add_executable(HaloCE MACOSX_BUNDLE
     ${HALO_PLATFORM_SOURCES} "${ROOT}/port/runtime/xiso.c"
-    "${ROOT}/port/runtime/texture_policy.c" "${CMAKE_CURRENT_BINARY_DIR}/texture_policy_table.c"
+    "${ROOT}/port/runtime/texture_policy.c" "${ROOT}/port/runtime/texture_cache.c"
+    "${CMAKE_CURRENT_BINARY_DIR}/texture_policy_table.c"
     host/host_main.m host/host_memory.c host/host_loader.c host/host_syscall.c host/guest_call.S
     host/host_thread.c host/host_sdl.c host/host_gpu.c host/host_gpu_dispatch.c host/gpu_metal.m host/host_frame_counter.m host/host_lifecycle.m
     "${ROOT}/port/linux/src/posix_files.c" host/posix_net.c
