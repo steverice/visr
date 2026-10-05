@@ -121,6 +121,12 @@ run(BUILD/'stereo-screen-probe')
 run('xcrun', 'clang', '-O2', '-fsanitize=address,undefined', '-Iport/linux/src',
     'port/ios/tests/stereo_lod_probe.c', '-o', BUILD/'stereo-lod-probe')
 run(BUILD/'stereo-lod-probe')
+# and render.c still hands the culling frustum to it, after building it
+render_source = (ROOT / 'source/render/render.c').read_text()
+cull_build = render_source.find('render_camera_build_frustum(&cull_camera')
+if cull_build < 0 or render_source.find('halo_stereo_lod_projection(&cull_camera, &cull_frustum)', cull_build) < 0:
+    raise SystemExit('render.c: render_player_frame_stereo must call halo_stereo_lod_projection(&cull_camera, '
+                     '&cull_frustum) after render_camera_build_frustum(&cull_camera, ...)')
 # the head-tracked presenter's shaders, compiled from its source string at run time: compile
 # them here, as the visionOS build's preprocessor leaves them (host_stereo_vignette.h's mask is
 # macro text, which a math macro could otherwise rewrite unseen)

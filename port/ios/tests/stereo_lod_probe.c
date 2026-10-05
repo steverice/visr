@@ -10,7 +10,7 @@ headset's logged tangents (left 1.76, right 1.01, up 1.0, down 1.05, the
 eyes mirrored), and mono's from the same camera with unbounded bounds, then
 asks halo_stereo_lod_projection to fix the first: a 0.1-unit sphere 10 units
 ahead must then measure mono's pixels times halo_stereo_lod_scale (within
-0.1%), and nothing else in the frustum (its planes above all) may change.
+0.1%), sprites' scale (.i) must stay mono's, and nothing else in the frustum (its planes above all) may change.
 And display.lod_scale itself: 1.0 by default, clamped to 0.5 to 4, in HEAD
 mode and the side-by-side view only.
 
@@ -296,12 +296,28 @@ static void pixel_scale(const char *name, const struct halo_stereo_eye eyes[2])
 		(double)mono_frustum.projection_world_to_screen.j, (double)cull_frustum.projection_world_to_screen.i,
 		(double)mono_frustum.projection_world_to_screen.i);
 	check(fabsf(fixed - expected) <= expected * 0.001f, "the sphere measures mono's pixels times display.lod_scale");
-	check(fabsf(cull_frustum.projection_world_to_screen.i -
-		mono_frustum.projection_world_to_screen.i * halo_stereo_lod_scale()) <=
-		mono_frustum.projection_world_to_screen.i * 0.001f, "sprites' scale (i) is mono's times display.lod_scale");
+	check(fabsf(cull_frustum.projection_world_to_screen.j -
+		mono_frustum.projection_world_to_screen.j * halo_stereo_lod_scale()) <=
+		mono_frustum.projection_world_to_screen.j * 0.001f, "model detail's scale (j) is mono's times display.lod_scale");
+	check(fabsf(cull_frustum.projection_world_to_screen.i - mono_frustum.projection_world_to_screen.i) <=
+		mono_frustum.projection_world_to_screen.i * 0.001f, "sprites' scale (i) is mono's, whatever display.lod_scale");
 	/* nothing but the pixel scale changes: the planes cull as before */
 	cull_frustum.projection_world_to_screen = before.projection_world_to_screen;
 	check(!memcmp(&cull_frustum, &before, sizeof(before)), "the planes and the rest of the frustum are unchanged");
+}
+
+/* count more stereo frames through the helper, quietly */
+static void repeat_projection(const struct halo_stereo_eye eyes[2], int frames)
+{
+	struct render_camera camera, cull_camera;
+	struct render_frustum cull_frustum;
+
+	game_camera(&camera);
+	while (frames-- > 0)
+	{
+		culling_frustum(&camera, eyes, &cull_camera, &cull_frustum);
+		halo_stereo_lod_projection(&cull_camera, &cull_frustum);
+	}
 }
 
 static void lod_scale_setting_check(void)
@@ -346,7 +362,16 @@ int main(void)
 	pixel_scale("the side-by-side view's eyes", side_by_side);
 	restart("head", 2.0);
 	pixel_scale("the headset's eyes", headset);
-	check(lod_logs == 1, "and only once");
+	check(lod_logs == 1, "a changed scale isn't logged again within 600 frames");
+	restart("head", 0.5);
+	pixel_scale("the headset's eyes", headset);
+	/* the first line came on stereo frame 1, and this is frame 4 */
+	repeat_projection(headset, 596);
+	check(lod_logs == 1, "nor 599 frames after the last line");
+	repeat_projection(headset, 1);
+	check(lod_logs == 2, "but is 600 frames after it");
+	repeat_projection(headset, 1200);
+	check(lod_logs == 2, "and an unchanged scale never is");
 	if (failures)
 	{
 		printf("stereo lod probe: %d failed\n", failures);
