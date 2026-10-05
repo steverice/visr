@@ -118,6 +118,10 @@ static const struct config_setting config_settings[] =
 		"the screen's resolution each way, as the Xbox had them, or \"full\"\n"
 		"(sharper reflections; up to a whole second render of the scene's pixels\n"
 		"where a mirror shows)." },
+	{ "display.model_lod", _config_string, "\"max\"", "HALO_MODEL_LOD", _environment_value, _platform_all,
+		"Which geometry detail level models draw: \"max\" (default) always the\n"
+		"highest they have, so nothing pops as it moves; \"auto\" picks by on-screen\n"
+		"size, as the Xbox did. The console's rasterizer_debug_model_lod overrides it." },
 	{ "display.compressed_textures", _config_boolean, "true", "HALO_COMPRESSED_TEXTURES", _environment_value, _platform_ios,
 		"With the Metal renderer, keep the game's DXT textures compressed on the GPU\n"
 		"where it supports them (BC1-3): a quarter to an eighth of the memory, and\n"

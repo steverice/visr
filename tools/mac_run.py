@@ -91,6 +91,7 @@ DEFAULTS = {
     "display.upscaled_textures": "true",
     "display.immersive": "false",
     "display.mirror_resolution": '"half"',
+    "display.model_lod": '"auto"',  # the recorded references were made with the original LOD
     "display.theater_width": "60.0",
     "display.theater_distance": "4.0",
     "display.theater_environment": '"passthrough"',

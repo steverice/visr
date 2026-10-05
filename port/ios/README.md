@@ -184,6 +184,11 @@ frame_pacing = "off"         # Experimental: "tick" or "refresh" hold every fram
 direct_camera = true         # On foot, the view follows the stick every frame
 ```
 
+Models always draw their highest geometry detail level, so nothing pops in as
+it moves. For the Xbox's choice by on-screen size, set `model_lod = "auto"` in
+`[display]` (default `"max"`); the console's `rasterizer_debug_model_lod`
+overrides either.
+
 `render_scale = 0.67` with `upscaler = "metalfx"` draws under half the
 pixels and scales them back up with sharper edges than a plain stretch; the
 HUD is scaled with the rest. The simulators have no MetalFX.

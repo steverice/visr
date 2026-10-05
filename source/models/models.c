@@ -868,6 +868,22 @@ static void model_data_error(
 	return;
 }
 
+/* port: port_config.c's */
+const char *config_string(const char *name);
+
+/* port: display.model_lod is "max" (the default) rather than "auto". Only the answer is
+kept: it is read once, after the config has loaded. */
+static boolean model_lod_is_max(void)
+{
+	static int is_max = -1;
+
+	if (is_max<0)
+	{
+		is_max = strcmp(config_string("display.model_lod"), "auto")!=0;
+	}
+	return is_max;
+}
+
 void render_model(
 	long model_index,
 	real level_of_detail_pixels,
@@ -899,7 +915,9 @@ void render_model(
 		rasterizer_model_cortana_hack = FALSE;
 	}
 
-	if (level_of_detail_pixels>=model->detail_cutoff_pixels[0] || TEST_FLAG(flags, _render_model_shadow_bit))
+	/* port: with display.model_lod = "max" a model smaller than the lowest cutoff
+	is drawn too, not dropped, so nothing pops out at a distance either */
+	if (level_of_detail_pixels>=model->detail_cutoff_pixels[0] || TEST_FLAG(flags, _render_model_shadow_bit) || model_lod_is_max())
 	{
 		real_matrix4x3 relative_node_matrices[MAXIMUM_NODES_PER_MODEL];
 		struct rasterizer_model_begin_parameters model_parameters;
@@ -959,6 +977,39 @@ void render_model(
 			level_of_detail_pixels<model->detail_cutoff_pixels[geometry_detail_level_index])
 		{
 			geometry_detail_level_index--;
+		}
+		/* port: display.model_lod = "max" (the default) always draws the highest
+		detail level the chosen permutations have, so a model never pops between
+		levels as it moves; "auto" keeps the screen-size choice above. The
+		console's rasterizer_debug_model_lod still overrides either. */
+		{
+			if (model_lod_is_max())
+			{
+				short region_index;
+				short highest_level_index = 0;
+
+				for (region_index = 0; region_index<model->regions.count; region_index++)
+				{
+					struct model_region *region = TAG_BLOCK_GET_ELEMENT(&model->regions, region_index, struct model_region);
+					char permutation_index = region_permutation_indices[region_index];
+
+					if (permutation_index!=NONE)
+					{
+						struct model_region_permutation *permutation = TAG_BLOCK_GET_ELEMENT(
+							&region->permutations,
+							permutation_index,
+							struct model_region_permutation);
+						short level_index = NUMBER_OF_DETAIL_LEVELS_PER_MODEL-1;
+
+						while (level_index>highest_level_index && permutation->geometry_indices[level_index]==NONE)
+						{
+							level_index--;
+						}
+						highest_level_index = MAX(highest_level_index, level_index);
+					}
+				}
+				geometry_detail_level_index = highest_level_index;
+			}
 		}
 		if (rasterizer_debug_options.debug_model_lod!=NONE)
 		{
