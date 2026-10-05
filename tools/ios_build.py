@@ -36,7 +36,7 @@ def main():
     target = parser.add_mutually_exclusive_group()
     target.add_argument('--tvos', action='store_true', help='build for Apple TV instead of iPhone/iPad')
     target.add_argument('--visionos', action='store_true', help='build for Apple Vision Pro (Metal only) instead of iPhone/iPad')
-    target.add_argument('--mac', action='store_true', help='build the iOS host for Mac Catalyst, ad hoc signed (spike)')
+    target.add_argument('--mac', action='store_true', help='build the iOS host for Mac Catalyst, ad hoc signed (the native Mac runner)')
     parser.add_argument('--render-height', type=int,
                         help='tvOS and visionOS: internal render height in pixels, 0 for native '
                              '(default 1080 on tvOS; native on visionOS, which follows the window\'s size)')
@@ -122,6 +122,26 @@ def main():
         if args.unsigned: command.append('--require-unsigned')
         run(*command)
 
+# the iPhoneOS SDK's OpenGLES.tbd (Xcode 27), and what the Catalyst link stub says in its place
+IOS_STUB_TARGETS = '[ arm64e-ios, arm64e.x1-ios ]'
+CATALYST_STUB_TARGETS = '[ arm64-maccatalyst, arm64e-maccatalyst ]'
+IOS_INSTALL_NAME = "'/System/Library/Frameworks/OpenGLES.framework/OpenGLES'"
+CATALYST_INSTALL_NAME = "'/System/iOSSupport/System/Library/Frameworks/OpenGLES.framework/OpenGLES'"
+
+
+def maccatalyst_stub(text):
+    """the iPhoneOS SDK's OpenGLES.tbd rewritten to link against the Mac's macCatalyst
+    OpenGLES.framework. A stub in any other form (a later Xcode's) is refused, not half rewritten."""
+    if IOS_STUB_TARGETS not in text:
+        raise ValueError(f'OpenGLES.tbd does not list {IOS_STUB_TARGETS}')
+    if IOS_INSTALL_NAME not in text:
+        raise ValueError(f'OpenGLES.tbd does not have the install name {IOS_INSTALL_NAME}')
+    stub = text.replace(IOS_STUB_TARGETS, CATALYST_STUB_TARGETS).replace(IOS_INSTALL_NAME, CATALYST_INSTALL_NAME)
+    if '-ios' in stub:
+        raise ValueError('OpenGLES.tbd names an iOS target the rewrite does not cover')
+    return stub
+
+
 def opengles_framework(folder):
     """An OpenGLES.framework for the Catalyst build: the iPhoneOS SDK's headers, which the
     MacOSX SDK does not ship, and a link stub for the Mac's macCatalyst OpenGLES.framework
@@ -132,12 +152,10 @@ def opengles_framework(folder):
     framework=folder/'OpenGLES.framework'
     shutil.rmtree(framework,ignore_errors=True)
     shutil.copytree(source/'Headers',framework/'Headers')
-    stub=(source/'OpenGLES.tbd').read_text()
-    targets='[ arm64e-ios, arm64e.x1-ios ]'
-    if targets not in stub:sys.exit(f'unexpected targets in {source}/OpenGLES.tbd')
-    stub=stub.replace(targets,'[ arm64-maccatalyst, arm64e-maccatalyst ]')
-    stub=stub.replace("'/System/Library/Frameworks/OpenGLES.framework/OpenGLES'",
-                      "'/System/iOSSupport/System/Library/Frameworks/OpenGLES.framework/OpenGLES'")
+    try:
+        stub=maccatalyst_stub((source/'OpenGLES.tbd').read_text())
+    except ValueError as error:
+        sys.exit(f'{source}/OpenGLES.tbd: {error}')
     (framework/'OpenGLES.tbd').write_text(stub)
     return folder
 
