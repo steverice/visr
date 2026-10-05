@@ -88,10 +88,12 @@ makeConfiguration asks for foveation (it also needs the layer's support) */
 int host_theater_foveation(void);
 /* display.render_quality, clamped to 0..1 */
 float host_theater_render_quality(void);
-/* for Theater.swift: what makeConfiguration chose: foveation on or off, the
-layout (a cp_layer_renderer_layout), the maximum render quality, the
-device's default quality and the layouts offered with foveation, by name */
-void host_theater_set_foveation(int enabled, int layout, float quality, float default_quality, const char *offered);
+/* for Theater.swift: what makeConfiguration chose: foveation on or off,
+whether the layer supports it, the layout (a cp_layer_renderer_layout), the
+maximum render quality, the device's default quality and the layouts
+offered with foveation, by name */
+void host_theater_set_foveation(int enabled, int supported, int layout, float quality, float default_quality,
+	const char *offered);
 /* for Theater.swift: the layer's nearest allowed near plane, in meters */
 void host_theater_set_minimum_near(float meters);
 /* that, or 0.1 m (the simulator's reading) before the layer reports one */

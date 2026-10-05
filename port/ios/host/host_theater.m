@@ -126,7 +126,8 @@ static const char *layout_name(int layout)
 		layout == cp_layer_renderer_layout_layered ? "layered" : "unknown";
 }
 
-void host_theater_set_foveation(int enabled, int layout, float quality, float default_quality, const char *offered)
+void host_theater_set_foveation(int enabled, int supported, int layout, float quality, float default_quality,
+	const char *offered)
 {
 	foveation_enabled = enabled;
 	foveation_quality = quality;
@@ -137,9 +138,12 @@ void host_theater_set_foveation(int enabled, int layout, float quality, float de
 		host_logf(HOST_LOG_INFO, "theater: foveation on at a maximum render quality of %.2f (the device's default "
 			"%.2f), layout %s (offered with foveation: %s)", quality, default_quality, foveation_layout,
 			foveation_offered);
-	else
+	else if (!supported)
 		host_logf(HOST_LOG_INFO, "theater: display.foveation is on, but the layer doesn't support foveation; "
 			"it stays off");
+	else
+		host_logf(HOST_LOG_INFO, "theater: display.foveation is on, but foveation offers neither the dedicated "
+			"nor the layered layout (offered: %s); it stays off", foveation_offered);
 }
 
 int host_theater_foveation_state(float *quality, float *runtime, float *default_quality, const char **layout,

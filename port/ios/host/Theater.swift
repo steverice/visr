@@ -27,16 +27,20 @@ struct TheaterLayerConfiguration: CompositorLayerConfiguration {
                 }
             }.joined(separator: ", ")
             let quality = host_theater_render_quality()
-            if capabilities.supportsFoveation {
+            // dedicated, one single-layer map per view, as this port renders
+            // one pass per view; not Apple's sample's layered (one amplified
+            // pass), whose map's layer is picked by
+            // [[render_target_layer_index]], 0 in every pass here. Layered
+            // only if dedicated isn't offered; neither leaves foveation off
+            let layout: LayerRenderer.Layout? = offered.contains(.dedicated) ? .dedicated :
+                offered.contains(.layered) ? .layered : nil
+            if capabilities.supportsFoveation, let layout {
                 configuration.isFoveationEnabled = true
                 configuration.maxRenderQuality = LayerRenderer.RenderQuality(rawValue: quality)
-                // dedicated, one single-layer map per view, as this port renders
-                // one pass per view; not Apple's sample's layered (one amplified
-                // pass), whose map's layer is picked by
-                // [[render_target_layer_index]], 0 in every pass here
-                configuration.layout = offered.contains(.dedicated) ? .dedicated : .layered
+                configuration.layout = layout
             }
             host_theater_set_foveation(configuration.isFoveationEnabled ? 1 : 0,
+                                       capabilities.supportsFoveation ? 1 : 0,
                                        Int32(configuration.layout.rawValue), quality,
                                        capabilities.defaultRenderQuality.rawValue, names.isEmpty ? "none" : names)
         }
