@@ -41,6 +41,18 @@ size_t host_theater_drawable_count(void);
 anchored) and whether ARKit placed it; either pointer may be NULL */
 cp_drawable_t host_theater_drawable(size_t index, simd_float4x4 *origin_from_device, int *anchored);
 void host_theater_frame_end(void);
+/* the rate map a drawable's view renders through (map is the view's texture
+map), or nil when the layer isn't foveated: the map at the view's texture
+index (dedicated: one per view), else the first (layered: one map whose
+layers are the views) */
+id<MTLRasterizationRateMap> host_theater_view_rate_map(cp_drawable_t drawable, cp_view_texture_map_t map);
+/* the layer's foveation as Theater.swift configured it: 0 when off; else 1,
+with the configured render quality, the layer's runtime quality (which
+eases toward the configured one), the device's default quality, the
+layout's name and the layouts offered with foveation (any pointer may be
+NULL) */
+int host_theater_foveation_state(float *quality, float *runtime, float *default_quality, const char **layout,
+	const char **offered);
 /* for stereo's frame times (gpu_metal.m): the seconds the game spent
 waiting for the Compositor's frames (host_theater_frame_begin) since the
 last call; the open frame's presentation time (CACurrentMediaTime's clock,
@@ -71,6 +83,15 @@ void host_theater_test_reopen(void);
 int host_theater_active(void);
 /* for Theater.swift: the space's layer renderer, unretained */
 void host_theater_attach(void *renderer);
+/* display.foveation with display.stereo = "head": whether Theater.swift's
+makeConfiguration asks for foveation (it also needs the layer's support) */
+int host_theater_foveation(void);
+/* display.render_quality, clamped to 0..1 */
+float host_theater_render_quality(void);
+/* for Theater.swift: what makeConfiguration chose: foveation on or off, the
+layout (a cp_layer_renderer_layout), the maximum render quality, the
+device's default quality and the layouts offered with foveation, by name */
+void host_theater_set_foveation(int enabled, int layout, float quality, float default_quality, const char *offered);
 /* for Theater.swift: the layer's nearest allowed near plane, in meters */
 void host_theater_set_minimum_near(float meters);
 /* that, or 0.1 m (the simulator's reading) before the layer reports one */

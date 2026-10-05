@@ -187,6 +187,248 @@ static simd_float4 view_tangents(cp_drawable_t drawable, size_t view_index) API_
 		(1.0f - projection.columns[2].y) / projection.columns[1].y,
 	};
 }
+
+/* Foveation's measurement (display.foveation): the Compositor's rate maps,
+logged once per opening and whenever they change, since Apple publishes no
+screen size, physical size or density for any quality. Per map: its
+layers, screen size, granularity and each layer's physical size; per view:
+its map and layer, the logical viewport, the drawable's texture size, its
+tangents and the density at its center (the screen's pixels per degree
+there, times the map's physical-to-screen ratio). Then, per map and layer,
+five fixed screen points mapped to physical ones (whether a layered map's
+layers are identical), and per view the rate along its center row and
+column, sampled every FOVEATION_PROFILE_STEP pixels, with how far from the
+center, in degrees, the rate stays at least FOVEATION_SHARP_RATE */
+#define FOVEATION_PROFILE_STEP 64.0f
+#define FOVEATION_SHARP_RATE 0.9f
+/* while the runtime quality eases toward the configured one, a short line
+at most this often, in frames; after the limit (a quality the layer never
+quite reaches), the full log regardless */
+#define FOVEATION_EASING_FRAMES 45
+#define FOVEATION_EASING_LIMIT 450
+
+static NSString *foveation_logged_key;
+static unsigned long foveation_frames, foveation_easing_logged;
+
+/* a screen point through a map's layer */
+static MTLCoordinate2D foveation_physical(id<MTLRasterizationRateMap> map, NSUInteger layer, float x, float y)
+{
+	return [map mapScreenToPhysicalCoordinates:MTLCoordinate2DMake(x, y) forLayer:layer];
+}
+
+static float degrees_from_tangent(float tangent)
+{
+	return atanf(fabsf(tangent)) * 180.0f / (float)M_PI;
+}
+
+/* the rates along a line of a view, from start to end (screen pixels along
+one axis, the other fixed), sampled every FOVEATION_PROFILE_STEP pixels:
+each sample's rate (physical pixels per screen pixel) into rates, with the
+sample's start position; returns the count */
+static int foveation_profile(id<MTLRasterizationRateMap> map, NSUInteger layer, BOOL along_x, float fixed,
+	float start, float end, float *rates, float *positions, int capacity)
+{
+	int count = 0;
+	float position = start;
+
+	while (position < end - 0.5f && count < capacity)
+	{
+		float next = fminf(position + FOVEATION_PROFILE_STEP, end);
+		MTLCoordinate2D a = along_x ? foveation_physical(map, layer, position, fixed) :
+			foveation_physical(map, layer, fixed, position);
+		MTLCoordinate2D b = along_x ? foveation_physical(map, layer, next, fixed) :
+			foveation_physical(map, layer, fixed, next);
+
+		rates[count] = ((along_x ? b.x - a.x : b.y - a.y)) / (next - position);
+		positions[count] = position;
+		count++;
+		position = next;
+	}
+	return count;
+}
+
+/* from the sample holding center outward (direction -1 or 1), the farthest
+screen position at which the rate is still at least the threshold; center
+when the center's own sample is below it */
+static float foveation_sharp_edge(const float *rates, const float *positions, int count, float end, float center,
+	int direction, float threshold)
+{
+	int index = 0;
+	float edge = center;
+
+	while (index + 1 < count && positions[index + 1] <= center)
+		index++;
+	for (; index >= 0 && index < count && rates[index] >= threshold; index += direction)
+		edge = direction > 0 ? (index + 1 < count ? positions[index + 1] : end) : positions[index];
+	return edge;
+}
+
+static void foveation_measure(cp_drawable_t drawable) API_AVAILABLE(visionos(26.0))
+{
+	float quality, runtime, default_quality;
+	const char *layout, *offered;
+	size_t map_count = cp_drawable_get_rasterization_rate_map_count(drawable);
+	size_t views = cp_drawable_get_view_count(drawable);
+	NSMutableString *key, *line;
+
+	if (!host_theater_foveation_state(&quality, &runtime, &default_quality, &layout, &offered))
+		return;
+	foveation_frames++;
+	/* easing toward the configured quality: a short line now and then */
+	if (fabsf(runtime - quality) > 0.005f && foveation_frames < FOVEATION_EASING_LIMIT)
+	{
+		if (foveation_easing_logged == 0 || foveation_frames - foveation_easing_logged >= FOVEATION_EASING_FRAMES)
+		{
+			id<MTLRasterizationRateMap> first = map_count ? cp_drawable_get_rasterization_rate_map(drawable, 0) : nil;
+			MTLSize physical = first ? [first physicalSizeForLayer:0] : (MTLSize){ 0, 0, 0 };
+
+			host_logf(HOST_LOG_INFO, "stereo: foveation easing: runtime quality %.3f toward %.3f, map 0's physical "
+				"layer 0 %lux%lu", runtime, quality, (unsigned long)physical.width, (unsigned long)physical.height);
+			foveation_easing_logged = foveation_frames;
+		}
+		return;
+	}
+	key = [NSMutableString stringWithFormat:@"%.2f %.2f %zu %zu", quality, runtime, map_count, views];
+	line = [NSMutableString stringWithFormat:@"stereo: foveation at quality %.3f (runtime %.3f, default %.3f), "
+		"layout %s (offered %s): %zu map%s for %zu view%s", quality, runtime, default_quality, layout, offered, map_count,
+		map_count == 1 ? "" : "s", views, views == 1 ? "" : "s"];
+	for (size_t index = 0; index < map_count; index++)
+	{
+		id<MTLRasterizationRateMap> map = cp_drawable_get_rasterization_rate_map(drawable, index);
+		MTLSize screen = map.screenSize, granularity = map.physicalGranularity;
+
+		[line appendFormat:@"; map %zu: %lu layer%s, screen %lux%lu, granularity %lux%lu", index,
+			(unsigned long)map.layerCount, map.layerCount == 1 ? "" : "s", (unsigned long)screen.width,
+			(unsigned long)screen.height, (unsigned long)granularity.width, (unsigned long)granularity.height];
+		[key appendFormat:@" %lux%lu", (unsigned long)screen.width, (unsigned long)screen.height];
+		for (NSUInteger layer = 0; layer < map.layerCount; layer++)
+		{
+			MTLSize physical = [map physicalSizeForLayer:layer];
+
+			[line appendFormat:@", physical layer %lu %lux%lu", (unsigned long)layer, (unsigned long)physical.width,
+				(unsigned long)physical.height];
+			[key appendFormat:@" %lux%lu", (unsigned long)physical.width, (unsigned long)physical.height];
+		}
+	}
+	for (size_t view_index = 0; view_index < views; view_index++)
+	{
+		cp_view_texture_map_t texture_map = cp_view_get_view_texture_map(cp_drawable_get_view(drawable, view_index));
+		size_t texture = cp_view_texture_map_get_texture_index(texture_map);
+		MTLViewport viewport = cp_view_texture_map_get_viewport(texture_map);
+		id<MTLTexture> color = cp_drawable_get_color_texture(drawable, texture);
+		id<MTLRasterizationRateMap> map = host_theater_view_rate_map(drawable, texture_map);
+		size_t slice = cp_view_texture_map_get_slice_index(texture_map);
+		NSUInteger layer = map && slice < map.layerCount ? slice : 0;
+		simd_float4 t = view_tangents(drawable, view_index);
+		float center_x = (float)viewport.originX + (float)viewport.width * t.x / (t.x + t.y);
+		float center_y = (float)viewport.originY + (float)viewport.height * t.z / (t.z + t.w);
+		float ratio_x = 1.0f, ratio_y = 1.0f;
+
+		if (map)
+		{
+			MTLCoordinate2D a = foveation_physical(map, layer, center_x - 4.0f, center_y);
+			MTLCoordinate2D b = foveation_physical(map, layer, center_x + 4.0f, center_y);
+			MTLCoordinate2D c = foveation_physical(map, layer, center_x, center_y - 4.0f);
+			MTLCoordinate2D d = foveation_physical(map, layer, center_x, center_y + 4.0f);
+
+			ratio_x = (b.x - a.x) / 8.0f;
+			ratio_y = (d.y - c.y) / 8.0f;
+		}
+		[line appendFormat:@"; view %zu (map %zu layer %lu, texture %zu slice %zu): viewport (%.0f %.0f %.0f %.0f), "
+			"drawable texture %lux%lu, view tangents %.3f %.3f %.3f %.3f, center %.1f px/degree (rate %.3f by %.3f; "
+			"%.1f px/degree across the view)", view_index,
+			map ? (texture < map_count ? texture : 0) : 0, (unsigned long)layer, texture, slice, viewport.originX,
+			viewport.originY, viewport.width, viewport.height, (unsigned long)color.width, (unsigned long)color.height,
+			t.x, t.y, t.z, t.w, (float)viewport.width / (t.x + t.y) * (float)M_PI / 180.0f * ratio_x, ratio_x,
+			ratio_y, (float)viewport.width / (degrees_from_tangent(t.x) + degrees_from_tangent(t.y))];
+		[key appendFormat:@" (%.0f %.0f %.0f %.0f) %lux%lu", viewport.originX, viewport.originY, viewport.width,
+			viewport.height, (unsigned long)color.width, (unsigned long)color.height];
+	}
+	if (foveation_logged_key && [key isEqualToString:foveation_logged_key])
+		return;
+	foveation_logged_key = key;
+	host_logf(HOST_LOG_INFO, "%s", line.UTF8String);
+	/* the same five screen points through every layer of every map */
+	for (size_t index = 0; index < map_count; index++)
+	{
+		id<MTLRasterizationRateMap> map = cp_drawable_get_rasterization_rate_map(drawable, index);
+		float width = (float)map.screenSize.width, height = (float)map.screenSize.height;
+		const float points[5][2] = { { 0.5f, 0.5f }, { 0.1f, 0.1f }, { 0.9f, 0.1f }, { 0.1f, 0.9f }, { 0.9f, 0.9f } };
+
+		for (NSUInteger layer = 0; layer < map.layerCount; layer++)
+		{
+			NSMutableString *text = [NSMutableString stringWithFormat:@"stereo: foveation map %zu layer %lu: points "
+				"(screen -> physical)", index, (unsigned long)layer];
+
+			for (int point = 0; point < 5; point++)
+			{
+				float x = points[point][0] * width, y = points[point][1] * height;
+				MTLCoordinate2D physical = foveation_physical(map, layer, x, y);
+
+				[text appendFormat:@"%s (%.1f %.1f) -> (%.2f %.2f)", point ? "," : "", x, y, physical.x, physical.y];
+			}
+			host_logf(HOST_LOG_INFO, "%s", text.UTF8String);
+		}
+	}
+	/* each view's profile through its map and layer */
+	for (size_t view_index = 0; view_index < views; view_index++)
+	{
+		enum { CAPACITY = 128 };
+		cp_view_texture_map_t texture_map = cp_view_get_view_texture_map(cp_drawable_get_view(drawable, view_index));
+		id<MTLRasterizationRateMap> map = host_theater_view_rate_map(drawable, texture_map);
+		size_t texture = cp_view_texture_map_get_texture_index(texture_map);
+		size_t slice = cp_view_texture_map_get_slice_index(texture_map);
+		MTLViewport viewport = cp_view_texture_map_get_viewport(texture_map);
+		simd_float4 t = view_tangents(drawable, view_index);
+		float x0 = (float)viewport.originX, y0 = (float)viewport.originY;
+		float x1 = x0 + (float)viewport.width, y1 = y0 + (float)viewport.height;
+		float center_x = x0 + (float)viewport.width * t.x / (t.x + t.y);
+		float center_y = y0 + (float)viewport.height * t.z / (t.z + t.w);
+		float row[CAPACITY], row_at[CAPACITY], column[CAPACITY], column_at[CAPACITY];
+		int row_count, column_count;
+		NSUInteger layer;
+		NSMutableString *text;
+
+		if (!map)
+			continue;
+		layer = slice < map.layerCount ? slice : 0;
+		row_count = foveation_profile(map, layer, YES, center_y, x0, x1, row, row_at, CAPACITY);
+		column_count = foveation_profile(map, layer, NO, center_x, y0, y1, column, column_at, CAPACITY);
+		text = [NSMutableString stringWithFormat:@"stereo: foveation map %zu layer %lu profile (view %zu, every %.0f "
+			"px from the view's edge; the center at %.0f %.0f): row", texture < map_count ? texture : 0,
+			(unsigned long)layer, view_index, FOVEATION_PROFILE_STEP, center_x, center_y];
+		for (int index = 0; index < row_count; index++)
+			[text appendFormat:@" %.2f", row[index]];
+		[text appendString:@"; column"];
+		for (int index = 0; index < column_count; index++)
+			[text appendFormat:@" %.2f", column[index]];
+		/* the sharp region: how far out the rate stays at least the threshold,
+		in degrees from the view's tangents; and against the center's own rate,
+		for a quality whose center is below it */
+		for (int relative = 0; relative < 2; relative++)
+		{
+			float center_rate = row_count ? row[0] : 1.0f;
+
+			for (int index = 0; index < row_count; index++)
+				if (row_at[index] <= center_x)
+					center_rate = row[index];
+			float threshold = relative ? FOVEATION_SHARP_RATE * center_rate : FOVEATION_SHARP_RATE;
+			float left = foveation_sharp_edge(row, row_at, row_count, x1, center_x, -1, threshold);
+			float right = foveation_sharp_edge(row, row_at, row_count, x1, center_x, 1, threshold);
+			float up = foveation_sharp_edge(column, column_at, column_count, y1, center_y, -1, threshold);
+			float down = foveation_sharp_edge(column, column_at, column_count, y1, center_y, 1, threshold);
+			float left_degrees = degrees_from_tangent((center_x - left) / (float)viewport.width * (t.x + t.y));
+			float right_degrees = degrees_from_tangent((right - center_x) / (float)viewport.width * (t.x + t.y));
+			float up_degrees = degrees_from_tangent((center_y - up) / (float)viewport.height * (t.z + t.w));
+			float down_degrees = degrees_from_tangent((down - center_y) / (float)viewport.height * (t.z + t.w));
+
+			[text appendFormat:@"; sharp (rate at least %.2f%s): left %.1f right %.1f up %.1f down %.1f degrees, "
+				"radius %.1f", threshold, relative ? ", 0.9 of the center's" : "", left_degrees, right_degrees,
+				up_degrees, down_degrees, fminf(fminf(left_degrees, right_degrees), fminf(up_degrees, down_degrees))];
+		}
+		host_logf(HOST_LOG_INFO, "%s", text.UTF8String);
+	}
+}
 #endif
 
 struct eye_uniforms
@@ -410,6 +652,7 @@ static void stereo_frame(struct halo_stereo_frame *frame) API_AVAILABLE(visionos
 	views = cp_drawable_get_view_count(drawable);
 	if (views == 0)
 		return;
+	foveation_measure(drawable);
 	/* the simulator has one view: both eyes are it */
 	for (eye = 0; eye < 2; eye++)
 	{
@@ -508,6 +751,9 @@ void host_stereo_space_opened(void *layer_renderer)
 	ui_shown = -1;
 	inset_logged = 0;
 	depth_reported = 0;
+	foveation_logged_key = nil;
+	foveation_frames = 0;
+	foveation_easing_logged = 0;
 #else
 	(void)layer_renderer;
 #endif

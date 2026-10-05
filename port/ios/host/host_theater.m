@@ -19,6 +19,7 @@ to read the eyes' poses and presents it full view. */
 #include "host_stereo.h"
 #include "host.h"
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 /* about what the Vision Pro's displays resolve at the center of the view: a
@@ -88,6 +89,110 @@ float host_theater_minimum_near(void)
 void host_theater_log_c(const char *message)
 {
 	host_logf(HOST_LOG_INFO, "%s", message);
+}
+
+/* Foveation (display.foveation, HEAD mode): what Theater.swift's
+makeConfiguration chose for the layer, and the quality the layer renderer
+is set to when it attaches */
+static int foveation_enabled;
+static float foveation_quality, foveation_default;
+static char foveation_layout[16], foveation_offered[64];
+/* the layer's state as last logged with foveation on: a layer that never
+reaches running is the sign the configuration was rejected */
+static int logged_state = -1;
+
+int host_theater_foveation(void)
+{
+	char value[16];
+
+	host_config_string("display.foveation", "false", value, sizeof(value));
+	if (strcmp(value, "true"))
+		return 0;
+	host_config_string("display.stereo", "off", value, sizeof(value));
+	return !strcmp(value, "head");
+}
+
+float host_theater_render_quality(void)
+{
+	double quality = host_config_real("display.render_quality", 0.6);
+
+	return !(quality > 0.0) ? 0.0f : quality > 1.0 ? 1.0f : (float)quality;
+}
+
+static const char *layout_name(int layout)
+{
+	return layout == cp_layer_renderer_layout_dedicated ? "dedicated" :
+		layout == cp_layer_renderer_layout_shared ? "shared" :
+		layout == cp_layer_renderer_layout_layered ? "layered" : "unknown";
+}
+
+void host_theater_set_foveation(int enabled, int layout, float quality, float default_quality, const char *offered)
+{
+	foveation_enabled = enabled;
+	foveation_quality = quality;
+	foveation_default = default_quality;
+	snprintf(foveation_layout, sizeof(foveation_layout), "%s", layout_name(layout));
+	snprintf(foveation_offered, sizeof(foveation_offered), "%s", offered ? offered : "");
+	if (enabled)
+		host_logf(HOST_LOG_INFO, "theater: foveation on at a maximum render quality of %.2f (the device's default "
+			"%.2f), layout %s (offered with foveation: %s)", quality, default_quality, foveation_layout,
+			foveation_offered);
+	else
+		host_logf(HOST_LOG_INFO, "theater: display.foveation is on, but the layer doesn't support foveation; "
+			"it stays off");
+}
+
+int host_theater_foveation_state(float *quality, float *runtime, float *default_quality, const char **layout,
+	const char **offered)
+{
+	if (!foveation_enabled || !layer_renderer)
+		return 0;
+	if (quality)
+		*quality = foveation_quality;
+	if (runtime)
+	{
+		*runtime = -1.0f;
+		if (@available(visionOS 26.0, *))
+			*runtime = cp_layer_renderer_get_render_quality(layer_renderer);
+	}
+	if (default_quality)
+		*default_quality = foveation_default;
+	if (layout)
+		*layout = foveation_layout;
+	if (offered)
+		*offered = foveation_offered;
+	return 1;
+}
+
+static const char *state_name(cp_layer_renderer_state state)
+{
+	return state == cp_layer_renderer_state_paused ? "paused" :
+		state == cp_layer_renderer_state_running ? "running" :
+		state == cp_layer_renderer_state_invalidated ? "invalidated" : "unknown";
+}
+
+/* with foveation on, each change of the layer's state */
+static void foveation_state_logged(void)
+{
+	if (!foveation_enabled || !layer_renderer)
+		return;
+	cp_layer_renderer_state state = cp_layer_renderer_get_state(layer_renderer);
+	if ((int)state == logged_state)
+		return;
+	logged_state = (int)state;
+	if (@available(visionOS 26.0, *))
+		host_logf(HOST_LOG_INFO, "theater: with foveation, the layer is %s (render quality %.3f)", state_name(state),
+			cp_layer_renderer_get_render_quality(layer_renderer));
+}
+
+id<MTLRasterizationRateMap> host_theater_view_rate_map(cp_drawable_t drawable, cp_view_texture_map_t map)
+{
+	size_t count = cp_drawable_get_rasterization_rate_map_count(drawable);
+	size_t texture = cp_view_texture_map_get_texture_index(map);
+
+	if (count == 0)
+		return nil;
+	return cp_drawable_get_rasterization_rate_map(drawable, texture < count ? texture : 0);
 }
 
 /* hides or shows the game's window (SDL's), which would stand in front of
@@ -224,6 +329,22 @@ void host_theater_attach(void *renderer)
 	screen_presents = 0;
 	host_stereo_space_opened(renderer);
 	host_logf(HOST_LOG_INFO, "theater: the immersive space is open");
+	/* the render quality, after the configuration's maximum: the runtime
+	value eases toward it. A quality the configuration rejected can't be
+	caught in makeConfiguration; it shows as a layer that never reaches
+	running (foveation_state_logged) */
+	logged_state = -1;
+	if (foveation_enabled)
+	{
+		if (@available(visionOS 26.0, *))
+		{
+			cp_layer_renderer_set_render_quality(layer_renderer, foveation_quality);
+			host_logf(HOST_LOG_INFO, "theater: the render quality is set to %.3f; the layer is %s, its render "
+				"quality %.3f for now", foveation_quality, state_name(cp_layer_renderer_get_state(layer_renderer)),
+				cp_layer_renderer_get_render_quality(layer_renderer));
+		}
+		foveation_state_logged();
+	}
 	if (!session && ar_world_tracking_provider_is_supported())
 	{
 		ar_world_tracking_configuration_t configuration = ar_world_tracking_configuration_create();
@@ -448,6 +569,7 @@ int host_theater_frame_begin(int fresh)
 				host_logf(HOST_LOG_INFO, "theater: a frame began and never presented; it's ended unpresented");
 			host_theater_frame_end();
 		}
+		foveation_state_logged();
 		if (!host_theater_active() || cp_layer_renderer_get_state(layer_renderer) != cp_layer_renderer_state_running)
 			return 0;
 		/* waits for the Compositor's next frame, which paces the game to it */

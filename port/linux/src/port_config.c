@@ -152,6 +152,16 @@ static const struct config_setting config_settings[] =
 		"display refreshes each frame stays up, 0 to 3: 0 draws a frame every\n"
 		"refresh (90 a second), 1 every other (45 a second) for when 90 costs too\n"
 		"much. Set when the immersive space opens." },
+	{ "display.foveation", _config_boolean, "false", "HALO_FOVEATION", _environment_value, _platform_ios,
+		"Apple Vision Pro, display.stereo = \"head\": render through the\n"
+		"Compositor's foveation, sharper at the middle of each view than at its\n"
+		"edges, at display.render_quality. Off, for now: the picture isn't right\n"
+		"with it yet. Set when the immersive space opens." },
+	{ "display.render_quality", _config_real, "0.6", "HALO_RENDER_QUALITY", _environment_value, _platform_ios,
+		"With display.foveation: the Compositor's render quality, 0 to 1 (the\n"
+		"headset's lowest to its highest): how many pixels the middle of each view\n"
+		"gets. Higher is sharper and costs more frame time and memory. In place of\n"
+		"display.render_scale for the eyes. Set when the immersive space opens." },
 	{ "display.first_person_body", _config_boolean, "true", "HALO_FIRST_PERSON_BODY", _environment_set_is_true, _platform_ios,
 		"With display.stereo = \"head\": draw the Master Chief's legs below the\n"
 		"view (no torso, head or third-person arms), so looking down shows your\n"
@@ -533,6 +543,17 @@ static const struct config_setting config_settings[] =
 	{ "debug.screen_lean", _config_real, "0.0", "HALO_SCREEN_LEAN", _environment_value, _platform_ios,
 		"With debug.side_by_side_screen: a fixed lean of the head, in meters to the\n"
 		"right (up to 0.25), as if you leaned in front of the screen." },
+	{ "debug.foveation_eye_passes", _config_boolean, "true", "HALO_FOVEATION_EYE_PASSES", _environment_value,
+		_platform_ios,
+		"With display.foveation: false renders the game's eyes unfoveated at the\n"
+		"foveated view's full size, and only the last step that fills each view\n"
+		"goes through the Compositor's rate map (composite-only foveation, the\n"
+		"reference the full path is compared against)." },
+	{ "debug.rate_map_test", _config_boolean, "false", "HALO_RATE_MAP_TEST", _environment_value, _platform_ios,
+		"Metal renderer on the Mac: give the screen-sized targets a synthetic,\n"
+		"lopsided rate map (full rate in the middle third, half outside it, denser\n"
+		"at the top than the bottom), resolved at present, to check foveated\n"
+		"rendering off the headset. Not in this build yet." },
 	{ "debug.update_answer", _config_string, "\"\"", "HALO_UPDATE_ANSWER", _environment_value, _platform_desktop,
 		"The answer to the new version question, for automated tests: \"yes\",\n"
 		"\"no\" or \"never\" (do not ask again, confirmed); empty asks." },
