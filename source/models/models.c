@@ -229,6 +229,12 @@ typedef char verify_rasterizer_model_begin_parameters_size[sizeof(struct rasteri
 
 #include "rasterizer/rasterizer_models.h"
 
+/* port: under display.model_lod = "max", the highest cutoff a level may have
+and still be drawn whatever the model's size (render_model). The largest in
+the game's maps is the sniper rifle's 500; a10's cryotube's 3000 is the only
+one above it */
+#define MODEL_LOD_MAX_CUTOFF_PIXELS 1000.0f
+
 /* port: port_config.c's */
 const char *config_string(const char *name);
 
@@ -1014,13 +1020,25 @@ void render_model(
 		/* port: display.model_lod = "max" (the default) always draws the highest
 		detail level the chosen permutations have, so a model never pops between
 		levels as it moves; "auto" keeps the screen-size choice above. The
-		console's rasterizer_debug_model_lod still overrides either. */
+		console's rasterizer_debug_model_lod still overrides either. A level
+		whose cutoff is over MODEL_LOD_MAX_CUTOFF_PIXELS stays the screen-size
+		choice's: on the Xbox's 480 lines a model is that wide only with the
+		camera inside its bounding sphere. a10's cryotube is the one such model
+		(3000 pixels): its top level adds a Chief's armor with no head,
+		probably for the player's view from inside the tube, so drawn from
+		outside it puts a headless Chief in the tube */
 		{
 			if (model_lod_is_max())
 			{
 				short region_index;
 				short highest_level_index = 0;
+				short top_level_index = NUMBER_OF_DETAIL_LEVELS_PER_MODEL-1;
 
+				while (top_level_index>0 &&
+					model->detail_cutoff_pixels[top_level_index]>MODEL_LOD_MAX_CUTOFF_PIXELS)
+				{
+					top_level_index--;
+				}
 				for (region_index = 0; region_index<model->regions.count; region_index++)
 				{
 					struct model_region *region = TAG_BLOCK_GET_ELEMENT(&model->regions, region_index, struct model_region);
@@ -1032,7 +1050,7 @@ void render_model(
 							&region->permutations,
 							permutation_index,
 							struct model_region_permutation);
-						short level_index = NUMBER_OF_DETAIL_LEVELS_PER_MODEL-1;
+						short level_index = top_level_index;
 
 						while (level_index>highest_level_index && permutation->geometry_indices[level_index]==NONE)
 						{
@@ -1041,7 +1059,7 @@ void render_model(
 						highest_level_index = MAX(highest_level_index, level_index);
 					}
 				}
-				geometry_detail_level_index = highest_level_index;
+				geometry_detail_level_index = MAX(geometry_detail_level_index, highest_level_index);
 			}
 		}
 		if (rasterizer_debug_options.debug_model_lod!=NONE)
