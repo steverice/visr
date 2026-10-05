@@ -744,6 +744,8 @@ static void render_player_frame_stereo(
 	draws here, once, as a flat picture for both eyes (as render_window
 	draws it in mono: in place of the HUD) */
 	halo_stereo_layer(HALO_STEREO_LAYER_HUD);
+	/* port: each HUD group's rectangle starts empty (halo_stereo.h) */
+	halo_hud_group_frame_begin();
 	/* port: the HUD pass's projection (render_camera_build_frustum without
 	bounds: symmetric, the camera's vertical field of view and the
 	viewport's shape), for the presenter's catch-all quad */
@@ -763,7 +765,34 @@ static void render_player_frame_stereo(
 		/* (while zoomed, the crosshairs and the zoomed view's elements draw
 		into the inset: halo_stereo_inset_overlay) */
 		interface_draw_hud();
+		/* port: the flash over the HUD layer, and over each HUD group's
+		target and the reticle's layer that drew this frame, as mono's is
+		over the one HUD; it covers the whole layer, so it doesn't count
+		toward a group's rectangle (halo_stereo.h) */
+		halo_hud_group_measure(FALSE);
 		rasterizer_screen_flash();
+		if (halo_stereo_hud_split())
+		{
+			int group;
+
+			for (group = 0; group < HALO_HUD_GROUP_COUNT; group++)
+			{
+				float rectangle[4];
+
+				if (!halo_hud_group_rectangle(group, rectangle))
+					continue;
+				halo_hud_group_begin(group);
+				rasterizer_screen_flash();
+				halo_hud_group_end();
+			}
+		}
+		if (halo_stereo_reticle_drawn())
+		{
+			halo_stereo_layer(HALO_STEREO_LAYER_RETICLE);
+			rasterizer_screen_flash();
+			halo_stereo_layer(HALO_STEREO_LAYER_HUD);
+		}
+		halo_hud_group_measure(TRUE);
 		/* the inset's flash, over its crosshairs as mono's is over the HUD */
 		if (inset)
 		{

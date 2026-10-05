@@ -25,8 +25,69 @@ enum
 	HALO_STEREO_LAYER_MONO = -1,
 	HALO_STEREO_LAYER_HUD = 2,
 	/* the zoom's inset (halo_stereo_inset_begin) */
-	HALO_STEREO_LAYER_INSET = 3
+	HALO_STEREO_LAYER_INSET = 3,
+	/* the crosshairs (halo_stereo_reticle_overlay): the presenter's
+	head-locked reticle quad shows this layer whole */
+	HALO_STEREO_LAYER_RETICLE = 4,
+	/* d3d8_device.c's key for a HUD group's own target: this plus the group
+	(enum halo_hud_group). The game's layer stays HALO_STEREO_LAYER_HUD; the
+	device keys the HUD layer's color target by the current group, and the
+	HUD layer's own target is the catch-all's (HALO_HUD_GROUP_NONE) */
+	HALO_STEREO_LAYER_HUD_GROUP = 8
 };
+
+/* The HUD split by the function that draws each element (the stereo spec's
+"The reticle split, by draw"; port/linux/game/hud_group.c). The HUD's
+drawing functions open a span for their group (hud_weapon.c, hud_unit.c,
+hud_messaging.c); in a stereo frame's HUD layer, d3d8_device.c draws each
+group into a target of its own and adds each draw's screen extent to its
+group's rectangle, which only sizes and places the group's quad
+(gpu_stereo_present). A draw in no span takes the group of the corner
+hud_calculate_point last placed an element from (halo_hud_group_corner),
+else HALO_HUD_GROUP_NONE: the catch-all, the HUD layer itself. What the HUD
+projects onto the world (nav points, whose distance numbers CE places from
+the top-left corner, damage indicators, players' markers and names) is in
+an explicit HALO_HUD_GROUP_NONE span (hud.c), so no corner claims it. The
+weapon group holds the grenades, which CE draws in the same top-left
+corner. */
+enum halo_hud_group
+{
+	HALO_HUD_GROUP_NONE = -1,
+	HALO_HUD_GROUP_WEAPON,             /* render_weapon_hud, render_grenade_hud */
+	HALO_HUD_GROUP_UNIT,               /* hud_render_unit_interface, but for its motion sensor */
+	HALO_HUD_GROUP_TRACKER,            /* the motion sensor */
+	HALO_HUD_GROUP_PROMPT,             /* help text, objectives and state messages (pickup prompts) */
+	HALO_HUD_GROUP_MESSAGES,           /* the message list (pickups, checkpoints) */
+	HALO_HUD_GROUP_COUNT
+};
+/* spans nest: the innermost wins */
+void halo_hud_group_begin(int group);
+void halo_hud_group_end(void);
+/* hud_calculate_point, with the element's corner (_hud_anchor_*): outside
+every span, the draws that follow take the corner's group (top left the
+weapon's, top right the unit's, bottom left the tracker's) until the next
+span begins or ends, the next element's corner or the next frame; bottom
+right and the center are the catch-all's */
+void halo_hud_group_corner(short corner);
+/* the group a HUD-layer draw goes to now */
+int halo_hud_group_current(void);
+/* d3d8_device.c, per HUD-layer draw: its screen extent in layout lines (the
+target's units: x across the layout's width, y down 480 lines), added to the
+current group's rectangle (HALO_HUD_GROUP_NONE's too). With measuring off,
+nothing is added (render.c's screen flash, which covers the whole layer) */
+void halo_hud_group_extent(float x0, float y0, float x1, float y1);
+/* the same for the group whose target the draw went to, which d3d8_device.c
+names: while the HUD isn't split (halo_stereo_hud_split: the film, SCREEN
+gameplay) every draw goes to the HUD layer, the catch-all's, whatever
+span it's in */
+void halo_hud_group_extent_in(int group, float x0, float y0, float x1, float y1);
+void halo_hud_group_measure(int on);
+/* render.c, as its HUD pass begins: every group's rectangle empty again */
+void halo_hud_group_frame_begin(void);
+/* a group's rectangle this frame (HALO_HUD_GROUP_NONE included): x0, y0,
+x1, y1 in layout lines; returns 0 and an empty rectangle (all zero) if
+nothing drew */
+int halo_hud_group_rectangle(int group, float rectangle[4]);
 
 struct halo_stereo_eye
 {
@@ -49,7 +110,7 @@ struct halo_stereo_frame
 
 void halo_stereo_frame_begin(void);                    /* latches this frame's state */
 const struct halo_stereo_frame *halo_stereo_frame(void);
-/* -1 mono, 0/1 an eye, 2 the HUD, 3 the zoom's inset. The HUD layer holds premultiplied color
+/* -1 mono, 0/1 an eye, 2 the HUD, 3 the zoom's inset, 4 the reticle. The HUD layer (and the reticle's and each HUD group's target) holds premultiplied color
 and, in alpha, how much of the picture still shows under it (d3d8_device.c,
 hud_layer_blend): the presenters put it over each eye as rgb + eye * alpha */
 void halo_stereo_layer(int layer);
@@ -128,6 +189,20 @@ elements (the scope's angle ticks and range numbers): with on, in the HUD
 layer of a frame with the inset, they draw into the inset instead; off puts
 the HUD layer back */
 void halo_stereo_inset_overlay(int on);
+/* 1 while this frame's HUD is split into the reticle's layer and the HUD
+groups' targets: a stereo frame of the full view (HEAD mode, or the
+side-by-side view, which stands for it on the Mac), not the film or SCREEN
+gameplay, where the HUD goes on the screen whole */
+int halo_stereo_hud_split(void);
+/* hud_weapon.c, around crosshairs_draw: with on, in the HUD layer, the
+crosshairs draw into the reticle's layer (HALO_STEREO_LAYER_RETICLE) while
+the HUD is split, or in a frame with the inset into the inset, as
+halo_stereo_inset_overlay; off puts the HUD layer back. Nothing else draws
+into the reticle's layer */
+void halo_stereo_reticle_overlay(int on);
+/* 1 once a crosshair drew into the reticle's layer this frame (render.c
+flashes it as it does the HUD layer) */
+int halo_stereo_reticle_drawn(void);
 /* the inset's camera, from the game's camera before the head turned it
 (render.c): on foot it turns with the head as the eyes' cameras do
 (halo_stereo_head_orient), since the look is the head's; in a

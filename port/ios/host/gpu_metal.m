@@ -3466,15 +3466,30 @@ static uint32_t gpu_metal_present_stereo(const struct gpu_stereo_present *presen
 				use_texture(color[eye]);
 				use_texture(depth[eye]);
 			}
-			if (hud && hud->texture)
-				use_texture(hud);
+			/* the HUD layer, the crosshairs' layer and the HUD groups'
+			targets (host_stereo_hud.h) */
+			MetalTexture *hud_records[HOST_STEREO_HUD_LAYER_COUNT] = { hud };
+			__unsafe_unretained id<MTLTexture> hud_layers[HOST_STEREO_HUD_LAYER_COUNT] = { nil };
+			int layer;
+
+			hud_records[HOST_STEREO_HUD_LAYER_RETICLE] = present->reticle_layer ?
+				texture_record(present->reticle_layer) : nil;
+			for (layer = 0; layer < HALO_HUD_GROUP_COUNT; layer++)
+				hud_records[HOST_STEREO_HUD_LAYER_GROUP + layer] = present->hud_group[layer] ?
+					texture_record(present->hud_group[layer]) : nil;
+			for (layer = 0; layer < HOST_STEREO_HUD_LAYER_COUNT; layer++)
+				if (hud_records[layer] && hud_records[layer]->texture)
+				{
+					use_texture(hud_records[layer]);
+					hud_layers[layer] = hud_records[layer]->texture;
+				}
 			if (inset && inset->texture)
 				use_texture(inset);
 			commit(YES);
 			stereo_pacing_count();
 			host_stereo_present(queue, color[0]->texture, color[1]->texture, depth[0]->texture, depth[1]->texture,
-				hud ? hud->texture : nil, present->hud_aspect, present->hud_ui, present->reticle, present->hud_tangents,
-				inset ? inset->texture : nil, present->near_meters, present->far_meters,
+				hud_layers, present->hud_group_extent, present->hud_aspect, present->hud_ui, present->reticle,
+				present->hud_tangents, inset ? inset->texture : nil, present->near_meters, present->far_meters,
 				stereo_cut_brightness(HOST_STEREO_VIEW_FULL, present->cut_covered), present->vignette);
 			frames++;
 			pacing.work_started = CACurrentMediaTime();

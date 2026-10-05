@@ -131,11 +131,10 @@ static NSString *const shader_source =
 	"	return out;\n"
 	"}\n"
 	/* one of the HUD's quads (host_stereo_hud.h): its texture's rectangle,
-	its center and half extents in its frame, which clip_from_frame takes
-	to the view; for the catch-all, the other quads' rectangles, which it
-	leaves to them */
+	and its center and half extents in its frame, which clip_from_frame
+	takes to the view */
 	"struct hud_uniforms { float4x4 clip_from_frame; float4 source; float4 center; float4 x_axis; float4 y_axis;\n"
-	"	float4 masks[8]; uint decode_srgb; float brightness; uint opaque; uint mask_count; };\n"
+	"	uint decode_srgb; float brightness; uint opaque; };\n"
 	"vertex picture_vertex hud_vertex(uint index [[vertex_id]], constant hud_uniforms &u [[buffer(0)]])\n"
 	"{\n"
 	"	float2 corner = float2(index & 1, index >> 1);\n"
@@ -155,11 +154,8 @@ static NSString *const shader_source =
 	"fragment float4 hud_fragment(picture_vertex in [[stage_in]], texture2d<float> hud [[texture(0)]],\n"
 	"	sampler linear [[sampler(0)]], constant hud_uniforms &u [[buffer(0)]])\n"
 	"{\n"
-	"	for (uint index = 0; index < u.mask_count; index++)\n"
-	"		if (all(in.coordinate >= u.masks[index].xy) && all(in.coordinate < u.masks[index].zw))\n"
-	"			discard_fragment();\n"
 	/* only inside the quad's rectangle: linear filtering at its edge would
-	take a sliver of the neighboring piece */
+	take a sliver of what's beside it */
 	"	float2 half_texel = 0.5 / float2(hud.get_width(), hud.get_height());\n"
 	"	float4 color = hud.sample(linear, clamp(in.coordinate, u.source.xy + half_texel, u.source.zw - half_texel));\n"
 	"	float covered = u.opaque ? 1.0 : 1.0 - color.a;\n"
@@ -210,11 +206,9 @@ struct hud_uniforms
 {
 	simd_float4x4 clip_from_frame;
 	simd_float4 source, center, x_axis, y_axis;
-	simd_float4 masks[8];
 	uint32_t decode_srgb;
 	float brightness;
 	uint32_t opaque;
-	uint32_t mask_count;
 };
 
 static BOOL prepare(id<MTLDevice> device, MTLPixelFormat color, MTLPixelFormat depth)
@@ -581,33 +575,27 @@ static simd_float4x4 device_from_level(simd_float4x4 origin_from_device)
 	return simd_mul(simd_inverse(origin_from_device), origin_from_level);
 }
 
-/* draws the quads over a view: clip_from_device is the view's projection
+/* draws the quads over a view, each from its texture in layers (indexed by
+the quad's layer, HOST_STEREO_HUD_LAYER_*; a quad whose texture is nil or
+past layer_count isn't drawn): clip_from_device is the view's projection
 from the device's frame, level the level frame in the device's */
-static void hud_draw(id<MTLRenderCommandEncoder> encoder, id<MTLTexture> texture,
-	const struct host_stereo_hud_quad *quads, int count, simd_float4x4 clip_from_device,
+static void hud_draw(id<MTLRenderCommandEncoder> encoder, __unsafe_unretained id<MTLTexture> const *layers,
+	int layer_count, const struct host_stereo_hud_quad *quads, int count, simd_float4x4 clip_from_device,
 	simd_float4x4 level, uint32_t decode_srgb, float brightness, uint32_t opaque) API_AVAILABLE(visionos(26.0))
 {
 	int index;
 
 	[encoder setRenderPipelineState:hud_pipeline];
 	[encoder setDepthStencilState:depth_always];
-	[encoder setFragmentTexture:texture atIndex:0];
 	[encoder setFragmentSamplerState:linear_sampler atIndex:0];
 	for (index = 0; index < count; index++)
 	{
 		const struct host_stereo_hud_quad *quad = &quads[index];
 		struct hud_uniforms uniforms;
-		int other;
 
-		if (quad->hidden)
+		if (quad->layer < 0 || quad->layer >= layer_count || !layers[quad->layer])
 			continue;
 		memset(&uniforms, 0, sizeof(uniforms));
-		/* the catch-all leaves every other quad's rectangle to it */
-		if (quad->catch_all)
-			for (other = 0; other < count && uniforms.mask_count < 8; other++)
-				if (!quads[other].catch_all)
-					uniforms.masks[uniforms.mask_count++] = (simd_float4){ quads[other].source[0],
-						quads[other].source[1], quads[other].source[2], quads[other].source[3] };
 		uniforms.clip_from_frame = quad->frame == HOST_STEREO_HUD_LEVEL ? simd_mul(clip_from_device, level) :
 			clip_from_device;
 		uniforms.source = (simd_float4){ quad->source[0], quad->source[1], quad->source[2], quad->source[3] };
@@ -617,6 +605,7 @@ static void hud_draw(id<MTLRenderCommandEncoder> encoder, id<MTLTexture> texture
 		uniforms.decode_srgb = decode_srgb;
 		uniforms.brightness = brightness;
 		uniforms.opaque = opaque || quad->opaque;
+		[encoder setFragmentTexture:layers[quad->layer] atIndex:0];
 		[encoder setVertexBytes:&uniforms length:sizeof(uniforms) atIndex:0];
 		[encoder setFragmentBytes:&uniforms length:sizeof(uniforms) atIndex:0];
 		[encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
@@ -625,10 +614,13 @@ static void hud_draw(id<MTLRenderCommandEncoder> encoder, id<MTLTexture> texture
 #endif
 
 void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLTexture> right,
-	id<MTLTexture> left_depth, id<MTLTexture> right_depth, id<MTLTexture> hud, float hud_aspect,
-	int hud_ui, const float reticle[3], const float hud_tangents[2], id<MTLTexture> inset, float near_meters,
-	float far_meters, float brightness, float vignette)
+	id<MTLTexture> left_depth, id<MTLTexture> right_depth, __unsafe_unretained id<MTLTexture> const *hud_layers,
+	const float (*hud_group_extent)[4], float hud_aspect, int hud_ui, const float reticle[3],
+	const float hud_tangents[2], id<MTLTexture> inset, float near_meters, float far_meters, float brightness,
+	float vignette)
 {
+	id<MTLTexture> hud = hud_layers[HOST_STEREO_HUD_LAYER_HUD];
+
 #if TARGET_OS_VISION
 	if (@available(visionOS 26.0, *))
 	{
@@ -638,7 +630,8 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 		simd_float2 depth_range = stereo_depth_range(near_meters, far_meters, &depth_scale, &depth_floor);
 		float layout_width = (hud_aspect > 0.0f ? hud_aspect : 4.0f / 3.0f) * HOST_STEREO_HUD_LINES;
 		struct host_stereo_hud_quad quads[HOST_STEREO_HUD_MAXIMUM_QUADS];
-		int quad_count = hud ? host_stereo_hud_layout(layout_width, hud_ui, reticle, hud_tangents, quads) : 0;
+		int quad_count = hud ? host_stereo_hud_layout(layout_width, hud_ui, reticle, hud_tangents, hud_group_extent,
+			quads) : 0;
 		/* the zoom's inset, under the HUD, along the reticle's direction; not
 		while a menu holds the HUD layer, whose UI quad it would cover */
 		struct host_stereo_hud_quad inset_quad;
@@ -649,7 +642,7 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 				"%.2f mm a line, the reticle at %.2f, %.1f m ahead, inside %.0f degrees of the center; the rest "
 				"head-locked at the HUD pass's half tangents %.3f by %.3f), depth range %.3f to %.1f m, %zu drawable%s",
 				(unsigned long)left.width, (unsigned long)left.height, hud ? "a HUD" : "no HUD", hud_aspect,
-				1000.0f * host_stereo_hud_band_scale(layout_width), 1000.0f * HOST_STEREO_HUD_METERS_PER_LINE,
+				1000.0f * host_stereo_hud_band_scale(layout_width, hud_group_extent), 1000.0f * HOST_STEREO_HUD_METERS_PER_LINE,
 				HOST_STEREO_HUD_DISTANCE, HUD_SHARP_RADIUS_DEGREES, hud_tangents ? hud_tangents[0] : 0.0f,
 				hud_tangents ? hud_tangents[1] : 0.0f, near_meters, far_meters, count, count == 1 ? "" : "s");
 		/* the zoom's inset as it comes and goes */
@@ -761,9 +754,15 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 					simd_float4x4 clip_from_device = simd_mul(projection, simd_inverse(cp_view_get_transform(view)));
 
 					if (inset_shown)
-						hud_draw(encoder, inset, &inset_quad, 1, clip_from_device, level, decode_srgb, brightness, 1);
+					{
+						__unsafe_unretained id<MTLTexture> inset_layers[1] = { inset };
+
+						hud_draw(encoder, inset_layers, 1, &inset_quad, 1, clip_from_device, level, decode_srgb,
+							brightness, 1);
+					}
 					if (quad_count > 0)
-						hud_draw(encoder, hud, quads, quad_count, clip_from_device, level, decode_srgb, brightness, 0);
+						hud_draw(encoder, hud_layers, HOST_STEREO_HUD_LAYER_COUNT, quads, quad_count, clip_from_device,
+							level, decode_srgb, brightness, 0);
 				}
 				[encoder endEncoding];
 			}
@@ -779,7 +778,8 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 	(void)right;
 	(void)left_depth;
 	(void)right_depth;
-	(void)hud;
+	(void)hud_layers;
+	(void)hud_group_extent;
 	(void)hud_aspect;
 	(void)hud_ui;
 	(void)reticle;
@@ -870,11 +870,19 @@ void host_stereo_present_ui(id<MTLCommandQueue> queue, id<MTLTexture> picture, i
 				[encoder setViewport:cp_view_texture_map_get_viewport(map)];
 				simd_float4x4 clip_from_device = simd_mul(projection, simd_inverse(cp_view_get_transform(view)));
 
-				hud_draw(encoder, picture, &quad, 1, clip_from_device, level, decode_srgb, brightness, 1);
+				{
+					__unsafe_unretained id<MTLTexture> picture_layers[1] = { picture };
+
+					hud_draw(encoder, picture_layers, 1, &quad, 1, clip_from_device, level, decode_srgb, brightness, 1);
+				}
 				/* the menu over it, by its transmittance; the quad's depth is
 				written already */
 				if (hud)
-					hud_draw(encoder, hud, &quad, 1, clip_from_device, level, decode_srgb, brightness, 0);
+				{
+					__unsafe_unretained id<MTLTexture> menu_layers[1] = { hud };
+
+					hud_draw(encoder, menu_layers, 1, &quad, 1, clip_from_device, level, decode_srgb, brightness, 0);
+				}
 				[encoder endEncoding];
 			}
 			cp_drawable_encode_present(drawable, commands);

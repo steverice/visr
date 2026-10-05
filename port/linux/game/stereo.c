@@ -272,6 +272,9 @@ inset's pass runs, which it doesn't while its quad won't show; the last
 state logged (-1: none yet); the HUD's draws routed into it
 (halo_stereo_inset_overlay) */
 static int inset_frame, inset_pass, inset_logged = -1, inset_overlay_on;
+/* the crosshairs routed out of the HUD layer (halo_stereo_reticle_overlay),
+and whether any drew into the reticle's layer this frame */
+static int reticle_overlay_on, reticle_drawn;
 /* the last stereo frame's HUD layer went whole on the UI's quad */
 static int ui_shown_last;
 
@@ -650,6 +653,8 @@ void halo_stereo_frame_begin(void)
 	inset_frame = 0;
 	inset_pass = 0;
 	inset_overlay_on = 0;
+	reticle_overlay_on = 0;
+	reticle_drawn = 0;
 	reticle_set(NULL, NULL, NULL);
 	hud_tangents[0] = hud_tangents[1] = 0.0f;
 	memset(frame_fade, 0, sizeof(frame_fade));
@@ -776,6 +781,12 @@ int halo_stereo_film_letterbox(void)
 int halo_stereo_screen_gameplay(void)
 {
 	return gameplay_frame && stereo_frame.eye_count == 2;
+}
+
+int halo_stereo_hud_split(void)
+{
+	return stereo_frame.eye_count == 2 && (stereo_frame.mode == HALO_STEREO_HEAD ||
+		stereo_frame.mode == HALO_STEREO_SIDE_BY_SIDE) && !halo_stereo_film() && !halo_stereo_screen_gameplay();
 }
 
 int halo_stereo_screen_framing(void)
@@ -984,6 +995,26 @@ void halo_stereo_inset_overlay(int on)
 		stereo_layer = HALO_STEREO_LAYER_HUD;
 		inset_overlay_on = 0;
 	}
+}
+
+void halo_stereo_reticle_overlay(int on)
+{
+	if (on) {
+		if (stereo_layer == HALO_STEREO_LAYER_HUD && (inset_frame || halo_stereo_hud_split())) {
+			stereo_layer = inset_frame ? HALO_STEREO_LAYER_INSET : HALO_STEREO_LAYER_RETICLE;
+			reticle_overlay_on = 1;
+			if (!inset_frame)
+				reticle_drawn = 1;
+		}
+	} else if (reticle_overlay_on) {
+		stereo_layer = HALO_STEREO_LAYER_HUD;
+		reticle_overlay_on = 0;
+	}
+}
+
+int halo_stereo_reticle_drawn(void)
+{
+	return reticle_drawn;
 }
 
 /* whether the head drives the look: HEAD mode with the Compositor's eyes,

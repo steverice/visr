@@ -125,6 +125,27 @@ run(BUILD/'stereo-head-probe')
 run('xcrun', 'clang', '-O2', '-fsanitize=address,undefined', '-Iport/ios/host', '-Iport/linux/src',
     'port/ios/tests/stereo_hud_probe.c', 'port/ios/host/host_stereo_hud.c', '-o', BUILD/'stereo-hud-probe')
 run(BUILD/'stereo-hud-probe')
+# the HUD split by the function that draws each element: nested spans, the catch-all, the corner
+# fallback and each frame's reset (the probe includes port/linux/game/hud_group.c)
+run('xcrun', 'clang', '-O2', '-fsanitize=address,undefined', '-Iport/linux/src',
+    'port/ios/tests/hud_group_probe.c', '-o', BUILD/'hud-group-probe')
+run(BUILD/'hud-group-probe')
+# and the call sites the probe can't see: every crosshair draw goes through the reticle's
+# redirect, and each group's drawing function opens its span
+weapon_source = (ROOT / 'source/interface/hud_weapon.c').read_text()
+if len(re.findall(r'halo_stereo_reticle_overlay\(TRUE\);[^;]*\n\s*crosshairs_draw\(', weapon_source)) != 2 or \
+        len(re.findall(r'\n\t+crosshairs_draw\(', weapon_source)) != 2:
+    raise SystemExit('hud_weapon.c: both crosshairs_draw calls must follow halo_stereo_reticle_overlay(TRUE)')
+for path, spans in (('source/interface/hud_weapon.c', ('HALO_HUD_GROUP_WEAPON',)),
+                    ('source/interface/hud_unit.c', ('HALO_HUD_GROUP_UNIT', 'HALO_HUD_GROUP_TRACKER')),
+                    ('source/interface/hud_messaging.c', ('HALO_HUD_GROUP_PROMPT', 'HALO_HUD_GROUP_MESSAGES')),
+                    ('source/interface/hud.c', ('HALO_HUD_GROUP_NONE',))):
+    text = (ROOT / path).read_text()
+    if any(f'halo_hud_group_begin({span});' not in text for span in spans) or \
+            text.count('halo_hud_group_begin(') != text.count('halo_hud_group_end()'):
+        raise SystemExit(f'{path}: each of {", ".join(spans)} must open a span that ends')
+if 'halo_hud_group_corner(corner);' not in (ROOT / 'source/interface/hud_draw.c').read_text():
+    raise SystemExit("hud_draw.c: hud_calculate_point must hand the element's corner to halo_hud_group_corner")
 # head-tracked stereo's first-person body: the render-only node matrices with the head and the
 # third-person arms collapsed, and when the body draws (the probe includes
 # port/linux/game/first_person_body.c)

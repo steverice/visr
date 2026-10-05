@@ -70,6 +70,9 @@ int main(void)
 	FIELD(gpu_stereo_present, reticle);
 	FIELD(gpu_stereo_present, hud_tangents);
 	FIELD(gpu_stereo_present, inset);
+	FIELD(gpu_stereo_present, reticle_layer);
+	FIELD(gpu_stereo_present, hud_group);
+	FIELD(gpu_stereo_present, hud_group_extent);
 	/* host_stereo_frame's (guest_host.h) */
 	SIZE(halo_stereo_eye);
 	FIELD(halo_stereo_eye, left);

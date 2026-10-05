@@ -1203,8 +1203,11 @@ void _rasterizer_screen_flash(
 	transmittance (d3d8_device.c), so a lighten or darken flash scaled by
 	one minus that (D3DBLEND_INVDESTALPHA, alpha unwritten) gives the HUD
 	exactly mono's flash over it, and nothing where the layer is empty; the
-	other types change the picture alone */
-	boolean stereo_hud_layer = halo_stereo_current_layer() == HALO_STEREO_LAYER_HUD;
+	other types change the picture alone. The same for the reticle's layer
+	and each HUD group's target, which the presenter puts over each eye the
+	same way */
+	boolean stereo_hud_layer = halo_stereo_current_layer() == HALO_STEREO_LAYER_HUD ||
+		halo_stereo_current_layer() == HALO_STEREO_LAYER_RETICLE;
 
 	match_assert(
 		"c:\\halo\\SOURCE\\rasterizer\\xbox\\rasterizer_xbox_screen_effect.c",

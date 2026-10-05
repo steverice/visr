@@ -679,6 +679,11 @@ static struct render_target_entry *render_target_get_layer(const D3DSurface *sur
 		a share of the eyes' height (halo_stereo.h) */
 		if (layer == HALO_STEREO_LAYER_INSET)
 			scale[0] = scale[1] = screen_scale[1] * HALO_STEREO_INSET_HEIGHT_SHARE;
+		/* the reticle's layer and the HUD groups' targets are color only:
+		their draws share the HUD layer's depth and stencil, as mono's HUD
+		shares one */
+		if (depth && (layer == HALO_STEREO_LAYER_RETICLE || layer >= HALO_STEREO_LAYER_HUD_GROUP))
+			layer = HALO_STEREO_LAYER_HUD;
 	}
 	else
 		offscreen_target_scale(width, height, format, scale);
@@ -736,7 +741,28 @@ static struct render_target_entry *render_target_get_layer(const D3DSurface *sur
 
 static struct render_target_entry *render_target_get(const D3DSurface *surface)
 {
-	return render_target_get_layer(surface, render_target_layer());
+	int layer = render_target_layer();
+
+	/* stereo's HUD layer, keyed by the current HUD group (halo_stereo.h):
+	each group draws into a target of its own, so groups that overlap on
+	the screen never share pixels; the catch-all's is the layer's own */
+	if (layer == HALO_STEREO_LAYER_HUD && halo_hud_group_current() != HALO_HUD_GROUP_NONE && halo_stereo_hud_split())
+		layer = HALO_STEREO_LAYER_HUD_GROUP + halo_hud_group_current();
+	return render_target_get_layer(surface, layer);
+}
+
+/* a layer whose target the game never clears, so the device clears it to
+empty before its first draw each frame: the reticle's and the HUD groups' */
+static int layer_cleared_on_first_draw(int layer)
+{
+	return layer == HALO_STEREO_LAYER_RETICLE || layer >= HALO_STEREO_LAYER_HUD_GROUP;
+}
+
+/* a layer the presenter puts over the eyes as rgb + eye * alpha
+(hud_layer_blend): the HUD's, the reticle's and the HUD groups' */
+static int layer_is_hud(int layer)
+{
+	return layer == HALO_STEREO_LAYER_HUD || layer_cleared_on_first_draw(layer);
 }
 
 struct xgpu_render_target *xgpu_render_target_find(unsigned long data)
@@ -760,8 +786,17 @@ static unsigned long render_target_write_serial;
 
 /* the pixels per unit of the bound targets (render_target_get) */
 static float target_scale[2] = { 1.0f, 1.0f };
-/* the bound color target is stereo's HUD layer (draw_targets) */
+/* the bound color target is stereo's HUD layer, the reticle's layer or a
+HUD group's target (draw_targets) */
 static BOOL target_hud_layer;
+/* the bound color target is the HUD layer or a HUD group's target, whose
+draws' extents go to the group's rectangle (halo_hud_group_extent_in); and
+which group's that is (HALO_HUD_GROUP_NONE: the HUD layer's own) */
+static BOOL target_hud_measured;
+static int target_hud_group;
+/* debug.gpu_stats: HUD-layer draws measured on the CPU (immediate mode)
+and those taken as the whole viewport, since the last line */
+static unsigned long hud_draws_measured, hud_draws_unmeasured;
 /* the bound color target is the zoom's inset: the columns of its central
 square, the part the presenter shows (halo_stereo.h), and a margin on
 either side (inset_margin_pixels), in target pixels; width 0 otherwise
@@ -790,12 +825,31 @@ static BOOL draw_targets(gpu_texture *color_texture, gpu_texture *depth_texture)
 		depth = NULL;
 	if (!color && !depth)
 		return FALSE;
+	/* the reticle's and the HUD groups' targets: empty before their first
+	draw of the frame (the HUD layer's own empty, hud_layer_blend: no color,
+	the whole picture showing) */
+	if (color && layer_cleared_on_first_draw(color->layer) && color->last_rendered != device.frame + 1)
+	{
+		struct gpu_clear clear;
+		struct gpu_rect whole = { 0, 0, (int32_t)color->target.gl_width, (int32_t)color->target.gl_height };
+
+		memset(&clear, 0, sizeof(clear));
+		clear.color_target = color->target.texture;
+		clear.flags = GPU_CLEAR_COLOR;
+		clear.channel_mask = GPU_CHANNEL_RED | GPU_CHANNEL_GREEN | GPU_CHANNEL_BLUE | GPU_CHANNEL_ALPHA;
+		clear.color = 0xff000000u;
+		gpu_clear(&clear, &whole, 1);
+	}
 	if (color)
 	{
 		color->last_rendered = device.frame + 1;
 		color->target.written = ++render_target_write_serial;
 	}
-	target_hud_layer = color && color->layer == HALO_STEREO_LAYER_HUD;
+	target_hud_layer = color && layer_is_hud(color->layer);
+	target_hud_measured = color && (color->layer == HALO_STEREO_LAYER_HUD ||
+		color->layer >= HALO_STEREO_LAYER_HUD_GROUP);
+	target_hud_group = color && color->layer >= HALO_STEREO_LAYER_HUD_GROUP ?
+		color->layer - HALO_STEREO_LAYER_HUD_GROUP : HALO_HUD_GROUP_NONE;
 	target_inset_columns[0] = target_inset_columns[1] = 0;
 	if (color && color->layer == HALO_STEREO_LAYER_INSET && color->target.gl_width > color->target.gl_height)
 	{
@@ -3582,12 +3636,60 @@ void WINAPI D3DDevice_SetIndices(D3DIndexBuffer *index_data, UINT base_vertex_in
 	D3D__IndexData = index_data ? (WORD *)index_data->Data : NULL;
 }
 
+/* a draw into stereo's HUD layer or a HUD group's target
+(target_hud_measured): its screen extent, in the targets' units, to the
+rectangle of the group whose target it drew into (halo_hud_group_extent_in). Immediate-mode draws,
+which is how the HUD draws its bitmaps, meters, text and motion sensor, are
+measured exactly: the vertex program runs on the CPU for each vertex's
+screen position (oPos, as the translated shader reads it before undoing
+the screen-space conversion: D3D's pixel centers, half a pixel in, and the
+UI's offset). Any other draw (vertices NULL) is taken as the whole
+viewport, and counted for debug.gpu_stats. Clipped to the viewport */
+static void hud_draw_extent(const float *vertices, unsigned long count)
+{
+	struct vertex_shader_object *program = current_program();
+	float viewport[4] = { (float)device.viewport.X, (float)device.viewport.Y,
+		(float)(device.viewport.X + device.viewport.Width), (float)(device.viewport.Y + device.viewport.Height) };
+	float extent[4] = { viewport[2], viewport[3], viewport[0], viewport[1] };
+	unsigned long floats = XGPU_VERTEX_ATTRIBUTE_COUNT * 4, index;
+
+	if (!vertices || !program || !program->instructions)
+	{
+		hud_draws_unmeasured++;
+		halo_hud_group_extent_in(target_hud_group, viewport[0], viewport[1], viewport[2], viewport[3]);
+		return;
+	}
+	hud_draws_measured++;
+	for (index = 0; index < count; index++)
+	{
+		float position[4], x, y;
+
+		nv2a_vertex_program_position(program->instructions, program->instruction_count,
+			(const float (*)[4])constant_store.c, (const float (*)[4])(vertices + index * floats), position);
+		x = position[0] + 0.5f + (float)UI_OFFSET;
+		y = position[1] + 0.5f;
+		if (!isfinite(x) || !isfinite(y))
+			continue;
+		extent[0] = fminf(extent[0], x);
+		extent[1] = fminf(extent[1], y);
+		extent[2] = fmaxf(extent[2], x);
+		extent[3] = fmaxf(extent[3], y);
+	}
+	extent[0] = fmaxf(extent[0], viewport[0]);
+	extent[1] = fmaxf(extent[1], viewport[1]);
+	extent[2] = fminf(extent[2], viewport[2]);
+	extent[3] = fminf(extent[3], viewport[3]);
+	halo_hud_group_extent_in(target_hud_group, extent[0], extent[1], extent[2], extent[3]);
+}
+
 void WINAPI D3DDevice_DrawVertices(D3DPRIMITIVETYPE primitive_type, UINT start_vertex, UINT vertex_count)
 {
 	struct gpu_draw *draw = &draw_packet;
 
 	if (!vertex_count || !prepare_draw(draw, FALSE))
 		return;
+	if (target_hud_measured)
+		hud_draw_extent(NULL, 0);
 	trace_draw("draw", primitive_type, vertex_count, NULL);
 	setup_streams(draw, start_vertex, vertex_count);
 	if (primitive_type == D3DPT_QUADLIST)
@@ -3617,6 +3719,8 @@ void WINAPI D3DDevice_DrawIndexedVertices(D3DPRIMITIVETYPE primitive_type, UINT 
 
 	if (!vertex_count || !index_data || !prepare_draw(draw, FALSE))
 		return;
+	if (target_hud_measured)
+		hud_draw_extent(NULL, 0);
 	/* quads are drawn as triangles, from indices made for the draw */
 	mirrored = primitive_type != D3DPT_QUADLIST && device_capabilities.base_vertex &&
 		mirror_range((unsigned long)index_data, vertex_count * sizeof(WORD), &draw->index_buffer, &index_offset, &generation);
@@ -3693,6 +3797,8 @@ void WINAPI D3DDevice_End(void)
 	device.immediate_active = FALSE;
 	if (!count || !prepare_draw(draw, TRUE))
 		return;
+	if (target_hud_measured)
+		hud_draw_extent(device.immediate_vertices, count);
 	trace_draw("immediate", type, count, device.immediate_vertices);
 	/* every attribute, as a float4, from stream 0 */
 	draw->streams[0].offset = (uint32_t)stream_upload(device.immediate_vertices, count * stride, &draw->streams[0].buffer);
@@ -4005,6 +4111,123 @@ static void write_depth_screenshot(struct render_target_entry *target, const cha
 	free(pixels);
 }
 
+/* the names of the HUD's groups, for logs and screenshots (halo_stereo.h) */
+static const char *hud_group_name(int group)
+{
+	static const char *const names[HALO_HUD_GROUP_COUNT] = { "weapon", "unit", "tracker", "prompt", "messages" };
+
+	return group >= 0 && group < HALO_HUD_GROUP_COUNT ? names[group] : "none";
+}
+
+/* debug.screenshot_every in a stereo frame: a HUD target's pixels checked
+against the rectangle its draws were measured to (layout lines; NULL: the
+reticle's layer, which has none), logged with the box its drawn pixels
+(any color, or alpha under 1) fill and how many fall outside the
+rectangle, and saved as frameNNNNN-SUFFIX.bmp: the rectangle and a margin,
+or for the reticle the drawn pixels' box and a margin */
+static void hud_target_check(struct render_target_entry *target, const char *name, const float *rectangle,
+	const char *suffix)
+{
+	const char *directory = *config_string("debug.screenshot_directory") ?
+		config_string("debug.screenshot_directory") : NULL;
+	unsigned long width = target->target.gl_width, height = target->target.gl_height, x, y;
+	uint32_t size = (uint32_t)(width * height * 4);
+	unsigned char *pixels = malloc(size);
+	long box[4] = { (long)width, (long)height, -1, -1 }, crop[4];
+	unsigned long outside = 0, drawn = 0;
+	long margin = (long)ceilf(4.0f * target->target.scale[1]);
+	float scale_x = target->target.scale[0], scale_y = target->target.scale[1];
+
+	if (!pixels || !gpu_texture_read(target->target.texture, pixels, size))
+	{
+		free(pixels);
+		return;
+	}
+	for (y = 0; y < height; y++)
+		for (x = 0; x < width; x++)
+		{
+			const unsigned char *pixel = pixels + (y * width + x) * 4;
+
+			if (!pixel[0] && !pixel[1] && !pixel[2] && pixel[3] == 0xff)
+				continue;
+			drawn++;
+			box[0] = (long)x < box[0] ? (long)x : box[0];
+			box[1] = (long)y < box[1] ? (long)y : box[1];
+			box[2] = (long)x > box[2] ? (long)x : box[2];
+			box[3] = (long)y > box[3] ? (long)y : box[3];
+			/* a pixel wholly outside the rectangle (its edges are fractional) */
+			if (rectangle && ((float)(x + 1) <= rectangle[0] * scale_x || (float)x >= rectangle[2] * scale_x ||
+				(float)(y + 1) <= rectangle[1] * scale_y || (float)y >= rectangle[3] * scale_y))
+				outside++;
+		}
+	if (rectangle)
+		platform_log("stereo: frame %lu: HUD group %s: rectangle %.1f, %.1f to %.1f, %.1f lines; its pixels' box "
+			"%.1f, %.1f to %.1f, %.1f lines (%lu pixels drawn, %lu outside the rectangle)", device.frame, name,
+			rectangle[0], rectangle[1], rectangle[2], rectangle[3], drawn ? (float)box[0] / scale_x : 0.0f,
+			drawn ? (float)box[1] / scale_y : 0.0f, drawn ? (float)(box[2] + 1) / scale_x : 0.0f,
+			drawn ? (float)(box[3] + 1) / scale_y : 0.0f, drawn, outside);
+	else
+		platform_log("stereo: frame %lu: the %s layer's pixels' box %.1f, %.1f to %.1f, %.1f lines (%lu pixels drawn)",
+			device.frame, name, drawn ? (float)box[0] / scale_x : 0.0f, drawn ? (float)box[1] / scale_y : 0.0f,
+			drawn ? (float)(box[2] + 1) / scale_x : 0.0f, drawn ? (float)(box[3] + 1) / scale_y : 0.0f, drawn);
+	if (rectangle)
+	{
+		crop[0] = (long)floorf(rectangle[0] * scale_x);
+		crop[1] = (long)floorf(rectangle[1] * scale_y);
+		crop[2] = (long)ceilf(rectangle[2] * scale_x) - 1;
+		crop[3] = (long)ceilf(rectangle[3] * scale_y) - 1;
+	}
+	else
+		memcpy(crop, box, sizeof(crop));
+	crop[0] = crop[0] - margin < 0 ? 0 : crop[0] - margin;
+	crop[1] = crop[1] - margin < 0 ? 0 : crop[1] - margin;
+	crop[2] = crop[2] + margin >= (long)width ? (long)width - 1 : crop[2] + margin;
+	crop[3] = crop[3] + margin >= (long)height ? (long)height - 1 : crop[3] + margin;
+	if (directory && crop[2] >= crop[0] && crop[3] >= crop[1])
+	{
+		unsigned long crop_width = (unsigned long)(crop[2] - crop[0] + 1), crop_height = (unsigned long)(crop[3] - crop[1] + 1);
+		unsigned long image_size = crop_width * crop_height * 4;
+		unsigned char header[54] = { 'B', 'M' };
+		char path[512];
+		FILE *file;
+
+		/* the layer's color over gray where its transmittance shows the
+		picture, so what it covers stands out */
+		for (y = 0; y < height; y++)
+			for (x = 0; x < width; x++)
+			{
+				unsigned char *pixel = pixels + (y * width + x) * 4;
+				int channel;
+
+				for (channel = 0; channel < 3; channel++)
+				{
+					int value = pixel[channel] + (64 * pixel[3]) / 255;
+
+					pixel[channel] = (unsigned char)(value > 255 ? 255 : value);
+				}
+				pixel[3] = 0xff;
+			}
+		snprintf(path, sizeof(path), "%s/frame%05lu%s.bmp", directory, device.frame, suffix);
+		file = fopen(path, "wb");
+		if (file)
+		{
+			*(unsigned int *)(header + 2) = (unsigned int)(54 + image_size);
+			*(unsigned int *)(header + 10) = 54;
+			*(unsigned int *)(header + 14) = 40;
+			*(int *)(header + 18) = (int)crop_width;
+			*(int *)(header + 22) = -(int)crop_height; /* rows from the top, as read */
+			*(unsigned short *)(header + 26) = 1;
+			*(unsigned short *)(header + 28) = 32;
+			*(unsigned int *)(header + 34) = (unsigned int)image_size;
+			fwrite(header, 1, sizeof(header), file);
+			for (y = (unsigned long)crop[1]; y <= (unsigned long)crop[3]; y++)
+				fwrite(pixels + (y * width + (unsigned long)crop[0]) * 4, 1, crop_width * 4, file);
+			fclose(file);
+		}
+	}
+	free(pixels);
+}
+
 /* frees the screen-sized targets of the stereo layers (the eyes and the
 HUD) once stereo has stopped: the immersive space closed, and nothing
 reopened it for a few seconds. Mono's stay. */
@@ -4087,6 +4310,22 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 			stereo_frame ? 0 : HALO_STEREO_LAYER_MONO);
 		struct render_target_entry *hud = stereo_frame ? back_buffer_drawn_this_frame(HALO_STEREO_LAYER_HUD) : NULL;
 		struct render_target_entry *inset = stereo_frame ? back_buffer_drawn_this_frame(HALO_STEREO_LAYER_INSET) : NULL;
+		/* the reticle's layer and each HUD group's target, if drawn this
+		frame (halo_stereo.h) */
+		struct render_target_entry *reticle = stereo_frame ? back_buffer_drawn_this_frame(HALO_STEREO_LAYER_RETICLE) : NULL;
+		struct render_target_entry *hud_groups[HALO_HUD_GROUP_COUNT];
+		float hud_group_rectangles[HALO_HUD_GROUP_COUNT][4];
+		int group;
+
+		for (group = 0; group < HALO_HUD_GROUP_COUNT; group++)
+		{
+			hud_groups[group] = stereo_frame ?
+				back_buffer_drawn_this_frame(HALO_STEREO_LAYER_HUD_GROUP + group) : NULL;
+			/* a group the HUD pass didn't measure (its target drew only a
+			flash, or a later pass's draw) shows nothing */
+			if (!halo_hud_group_rectangle(group, hud_group_rectangles[group]))
+				hud_groups[group] = NULL;
+		}
 
 		if (trace_frame())
 			platform_log("present back buffer %08lx texture %u", (unsigned long)device.back_buffer.Data,
@@ -4107,6 +4346,25 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 				}
 				if (inset)
 					write_screenshot(inset, "-inset");
+				/* the reticle's layer and each HUD group's target, cropped,
+				with their pixels checked against their rectangles */
+				if (reticle)
+					hud_target_check(reticle, "reticle", NULL, "-reticle");
+				for (group = 0; group < HALO_HUD_GROUP_COUNT; group++)
+					if (hud_groups[group])
+					{
+						char suffix[32];
+
+						snprintf(suffix, sizeof(suffix), "-hud-%s", hud_group_name(group));
+						hud_target_check(hud_groups[group], hud_group_name(group), hud_group_rectangles[group], suffix);
+					}
+				if (hud)
+				{
+					float none[4];
+
+					halo_hud_group_rectangle(HALO_HUD_GROUP_NONE, none);
+					hud_target_check(hud, "none", none, "-hud-none");
+				}
 			}
 		}
 		if (stereo_frame)
@@ -4140,6 +4398,43 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 			passed only if that was this frame */
 			if (hud)
 				present.hud = hud->target.texture;
+			/* the crosshairs' layer, and the HUD's groups with their
+			rectangles (halo_stereo.h) */
+			if (reticle)
+				present.reticle_layer = reticle->target.texture;
+			for (group = 0; group < HALO_HUD_GROUP_COUNT; group++)
+				if (hud_groups[group])
+				{
+					present.hud_group[group] = hud_groups[group]->target.texture;
+					memcpy(present.hud_group_extent[group], hud_group_rectangles[group],
+						sizeof(present.hud_group_extent[group]));
+				}
+			/* debug.gpu_stats: each group's rectangle, once a second of game
+			time (30 frames) */
+			if (debug_settings.statistics && device.frame % 30 == 0)
+			{
+				char line[512];
+				int length = 0;
+
+				for (group = HALO_HUD_GROUP_NONE; group < HALO_HUD_GROUP_COUNT; group++)
+				{
+					float rectangle[4];
+
+					if (halo_hud_group_rectangle(group, rectangle))
+						length += snprintf(line + length, sizeof(line) - (size_t)length, "%s%s %.1f,%.1f-%.1f,%.1f",
+							length ? "; " : "", hud_group_name(group), rectangle[0], rectangle[1], rectangle[2],
+							rectangle[3]);
+					else
+						length += snprintf(line + length, sizeof(line) - (size_t)length, "%s%s empty",
+							length ? "; " : "", hud_group_name(group));
+					if (length >= (int)sizeof(line))
+						length = (int)sizeof(line) - 1;
+				}
+				platform_log("stereo: frame %lu: HUD groups (lines): %s; reticle layer %s; %lu HUD draws measured, "
+					"%lu taken as the viewport", device.frame, line, reticle ? "drawn" : "empty", hud_draws_measured,
+					hud_draws_unmeasured);
+				hud_draws_measured = hud_draws_unmeasured = 0;
+			}
 			/* the zoom's inset, only if its pass ran this frame (the HUD's
 			crosshairs still go to its layer while the pass waits under a
 			menu, halo_stereo_inset_begin) */

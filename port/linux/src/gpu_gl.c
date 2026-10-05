@@ -2045,31 +2045,49 @@ static uint32_t gpu_gl_present_stereo(const struct gpu_stereo_present *present)
 		glBindSampler(0, 0);
 		glBindVertexArray(streams.vertex_array);
 	}
-	/* nothing drew the HUD this frame: there is no picture to composite */
-	if (present->hud && overlay_prepare())
+	/* the HUD over each half: the crosshairs' layer, each HUD group's
+	target and the HUD layer itself (the catch-all), each laid out as the
+	whole HUD, so the debug view shows the HUD as mono lays it out; a layer
+	nothing drew this frame is 0 */
 	{
-		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, default_framebuffer());
-		glDisable(GL_DEPTH_TEST);
-		glDisable(GL_CULL_FACE);
-		glDisable(GL_STENCIL_TEST);
-		glEnable(GL_BLEND);
-		/* premultiplied color over the picture by the layer's alpha, the
-		picture's transmittance (d3d8_device.c, hud_layer_blend) */
-		glBlendFuncSeparate(GL_ONE, GL_SRC_ALPHA, GL_ZERO, GL_ONE);
-		glUseProgram(overlay.program);
-		glUniform4f(overlay.source, 0.0f, 0.0f, 1.0f, 1.0f);
-		glBindVertexArray(overlay.vertex_array);
-		glActiveTexture(GL_TEXTURE0);
-		glBindTexture(GL_TEXTURE_2D, present->hud);
-		glBindSampler(0, overlay.sampler);
-		for (eye = 0; eye < 2; eye++)
+		gpu_texture layers[HALO_HUD_GROUP_COUNT + 2];
+		int layer_count = 0, layer;
+
+		if (present->reticle_layer)
+			layers[layer_count++] = present->reticle_layer;
+		for (layer = 0; layer < HALO_HUD_GROUP_COUNT; layer++)
+			if (present->hud_group[layer])
+				layers[layer_count++] = present->hud_group[layer];
+		if (present->hud)
+			layers[layer_count++] = present->hud;
+		if (layer_count > 0 && overlay_prepare())
 		{
-			glViewport(boxes[eye][0], boxes[eye][1], boxes[eye][2], boxes[eye][3]);
-			glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+			glBindFramebuffer(GL_DRAW_FRAMEBUFFER, default_framebuffer());
+			glDisable(GL_DEPTH_TEST);
+			glDisable(GL_CULL_FACE);
+			glDisable(GL_STENCIL_TEST);
+			glEnable(GL_BLEND);
+			/* premultiplied color over the picture by the layer's alpha, the
+			picture's transmittance (d3d8_device.c, hud_layer_blend) */
+			glBlendFuncSeparate(GL_ONE, GL_SRC_ALPHA, GL_ZERO, GL_ONE);
+			glUseProgram(overlay.program);
+			glUniform4f(overlay.source, 0.0f, 0.0f, 1.0f, 1.0f);
+			glBindVertexArray(overlay.vertex_array);
+			glActiveTexture(GL_TEXTURE0);
+			glBindSampler(0, overlay.sampler);
+			for (layer = 0; layer < layer_count; layer++)
+			{
+				glBindTexture(GL_TEXTURE_2D, layers[layer]);
+				for (eye = 0; eye < 2; eye++)
+				{
+					glViewport(boxes[eye][0], boxes[eye][1], boxes[eye][2], boxes[eye][3]);
+					glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+				}
+			}
+			glBindSampler(0, 0);
+			glBindVertexArray(streams.vertex_array);
+			glDisable(GL_BLEND);
 		}
-		glBindSampler(0, 0);
-		glBindVertexArray(streams.vertex_array);
-		glDisable(GL_BLEND);
 	}
 	platform_video_swap();
 	/* the blits and the overlay bypassed the cached state */

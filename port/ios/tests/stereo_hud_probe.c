@@ -1,11 +1,12 @@
-/* HEAD mode's HUD and UI layout (port/ios/host/host_stereo_hud.c): every
-band element and the UI inside foveation's sharp region with the head level,
-the bands above and below the reticle and clear of it, the reticle centered
-and at its natural size, a seat's reticle along the game camera's aim, the
-zoom's inset's quad, the level frame's yaw. With --quads WIDTH UI X Y Z it prints the layout's quads
-instead (one per line: frame, source u0 v0 u1 v1, center, x axis, y axis),
-for the Mac's HEAD-mode composite (t7c/head_composite.py in the stereo
-plan's folder). */
+/* HEAD mode's HUD and UI layout (port/ios/host/host_stereo_hud.c): the
+reticle's layer whole at its natural size, centered or along a seat's aim;
+one quad per HUD group that drew, showing its whole rectangle, in the bands
+above and below the reticle and clear of it, every band element and the UI
+inside foveation's sharp region with the head level; the catch-all, the
+HUD layer whole where the HUD pass projected it; the zoom's inset's quad,
+the level frame's yaw. With --quads WIDTH UI X Y Z it prints the layout's
+quads for sample group rectangles instead (one per line: frame, catch-all,
+source u0 v0 u1 v1, center, x axis, y axis, layer). */
 #include "host_stereo_hud.h"
 #include <math.h>
 #include <stdio.h>
@@ -37,102 +38,121 @@ static void level_extent(const struct host_stereo_hud_quad *quad, float degrees[
 	degrees[3] = atanf(y1 / distance) / DEGREES;
 }
 
+/* a group quad's drawn content, without its margin, in degrees as
+level_extent (the margin is the group's own empty texels, so margins may
+overlap) */
+static void content_extent(const struct host_stereo_hud_quad *quad, float scale, float degrees[4])
+{
+	struct host_stereo_hud_quad inner = *quad;
+
+	inner.x_axis[0] = fabsf(quad->x_axis[0]) - HOST_STEREO_HUD_GROUP_MARGIN_LINES * scale;
+	inner.y_axis[1] = fabsf(quad->y_axis[1]) - HOST_STEREO_HUD_GROUP_MARGIN_LINES * scale;
+	level_extent(&inner, degrees);
+}
+
 /* a 105 by 90 degree view's half tangents (Vision Pro-like; the HUD pass
 takes its projection from the eyes') for the --quads output and the checks */
 static const float hud_tangents[2] = { 1.303f, 1.0f };
 
+/* the groups' rectangles as the Mac's 640-line captures measured the
+elements (Task 7c's t7c/ folder): the counters, the meters, the tracker, a
+prompt and two messages under it; at another width, where the game's rule
+puts them (48 lines in at 640 and floor(48 * width / 640) at any width,
+rasterizer_xbox.c), the meters anchored right, the rest left */
+static void sample_extents(float width, float extents[HALO_HUD_GROUP_COUNT][4])
+{
+	static const float measured[HALO_HUD_GROUP_COUNT][4] = {
+		{ 48, 37, 168, 82 }, { 464, 37, 584, 66 }, { 48, 362, 131, 444 }, { 48, 82.5f, 386, 117 },
+		{ 48, 117, 300, 146 } };
+	float inset = floorf(48.0f * width / 640.0f);
+	int group, axis;
+
+	for (group = 0; group < HALO_HUD_GROUP_COUNT; group++)
+		for (axis = 0; axis < 4; axis++)
+		{
+			float value = measured[group][axis];
+
+			if (axis == 0 || axis == 2)
+				value = group == HALO_HUD_GROUP_UNIT ? width - inset - (592.0f - value) : inset + (value - 48.0f);
+			extents[group][axis] = value;
+		}
+}
+
 static void print_quads(float width, int ui, const float reticle[3])
 {
 	struct host_stereo_hud_quad quads[HOST_STEREO_HUD_MAXIMUM_QUADS];
-	int count = host_stereo_hud_layout(width, ui, reticle, hud_tangents, quads), index;
+	float extents[HALO_HUD_GROUP_COUNT][4];
+	int count, index;
 
+	sample_extents(width, extents);
+	count = host_stereo_hud_layout(width, ui, reticle, hud_tangents, (const float (*)[4])extents, quads);
 	for (index = 0; index < count; index++)
 	{
 		const struct host_stereo_hud_quad *q = &quads[index];
 
-		if (q->hidden)
-			continue;
-		printf("%d %d %g %g %g %g %g %g %g %g %g %g %g %g %g\n", q->frame, q->catch_all, q->source[0], q->source[1], q->source[2],
-			q->source[3], q->center[0], q->center[1], q->center[2], q->x_axis[0], q->x_axis[1], q->x_axis[2],
-			q->y_axis[0], q->y_axis[1], q->y_axis[2]);
+		printf("%d %d %g %g %g %g %g %g %g %g %g %g %g %g %g %d\n", q->frame, q->catch_all, q->source[0], q->source[1],
+			q->source[2], q->source[3], q->center[0], q->center[1], q->center[2], q->x_axis[0], q->x_axis[1],
+			q->x_axis[2], q->y_axis[0], q->y_axis[1], q->y_axis[2], q->layer);
 	}
 }
 
-/* the catch-all: a layer point no piece claims (a nav point, the
-multiplayer score) shows at the direction the HUD pass projected it; a
-point a piece claims doesn't show there */
+/* the quad showing a layer, or NULL */
+static const struct host_stereo_hud_quad *quad_of(const struct host_stereo_hud_quad *quads, int count, int layer)
+{
+	int index;
+
+	for (index = 0; index < count; index++)
+		if (quads[index].layer == layer)
+			return &quads[index];
+	return NULL;
+}
+
+/* whether a quad's source holds the whole rectangle (layout lines) */
+static int shows_whole(const struct host_stereo_hud_quad *quad, float width, const float rectangle[4])
+{
+	return quad && quad->source[0] * width <= rectangle[0] + 1e-3f && quad->source[1] * 480.0f <= rectangle[1] + 1e-3f &&
+		quad->source[2] * width >= rectangle[2] - 1e-3f && quad->source[3] * 480.0f >= rectangle[3] - 1e-3f;
+}
+
+/* the catch-all: the HUD layer whole, where the HUD pass projected it, so a
+layer point (a nav point, the multiplayer score) shows at the direction
+the game put it */
 static void catch_all_checks(float width)
 {
 	const float ahead[3] = { 0.0f, 0.0f, -1.0f };
-	/* a seat aiming 60 degrees right: the reticle's quad is there, and the
-	center's square still isn't the catch-all's */
+	/* a seat aiming 60 degrees right: the reticle's quad is there */
 	const float seat[3] = { 0.866f, 0.0f, -0.5f };
 	struct host_stereo_hud_quad quads[HOST_STEREO_HUD_MAXIMUM_QUADS];
-	int count = host_stereo_hud_layout(width, 0, ahead, hud_tangents, quads);
-	const struct host_stereo_hud_quad *all = &quads[count - 1];
-	/* a nav point drawn at three quarters across and a third down the
-	layer, outside every piece */
-	float u = 0.75f, v = 0.33f;
-	float x = all->center[0] + (2.0f * u - 1.0f) * all->x_axis[0];
-	float y = all->center[1] + (1.0f - 2.0f * v) * all->y_axis[1];
-	float across = atanf(x / HOST_STEREO_HUD_DISTANCE), up = atanf(y / HOST_STEREO_HUD_DISTANCE);
-	float game_across = atanf((2.0f * u - 1.0f) * hud_tangents[0]), game_up = atanf((1.0f - 2.0f * v) * hud_tangents[1]);
+	float extents[HALO_HUD_GROUP_COUNT][4];
+	int count;
+	const struct host_stereo_hud_quad *all;
+	/* a nav point drawn at three quarters across and a third down the layer */
+	float u = 0.75f, v = 0.33f, x, y, across, up, game_across, game_up;
 	char what[200];
 
-	snprintf(what, sizeof(what), "a nav point outside the pieces shows at %.2f, %.2f degrees, where the HUD pass "
+	sample_extents(width, extents);
+	count = host_stereo_hud_layout(width, 0, ahead, hud_tangents, (const float (*)[4])extents, quads);
+	all = &quads[count - 1];
+	x = all->center[0] + (2.0f * u - 1.0f) * all->x_axis[0];
+	y = all->center[1] + (1.0f - 2.0f * v) * all->y_axis[1];
+	across = atanf(x / HOST_STEREO_HUD_DISTANCE);
+	up = atanf(y / HOST_STEREO_HUD_DISTANCE);
+	game_across = atanf((2.0f * u - 1.0f) * hud_tangents[0]);
+	game_up = atanf((1.0f - 2.0f * v) * hud_tangents[1]);
+	snprintf(what, sizeof(what), "a nav point in the HUD layer shows at %.2f, %.2f degrees, where the HUD pass "
 		"projected it (%.2f, %.2f)", across / DEGREES, up / DEGREES, game_across / DEGREES, game_up / DEGREES);
-	check(!host_stereo_hud_claimed(quads, count, u, v) && fabsf(across - game_across) < 1e-5f &&
-		fabsf(up - game_up) < 1e-5f, what);
-	check(host_stereo_hud_claimed(quads, count, 0.5f, 0.5f), "the reticle's square is its own, not the catch-all's");
-	/* the elements as measured (layout lines: x0, y0, x1, y1), at 640
-	lines across (the Mac) and 853 (the visionOS simulator): every corner
-	is a piece's, so none shows on the catch-all at its other scale */
-	{
-		static const float measured[2][5][4] = {
-			{ { 48, 37, 168, 82 }, { 48, 82.5f, 386, 146 }, { 464, 37, 584, 66 }, { 48, 362, 131, 444 },
-				{ 292, 212, 347, 267 } },
-			{ { 62.9f, 36.9f, 182.4f, 82 }, { 62.9f, 82.5f, 298.2f, 117.6f }, { 662, 36.9f, 781.8f, 66 },
-				{ 63.1f, 361.3f, 146, 444.7f }, { 398.4f, 211.8f, 453.6f, 266.9f } } };
-		static const float widths[2] = { 640.0f, 853.3f };
-		int w, e, corner, claimed = 1;
-
-		for (w = 0; w < 2; w++)
-		{
-			int n = host_stereo_hud_layout(widths[w], 0, ahead, hud_tangents, quads);
-
-			for (e = 0; e < 5; e++)
-				for (corner = 0; corner < 4; corner++)
-					claimed &= host_stereo_hud_claimed(quads, n, measured[w][e][corner & 1 ? 2 : 0] / widths[w],
-						measured[w][e][corner & 2 ? 3 : 1] / 480.0f);
-		}
-		/* and at 1600 lines, the elements where the game's rule puts them:
-		their 640-line offsets from the safe frame, 48 lines in at 640 and
-		floor(48 * width / 640) at any width (rasterizer_xbox.c) */
-		{
-			float inset = floorf(48.0f * 1600.0f / 640.0f);
-			int n = host_stereo_hud_layout(1600.0f, 0, ahead, hud_tangents, quads);
-
-			for (e = 0; e < 5; e++)
-				for (corner = 0; corner < 4; corner++)
-				{
-					float x = measured[0][e][corner & 1 ? 2 : 0], y = measured[0][e][corner & 2 ? 3 : 1];
-
-					/* the meters anchor right, the reticle centered, the rest left */
-					x = e == 2 ? 1600.0f - inset - (592.0f - x) : e == 4 ? 800.0f + (x - 320.0f) : inset + (x - 48.0f);
-					claimed &= host_stereo_hud_claimed(quads, n, x / 1600.0f, y / 480.0f);
-				}
-		}
-		check(claimed, "every measured element, at 640, 853 and 1600 lines across, is inside a piece");
-		count = host_stereo_hud_layout(width, 0, ahead, hud_tangents, quads);
-	}
-	count = host_stereo_hud_layout(width, 0, seat, hud_tangents, quads);
-	check(host_stereo_hud_claimed(quads, count, 0.5f, 0.5f) && !quads[0].hidden &&
+	check(all->catch_all && all->layer == HOST_STEREO_HUD_LAYER_HUD && all->source[0] == 0.0f &&
+		all->source[1] == 0.0f && all->source[2] == 1.0f && all->source[3] == 1.0f &&
+		fabsf(across - game_across) < 1e-5f && fabsf(up - game_up) < 1e-5f, what);
+	count = host_stereo_hud_layout(width, 0, seat, hud_tangents, (const float (*)[4])extents, quads);
+	check(quads[0].layer == HOST_STEREO_HUD_LAYER_RETICLE &&
 		fabsf(atan2f(quads[0].center[0], -quads[0].center[2]) / DEGREES - 60.0f) < 0.01f,
-		"in a seat the crosshair is on its own quad along the aim, and the catch-all leaves the center to it");
-	count = host_stereo_hud_layout(width, 0, (const float[3]){ 0.0f, 0.0f, 1.0f }, hud_tangents, quads);
-	check(quads[0].hidden && host_stereo_hud_claimed(quads, count, 0.5f, 0.5f),
-		"with the aim behind, the crosshair hides and the catch-all still leaves the center alone");
-	check(host_stereo_hud_layout(width, 0, ahead, NULL, quads) == count - 1,
+		"in a seat the crosshairs' layer is centered along the aim");
+	count = host_stereo_hud_layout(width, 0, (const float[3]){ 0.0f, 0.0f, 1.0f }, hud_tangents,
+		(const float (*)[4])extents, quads);
+	check(!quad_of(quads, count, HOST_STEREO_HUD_LAYER_RETICLE) && quads[count - 1].catch_all,
+		"with the aim behind, there's no reticle quad, and the rest stays");
+	check(host_stereo_hud_layout(width, 0, ahead, NULL, (const float (*)[4])extents, quads) == count,
 		"without the HUD pass's projection there's no catch-all");
 }
 
@@ -140,28 +160,34 @@ static void layout_checks(float width)
 {
 	const float ahead[3] = { 0.0f, 0.0f, -1.0f };
 	struct host_stereo_hud_quad quads[HOST_STEREO_HUD_MAXIMUM_QUADS];
-	int count = host_stereo_hud_layout(width, 0, ahead, hud_tangents, quads), index;
-	float reach = 0.0f, reticle_half_degrees;
-	int inside = 1, clear = 1, sources = 1, above = 0, below = 0, level = 1;
+	float extents[HALO_HUD_GROUP_COUNT][4];
+	int count, index, group;
+	float reach = 0.0f, reticle_half_degrees = atanf(50.0f * HOST_STEREO_HUD_METERS_PER_LINE /
+		HOST_STEREO_HUD_DISTANCE) / DEGREES;
+	int inside = 1, clear = 1, sources = 1, above = 0, below = 0, level = 1, whole = 1;
 	char what[200];
 
+	sample_extents(width, extents);
+	count = host_stereo_hud_layout(width, 0, ahead, hud_tangents, (const float (*)[4])extents, quads);
 	printf("layout %.0f lines across (%.3f:1), band scale %.3f mm a line\n", width, width / 480.0f,
-		1000.0f * host_stereo_hud_band_scale(width));
-	check(count >= 2 && quads[0].frame == HOST_STEREO_HUD_HEAD, "the reticle comes first, head-locked");
+		1000.0f * host_stereo_hud_band_scale(width, (const float (*)[4])extents));
+	check(count == 2 + HALO_HUD_GROUP_COUNT, "a quad for the reticle, each group and the catch-all");
+	check(quads[0].frame == HOST_STEREO_HUD_HEAD && quads[0].layer == HOST_STEREO_HUD_LAYER_RETICLE,
+		"the reticle's layer comes first, head-locked");
 	check(fabsf(quads[0].center[0]) < 1e-6f && fabsf(quads[0].center[1]) < 1e-6f &&
 		fabsf(quads[0].center[2] + HOST_STEREO_HUD_DISTANCE) < 1e-6f, "the reticle is centered, 2 m ahead");
-	check(fabsf(quads[0].x_axis[0] - quads[0].y_axis[1]) < 1e-6f &&
-		fabsf(quads[0].x_axis[0] * 2.0f - 100.0f * HOST_STEREO_HUD_METERS_PER_LINE) < 1e-6f,
-		"the reticle is a square at the natural scale");
-	check(fabsf((quads[0].source[0] + quads[0].source[2]) / 2.0f - 0.5f) < 1e-6f &&
-		fabsf((quads[0].source[1] + quads[0].source[3]) / 2.0f - 0.5f) < 1e-6f,
-		"the reticle is cut from the layer's center");
-	reticle_half_degrees = atanf(quads[0].y_axis[1] / HOST_STEREO_HUD_DISTANCE) / DEGREES;
+	check(quads[0].source[0] == 0.0f && quads[0].source[1] == 0.0f && quads[0].source[2] == 1.0f &&
+		quads[0].source[3] == 1.0f, "the reticle's quad shows its layer whole, no square cut from anything");
+	check(fabsf(quads[0].x_axis[0] * 2.0f - width * HOST_STEREO_HUD_METERS_PER_LINE) < 1e-6f &&
+		fabsf(quads[0].y_axis[1] * 2.0f - 480.0f * HOST_STEREO_HUD_METERS_PER_LINE) < 1e-6f,
+		"the reticle's layer is at its natural size");
 	check(quads[count - 1].catch_all && quads[count - 1].frame == HOST_STEREO_HUD_HEAD,
 		"the catch-all comes last, head-locked");
-	/* the bands' pieces: all but the reticle and the catch-all */
-	count--;
-	for (index = 1; index < count; index++)
+	for (group = 0; group < HALO_HUD_GROUP_COUNT; group++)
+		whole &= shows_whole(quad_of(quads, count, HOST_STEREO_HUD_LAYER_GROUP + group), width, extents[group]);
+	check(whole, "each group's quad shows its whole rectangle, from its own target");
+	/* the groups' quads: all but the reticle and the catch-all */
+	for (index = 1; index < count - 1; index++)
 	{
 		float degrees[4];
 		int axis;
@@ -185,59 +211,105 @@ static void layout_checks(float width)
 		for (axis = 0; axis < 4; axis++)
 			if (quads[index].source[axis] < 0.0f || quads[index].source[axis] > 1.0f)
 				sources = 0;
-		printf("  piece %d: %.1f to %.1f degrees across, %.1f to %.1f up\n", index, degrees[0], degrees[2],
-			degrees[1], degrees[3]);
+		printf("  group %d: %.1f to %.1f degrees across, %.1f to %.1f up\n",
+			quads[index].layer - HOST_STEREO_HUD_LAYER_GROUP, degrees[0], degrees[2], degrees[1], degrees[3]);
 	}
 	snprintf(what, sizeof(what), "every band element within %.0f degrees across and up (the farthest %.1f)",
 		HUD_SHARP_RADIUS_DEGREES, reach);
 	check(inside, what);
 	check(clear && above > 0 && below > 0, "the bands are above and below the reticle, clear of it");
 	check(level, "the bands are level quads in the yaw-following frame");
-	check(sources, "the pieces are cut from inside the layer");
-	/* pieces of a band don't overlap */
+	check(sources, "the groups are cut from inside their targets");
+	/* the groups' drawn rectangles don't overlap on the plane */
 	{
+		float scale = host_stereo_hud_band_scale(width, (const float (*)[4])extents);
 		int a, b, overlap = 0;
 
-		for (a = 1; a < count; a++)
-			for (b = a + 1; b < count; b++)
+		for (a = 1; a < count - 1; a++)
+			for (b = a + 1; b < count - 1; b++)
 			{
 				float da[4], db[4];
 
-				level_extent(&quads[a], da);
-				level_extent(&quads[b], db);
-				if (da[0] < db[2] && db[0] < da[2] && da[1] < db[3] && db[1] < da[3])
+				content_extent(&quads[a], scale, da);
+				content_extent(&quads[b], scale, db);
+				if (da[0] < db[2] - 1e-4f && db[0] < da[2] - 1e-4f && da[1] < db[3] - 1e-4f && db[1] < da[3] - 1e-4f)
 					overlap = 1;
 			}
-		check(!overlap, "no two pieces overlap");
+		check(!overlap, "no two groups' rectangles overlap");
 	}
-	/* no layer region belongs to two quads: the reticle's square and every
-	piece, in the layer (the catch-all, which takes only what's left,
-	aside) */
+	/* where Task 7c's pieces were: the counters left and the meters right
+	next to the reticle, the prompt and messages above them, the tracker
+	below */
 	{
-		struct host_stereo_hud_quad all[HOST_STEREO_HUD_MAXIMUM_QUADS];
-		int n = host_stereo_hud_layout(width, 0, ahead, hud_tangents, all), a, b, shared = 0;
+		float weapon[4], unit[4], tracker[4], prompt[4], messages[4];
+		float scale = host_stereo_hud_band_scale(width, (const float (*)[4])extents);
 
-		for (a = 0; a < n; a++)
-			for (b = a + 1; b < n; b++)
-				if (!all[a].catch_all && !all[b].catch_all && all[a].source[0] < all[b].source[2] &&
-					all[b].source[0] < all[a].source[2] && all[a].source[1] < all[b].source[3] &&
-					all[b].source[1] < all[a].source[3])
-				{
-					printf("  quads %d and %d share the layer's %.1f-%.1f by %.1f-%.1f lines\n", a, b,
-						fmaxf(all[a].source[0], all[b].source[0]) * width, fminf(all[a].source[2], all[b].source[2]) * width,
-						fmaxf(all[a].source[1], all[b].source[1]) * 480.0f, fminf(all[a].source[3], all[b].source[3]) * 480.0f);
-					shared = 1;
-				}
-		check(!shared, "no two quads (the reticle included) cut the same region of the layer");
+		content_extent(quad_of(quads, count, HOST_STEREO_HUD_LAYER_GROUP + HALO_HUD_GROUP_WEAPON), scale, weapon);
+		content_extent(quad_of(quads, count, HOST_STEREO_HUD_LAYER_GROUP + HALO_HUD_GROUP_UNIT), scale, unit);
+		content_extent(quad_of(quads, count, HOST_STEREO_HUD_LAYER_GROUP + HALO_HUD_GROUP_TRACKER), scale, tracker);
+		content_extent(quad_of(quads, count, HOST_STEREO_HUD_LAYER_GROUP + HALO_HUD_GROUP_PROMPT), scale, prompt);
+		content_extent(quad_of(quads, count, HOST_STEREO_HUD_LAYER_GROUP + HALO_HUD_GROUP_MESSAGES), scale, messages);
+		check(weapon[2] < 0.0f && unit[0] > 0.0f && weapon[1] > 0.0f && unit[1] > 0.0f,
+			"the weapon's group is left of the center and the unit's right, in the top band");
+		check(prompt[1] > weapon[3] && messages[1] > unit[3] && tracker[3] < 0.0f,
+			"the prompt and messages sit above them, the tracker below the reticle");
+		printf("  prompt %.3f to %.3f up, from %.3f across; messages %.3f to %.3f up, from %.3f across\n", prompt[1],
+			prompt[3], prompt[0], messages[1], messages[3], messages[0]);
+		check(fabsf(prompt[1] - messages[3]) < 1e-3f && fabsf(prompt[0] - messages[0]) < 1e-3f,
+			"the prompt stays over the messages, their left edges together, as CE draws them");
 	}
-	/* the bands' rows: the counters and meters next to the reticle, the
-	messages above them */
+	/* a wider element, such as the needler's icon, or a longer prompt:
+	its group's quad grows with it and still shows all of it */
 	{
-		float counters[4], messages[4];
+		float wide[HALO_HUD_GROUP_COUNT][4];
+		const struct host_stereo_hud_quad *weapon, *prompt;
+		int n;
 
-		level_extent(&quads[1], counters);
-		level_extent(&quads[3], messages);
-		check(counters[1] < messages[1], "the always-on counters and meters are nearer the reticle than the messages");
+		memcpy(wide, extents, sizeof(wide));
+		wide[HALO_HUD_GROUP_WEAPON][2] += 80.0f;
+		wide[HALO_HUD_GROUP_PROMPT][2] = fminf(width - 10.0f, wide[HALO_HUD_GROUP_PROMPT][2] + 160.0f);
+		n = host_stereo_hud_layout(width, 0, ahead, hud_tangents, (const float (*)[4])wide, quads);
+		weapon = quad_of(quads, n, HOST_STEREO_HUD_LAYER_GROUP + HALO_HUD_GROUP_WEAPON);
+		prompt = quad_of(quads, n, HOST_STEREO_HUD_LAYER_GROUP + HALO_HUD_GROUP_PROMPT);
+		check(shows_whole(weapon, width, wide[HALO_HUD_GROUP_WEAPON]) &&
+			shows_whole(prompt, width, wide[HALO_HUD_GROUP_PROMPT]),
+			"a wider weapon icon and a longer prompt show whole, each on its group's quad");
+	}
+	/* a vehicle's driver seat: the unit group holds the seat labels, which
+	CE draws top left, and the bars top right; its quad keeps them where
+	they are across the screen, labels left of the center and bars right,
+	all on the one quad (the Mac's b30 driver seat measured 60 to 597 lines
+	at 640) */
+	{
+		float driver[HALO_HUD_GROUP_COUNT][4] = { { 0 } };
+		const struct host_stereo_hud_quad *unit;
+		float degrees[4];
+		int n;
+
+		driver[HALO_HUD_GROUP_UNIT][0] = 60.0f * width / 640.0f;
+		driver[HALO_HUD_GROUP_UNIT][1] = 36.0f;
+		driver[HALO_HUD_GROUP_UNIT][2] = width - (640.0f - 597.0f) * width / 640.0f;
+		driver[HALO_HUD_GROUP_UNIT][3] = 205.0f;
+		n = host_stereo_hud_layout(width, 0, ahead, hud_tangents, (const float (*)[4])driver, quads);
+		unit = quad_of(quads, n, HOST_STEREO_HUD_LAYER_GROUP + HALO_HUD_GROUP_UNIT);
+		level_extent(unit, degrees);
+		check(unit && shows_whole(unit, width, driver[HALO_HUD_GROUP_UNIT]) && degrees[0] < 0.0f && degrees[2] > 0.0f &&
+			fabsf(unit->center[0] / host_stereo_hud_band_scale(width, (const float (*)[4])driver) -
+			((driver[HALO_HUD_GROUP_UNIT][0] + driver[HALO_HUD_GROUP_UNIT][2]) / 2.0f - width / 2.0f)) < 1e-2f,
+			"a unit group across the center (a driver's seat labels and bars) keeps its place across the screen, whole");
+	}
+	/* a group that didn't draw has no quad; with no rectangles at all only
+	the reticle and the catch-all are left */
+	{
+		float some[HALO_HUD_GROUP_COUNT][4];
+
+		memcpy(some, extents, sizeof(some));
+		memset(some[HALO_HUD_GROUP_PROMPT], 0, sizeof(some[0]));
+		count = host_stereo_hud_layout(width, 0, ahead, hud_tangents, (const float (*)[4])some, quads);
+		check(count == 1 + HALO_HUD_GROUP_COUNT && !quad_of(quads, count, HOST_STEREO_HUD_LAYER_GROUP + HALO_HUD_GROUP_PROMPT),
+			"an empty group has no quad");
+		check(host_stereo_hud_layout(width, 0, ahead, hud_tangents, NULL, quads) == 2,
+			"without the groups' rectangles, only the reticle and the catch-all");
 	}
 	catch_all_checks(width);
 }
@@ -258,9 +330,20 @@ static void ui_checks(float aspect)
 		fmaxf(degrees[2], degrees[3]) >= HUD_SHARP_RADIUS_DEGREES - 1e-3f &&
 		fabsf(quad.x_axis[0] / quad.y_axis[1] - aspect) < 1e-4f && quad.source[2] == 1.0f && quad.source[3] == 1.0f,
 		what);
-	check(host_stereo_hud_layout(aspect * 480.0f, 1, ahead, hud_tangents, quads) == 1 &&
-		quads[0].frame == HOST_STEREO_HUD_LEVEL,
-		"a menu in the HUD layer puts the whole layer on the UI's quad, alone");
+	{
+		float extents[HALO_HUD_GROUP_COUNT][4];
+		int count, index, same = 1;
+
+		sample_extents(aspect * 480.0f, extents);
+		count = host_stereo_hud_layout(aspect * 480.0f, 1, ahead, hud_tangents, (const float (*)[4])extents, quads);
+		for (index = 0; index < count; index++)
+			same &= quads[index].frame == HOST_STEREO_HUD_LEVEL && !memcmp(quads[index].center, quad.center,
+				sizeof(quad.center)) && !memcmp(quads[index].x_axis, quad.x_axis, sizeof(quad.x_axis)) &&
+				quads[index].source[0] == 0.0f && quads[index].source[2] == 1.0f;
+		check(count == 2 + HALO_HUD_GROUP_COUNT && same && quads[0].layer == HOST_STEREO_HUD_LAYER_RETICLE &&
+			quads[count - 1].layer == HOST_STEREO_HUD_LAYER_HUD,
+			"a menu in the HUD layer puts every layer whole on the UI's quad, the HUD layer (the menu) last");
+	}
 }
 
 static void reticle_checks(void)
@@ -308,7 +391,7 @@ static void inset_checks(float width)
 	char what[160];
 
 	check(host_stereo_hud_inset(width, NULL, ahead, &quad) == 1 && quad.opaque && quad.frame == HOST_STEREO_HUD_HEAD &&
-		!quad.catch_all && !quad.hidden, "the inset is an opaque, head-locked quad");
+		!quad.catch_all, "the inset is an opaque, head-locked quad");
 	check(fabsf(quad.center[0]) < 1e-6f && fabsf(quad.center[1]) < 1e-6f &&
 		fabsf(quad.center[2] + HOST_STEREO_HUD_DISTANCE) < 1e-6f,
 		"on foot it's straight ahead, 2 m away, on the HUD's plane");

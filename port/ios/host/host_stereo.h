@@ -3,6 +3,7 @@
 #pragma once
 
 #include "halo_stereo.h"
+#include "host_stereo_hud.h"
 
 /* the guest's import (guest_host.h): at the game's frame begin, in HEAD or
 SCREEN mode, opens the Compositor's frame and fills the eyes (and in HEAD
@@ -26,21 +27,26 @@ int host_stereo_frame_repeat(void);
 space is still open */
 int host_stereo_ready(void);
 /* draws each eye's picture and depth full view into its Compositor view, the
-HUD's pieces over both (host_stereo_hud.h), and presents the frame; the
+HUD's quads over both (host_stereo_hud.h), and presents the frame; the
 game's command buffer, which drew them, is committed already. Brightness (0
 to 1) dims both toward black, for the fade of a cut to or from the screen;
 vignette (0 to 1) darkens the eyes' edges, not the HUD, for
-input.comfort_vignette. The HUD is laid out at hud_aspect's shape (its width
-over its height); with hud_ui it holds a menu, the console or a progress bar
-and goes whole on the UI's quad; reticle is where its center points in the
-eyes' frame, and hud_tangents the HUD pass's projection, for the catch-all
-quad (gpu_stereo_present). inset (nil: none) is the zoom's inset, laid out as the
+input.comfort_vignette. hud_layers holds HOST_STEREO_HUD_LAYER_COUNT
+textures (nil: nothing drew it this frame): the HUD layer, the crosshairs'
+layer and each HUD group's target, with each group's rectangle in
+hud_group_extent (gpu_stereo_present); without the HUD layer there's no HUD.
+The HUD is laid out at hud_aspect's shape (its width over its height); with
+hud_ui the HUD layer holds a menu, the console or a progress bar and
+everything goes whole on the UI's quad; reticle is where the crosshair
+points in the eyes' frame, and hud_tangents the HUD pass's projection, for
+the catch-all quad. inset (nil: none) is the zoom's inset, laid out as the
 HUD, whose central square goes on its own quad on the HUD's plane, under
-the HUD's pieces (host_stereo_hud_inset) */
+the HUD's quads (host_stereo_hud_inset) */
 void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLTexture> right,
-	id<MTLTexture> left_depth, id<MTLTexture> right_depth, id<MTLTexture> hud, float hud_aspect,
-	int hud_ui, const float reticle[3], const float hud_tangents[2], id<MTLTexture> inset, float near_meters,
-	float far_meters, float brightness, float vignette);
+	id<MTLTexture> left_depth, id<MTLTexture> right_depth, __unsafe_unretained id<MTLTexture> const *hud_layers,
+	const float (*hud_group_extent)[4], float hud_aspect, int hud_ui, const float reticle[3],
+	const float hud_tangents[2], id<MTLTexture> inset, float near_meters, float far_meters, float brightness,
+	float vignette);
 /* HEAD mode without eyes this frame (a load: a mono picture), or with a
 menu over the film (the main menu's scripted scene, the pause menu in a
 cutscene): 1 while the Compositor's frame host_stereo_frame opened can take

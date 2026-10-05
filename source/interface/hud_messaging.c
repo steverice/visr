@@ -474,6 +474,7 @@ static void render_state_bitmap(
 /* ---------- globals */
 
 static struct hud_messaging_globals_definition *hud_messaging_globals;
+void platform_log(char const *format, ...); /* port */
 struct hud_messaging_parameters_definition *hud_msg_def;
 static char button_mappings[_icon_custom_1 - _icon_action] =
 {
@@ -1387,6 +1388,20 @@ void hud_messaging_update(
 			local_player_count() > 1,
 			0.0f,
 			&screen_point);
+		/* port: the corner CE places the help text and messages from, once
+		per corner seen (the stereo spec's "The HUD in the periphery") */
+		{
+			static short logged_corner = NONE;
+
+			if (hud_msg_def->absolute_placement.corner != logged_corner)
+			{
+				logged_corner = hud_msg_def->absolute_placement.corner;
+				platform_log("hud: the help text and messages are placed from corner %d (%s), offset %d, %d",
+					logged_corner, logged_corner >= 0 && logged_corner < NUMBER_OF_HUD_ANCHORS ?
+					global_hud_anchor_names[logged_corner] : "?", hud_msg_def->placement.offset.x,
+					hud_msg_def->placement.offset.y);
+			}
+		}
 		line_top = screen_point.y;
 		font = font_definition_get(font_index);
 		if (split_screen)
@@ -1410,6 +1425,10 @@ void hud_messaging_update(
 		state_active = datum->state_message.valid &&
 			(datum->state_message.state_message || datum->state_message.message_buffer[0]);
 
+		/* port: help text, the objective and state messages (pickup
+		prompts) are the prompt's group; the message list below is the
+		messages' (halo_stereo.h) */
+		halo_hud_group_begin(HALO_HUD_GROUP_PROMPT);
 		if (objective_active || help_active || state_active)
 		{
 			struct hud_state_message_runtime_definition *state_message = &datum->state_message;
@@ -1791,6 +1810,7 @@ void hud_messaging_update(
 			line_height = first_line_height;
 			line_top = line_cursor.y1;
 		}
+		halo_hud_group_end(); /* port */
 
 		if (!objective_active && !help_active &&
 			(datum->state_message.valid || datum->leave_first_line_blank))
@@ -1809,6 +1829,7 @@ void hud_messaging_update(
 			maximum_message_count--;
 		}
 
+		halo_hud_group_begin(HALO_HUD_GROUP_MESSAGES); /* port */
 		qsort(
 			datum->messages,
 			NUMBEROF(datum->messages),
@@ -1910,6 +1931,7 @@ void hud_messaging_update(
 			if (!message->valid)
 				message->time = NONE;
 		}
+		halo_hud_group_end(); /* port */
 	}
 
 	return;

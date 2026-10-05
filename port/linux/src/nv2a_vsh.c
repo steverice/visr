@@ -20,7 +20,9 @@ clip-space position again.
 #include "xgpu.h"
 #include "gpu_uniforms.h"
 
+#include <math.h>
 #include <stdlib.h>
+#include <string.h>
 
 /* ---------- instruction fields */
 
@@ -421,4 +423,215 @@ char *nv2a_vertex_shader_translate(const struct nv2a_dialect *dialect, const DWO
 		nv2a_msl_vertex_return(&text);
 	xgpu_text_append(&text, "}\n");
 	return text.buffer;
+}
+
+/* ---------- the program on the CPU (nv2a_vertex_program_position) */
+
+/* an operand as operand() reads it, with its swizzle and negation */
+static void operand_value(const DWORD *instruction, char which, int relative, int a0, const float (*constants)[4],
+	const float (*inputs)[4], const float (*temporaries)[4], const float position[4], float value[4])
+{
+	unsigned long negate, swizzle[4], index, mux;
+	const float *from = NULL;
+	static const float zero[4];
+	int axis;
+
+	switch (which)
+	{
+	case 'A':
+		negate = field(instruction, 1, 8, 1);
+		swizzle[0] = field(instruction, 1, 6, 2);
+		swizzle[1] = field(instruction, 1, 4, 2);
+		swizzle[2] = field(instruction, 1, 2, 2);
+		swizzle[3] = field(instruction, 1, 0, 2);
+		index = field(instruction, 2, 28, 4);
+		mux = field(instruction, 2, 26, 2);
+		break;
+	case 'B':
+		negate = field(instruction, 2, 25, 1);
+		swizzle[0] = field(instruction, 2, 23, 2);
+		swizzle[1] = field(instruction, 2, 21, 2);
+		swizzle[2] = field(instruction, 2, 19, 2);
+		swizzle[3] = field(instruction, 2, 17, 2);
+		index = field(instruction, 2, 13, 4);
+		mux = field(instruction, 2, 11, 2);
+		break;
+	default:
+		negate = field(instruction, 2, 10, 1);
+		swizzle[0] = field(instruction, 2, 8, 2);
+		swizzle[1] = field(instruction, 2, 6, 2);
+		swizzle[2] = field(instruction, 2, 4, 2);
+		swizzle[3] = field(instruction, 2, 2, 2);
+		index = (field(instruction, 2, 0, 2) << 2) | field(instruction, 3, 30, 2);
+		mux = field(instruction, 3, 28, 2);
+		break;
+	}
+	switch (mux)
+	{
+	case _mux_temporary:
+		from = index == 12 ? position : temporaries[index < 12 ? index : 0];
+		break;
+	case _mux_input:
+		from = inputs[field(instruction, 1, 9, 4)];
+		break;
+	case _mux_constant:
+		{
+			long constant = (long)field(instruction, 1, 13, 8) + (relative ? a0 : 0);
+
+			constant = constant < 0 ? 0 : constant > XGPU_VERTEX_CONSTANT_COUNT - 1 ? XGPU_VERTEX_CONSTANT_COUNT - 1 :
+				constant;
+			from = constants[constant];
+		}
+		break;
+	default:
+		from = zero;
+		break;
+	}
+	for (axis = 0; axis < 4; axis++)
+		value[axis] = negate ? -from[swizzle[axis]] : from[swizzle[axis]];
+}
+
+static void masked_write(float *to, const float *from, unsigned long mask)
+{
+	/* bit 3 is x */
+	if (mask & 8) to[0] = from[0];
+	if (mask & 4) to[1] = from[1];
+	if (mask & 2) to[2] = from[2];
+	if (mask & 1) to[3] = from[3];
+}
+
+void nv2a_vertex_program_position(const DWORD *instructions, unsigned long instruction_count,
+	const float (*constants)[4], const float (*inputs)[4], float position[4])
+{
+	float temporaries[12][4];
+	unsigned long index;
+	int a0 = 0, axis;
+
+	memset(temporaries, 0, sizeof(temporaries));
+	/* oPos, which r12 also names */
+	position[0] = position[1] = position[2] = 0.0f;
+	position[3] = 1.0f;
+	for (index = 0; index < instruction_count; index++)
+	{
+		const DWORD *instruction = instructions + index * 4;
+		unsigned long mac = field(instruction, 1, 21, 4);
+		unsigned long ilu = field(instruction, 1, 25, 3);
+		unsigned long mac_mask = field(instruction, 3, 24, 4);
+		unsigned long temporary = field(instruction, 3, 20, 4);
+		unsigned long ilu_mask = field(instruction, 3, 16, 4);
+		unsigned long output_mask = field(instruction, 3, 12, 4);
+		unsigned long output_is_register = field(instruction, 3, 11, 1);
+		unsigned long output_address = field(instruction, 3, 3, 8);
+		unsigned long output_from_ilu = field(instruction, 3, 2, 1);
+		int relative = (int)field(instruction, 3, 1, 1);
+		float a[4], b[4], c[4], mac_value[4] = { 0 }, ilu_value[4] = { 0 };
+
+		operand_value(instruction, 'A', relative, a0, constants, inputs, (const float (*)[4])temporaries, position, a);
+		operand_value(instruction, 'B', relative, a0, constants, inputs, (const float (*)[4])temporaries, position, b);
+		operand_value(instruction, 'C', relative, a0, constants, inputs, (const float (*)[4])temporaries, position, c);
+		for (axis = 0; axis < 4; axis++)
+		{
+			switch (mac)
+			{
+			case _mac_mov: case _mac_arl: mac_value[axis] = a[axis]; break;
+			case _mac_mul: mac_value[axis] = a[axis] * b[axis]; break;
+			case _mac_add: mac_value[axis] = a[axis] + c[axis]; break;
+			case _mac_mad: mac_value[axis] = a[axis] * b[axis] + c[axis]; break;
+			case _mac_dp3: mac_value[axis] = a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; break;
+			case _mac_dph: mac_value[axis] = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + b[3]; break;
+			case _mac_dp4: mac_value[axis] = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]; break;
+			case _mac_min: mac_value[axis] = a[axis] < b[axis] ? a[axis] : b[axis]; break;
+			case _mac_max: mac_value[axis] = a[axis] > b[axis] ? a[axis] : b[axis]; break;
+			case _mac_slt: mac_value[axis] = a[axis] < b[axis] ? 1.0f : 0.0f; break;
+			case _mac_sge: mac_value[axis] = a[axis] >= b[axis] ? 1.0f : 0.0f; break;
+			default: break;
+			}
+		}
+		if (mac == _mac_dst)
+		{
+			mac_value[0] = 1.0f;
+			mac_value[1] = a[1] * b[1];
+			mac_value[2] = a[2];
+			mac_value[3] = b[3];
+		}
+		switch (ilu)
+		{
+		case _ilu_mov:
+			memcpy(ilu_value, c, sizeof(ilu_value));
+			break;
+		case _ilu_rcp:
+			ilu_value[0] = 1.0f / c[0];
+			break;
+		case _ilu_rcc:
+			{
+				float r = 1.0f / c[0];
+
+				if (r > 0.0f)
+					r = r < 5.42101e-20f ? 5.42101e-20f : r > 1.884467e+19f ? 1.884467e+19f : r;
+				else
+					r = r < -1.884467e+19f ? -1.884467e+19f : r > -5.42101e-20f ? -5.42101e-20f : r;
+				ilu_value[0] = r;
+			}
+			break;
+		case _ilu_rsq:
+			ilu_value[0] = 1.0f / sqrtf(fabsf(c[0]));
+			break;
+		case _ilu_exp:
+			ilu_value[0] = exp2f(floorf(c[0]));
+			ilu_value[1] = c[0] - floorf(c[0]);
+			ilu_value[2] = exp2f(c[0]);
+			ilu_value[3] = 1.0f;
+			break;
+		case _ilu_log:
+			{
+				float x = fabsf(c[0]);
+
+				if (x == 0.0f)
+				{
+					ilu_value[0] = ilu_value[2] = -1.0e30f;
+					ilu_value[1] = ilu_value[3] = 1.0f;
+				}
+				else
+				{
+					float e = floorf(log2f(x));
+
+					ilu_value[0] = e;
+					ilu_value[1] = x / exp2f(e);
+					ilu_value[2] = log2f(x);
+					ilu_value[3] = 1.0f;
+				}
+			}
+			break;
+		case _ilu_lit:
+			ilu_value[0] = 1.0f;
+			ilu_value[1] = c[0] > 0.0f ? c[0] : 0.0f;
+			ilu_value[2] = c[0] > 0.0f ? powf(c[1] > 0.0f ? c[1] : 0.0f,
+				c[3] < -127.9961f ? -127.9961f : c[3] > 127.9961f ? 127.9961f : c[3]) : 0.0f;
+			ilu_value[3] = 1.0f;
+			break;
+		default:
+			break;
+		}
+		/* the scalar results fill every component, as the shaders' vec4() */
+		if (ilu == _ilu_rcp || ilu == _ilu_rcc || ilu == _ilu_rsq)
+			ilu_value[1] = ilu_value[2] = ilu_value[3] = ilu_value[0];
+
+		/* results are written only after both units have read their inputs */
+		if (mac == _mac_arl)
+			a0 = (int)floorf(mac_value[0] + 0.001f);
+		else if (mac != _mac_nop && mac_mask)
+			masked_write(temporary == 12 ? position : temporary < 12 ? temporaries[temporary] : temporaries[0],
+				mac_value, mac_mask);
+		if (ilu != _ilu_nop && ilu_mask)
+		{
+			unsigned long ilu_temporary = mac != _mac_nop ? 1 : temporary;
+
+			masked_write(ilu_temporary == 12 ? position : ilu_temporary < 12 ? temporaries[ilu_temporary] :
+				temporaries[0], ilu_value, ilu_mask);
+		}
+		if (output_mask && (output_from_ilu ? ilu : mac) != 0 && output_is_register && output_address == 0)
+			masked_write(position, output_from_ilu ? ilu_value : mac_value, output_mask);
+		if (field(instruction, 3, 0, 1))
+			break;
+	}
 }

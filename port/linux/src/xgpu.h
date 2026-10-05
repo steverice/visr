@@ -79,6 +79,14 @@ NORMPACKED3 32-bit integers and unpacked in the shader. Returns a malloc'd
 string. */
 char *nv2a_vertex_shader_translate(const struct nv2a_dialect *dialect, const DWORD *instructions,
 	unsigned long instruction_count, unsigned long packed_attribute_mask);
+/* The same program run on the CPU for one vertex, for its position alone
+(oPos: the screen position the program ends with, before the translated
+shader undoes the screen-space conversion). inputs are the vertex's
+attributes as float4s (v0 to v15), constants the c[] registers
+(XGPU_VERTEX_CONSTANT_COUNT of them, biased as the shaders read them).
+d3d8_device.c measures the HUD's draws with it (stereo's HUD groups) */
+void nv2a_vertex_program_position(const DWORD *instructions, unsigned long instruction_count,
+	const float (*constants)[4], const float (*inputs)[4], float position[4]);
 
 /* ---------- pixel shaders */
 

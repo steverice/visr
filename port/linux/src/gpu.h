@@ -6,8 +6,9 @@ and a GPU backend (gpu_gl.c; Metal in Phase 1). It is filled in one
 sub-step at a time (renderer split design, step 3).
 
 It compiles on the 64-bit iOS host as well as in the 32-bit guest, so it
-includes only <stdint.h> and gpu_uniforms.h (which includes nothing), and its
-structs use fixed-width fields alone: the two ABIs lay them out the same way.
+includes only <stdint.h>, gpu_uniforms.h (which includes nothing) and
+halo_stereo.h (which includes only <stdint.h>), and its structs use
+fixed-width fields alone: the two ABIs lay them out the same way.
 */
 
 #ifndef __HALO_GPU_H
@@ -15,6 +16,7 @@ structs use fixed-width fields alone: the two ABIs lay them out the same way.
 
 #include <stdint.h>
 #include "gpu_uniforms.h"
+#include "halo_stereo.h"
 
 /* 0 is none */
 typedef uint32_t gpu_texture, gpu_buffer, gpu_shader;
@@ -443,6 +445,15 @@ struct gpu_stereo_present
 	float reticle[3];                  /* where the HUD's center points in the eyes' frame (halo_stereo_reticle) */
 	float hud_tangents[2];             /* the HUD pass's half tangents across and up (halo_stereo_hud_tangents) */
 	gpu_texture inset;                 /* the zoom's inset (halo_stereo.h), laid out as the HUD; 0 if none this frame */
+	/* the crosshairs' layer (HALO_STEREO_LAYER_RETICLE), laid out as the
+	HUD; 0 if none drew this frame */
+	gpu_texture reticle_layer;
+	/* each HUD group's target (enum halo_hud_group), laid out as the HUD,
+	and the rectangle its draws cover: x0, y0, x1, y1 in layout lines (x
+	across hud_aspect * 480, y down 480); 0 and an empty rectangle for a
+	group nothing drew this frame. The catch-all is hud */
+	gpu_texture hud_group[HALO_HUD_GROUP_COUNT];
+	float hud_group_extent[HALO_HUD_GROUP_COUNT][4];
 };
 
 /* presents a stereo frame as gpu_present does a mono one (and returns the

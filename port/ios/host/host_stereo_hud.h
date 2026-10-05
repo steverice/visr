@@ -1,22 +1,32 @@
-/* HEAD mode's HUD and UI layout (host_stereo.m): which parts of the HUD
-layer go where in the room. Plain C, so a host-side test can check it
+/* HEAD mode's HUD and UI layout (host_stereo.m): which of the HUD's layers
+go where in the room. Plain C, so a host-side test can check it
 (port/ios/tests/stereo_hud_probe.c).
 
-The game draws its HUD into one layer, laid out as always: 480 lines tall,
-its width the window's shape (the HUD's aspect times 480), elements at the
-corners and the center. The presenter cuts that layer into pieces by screen
-region, without changing how the game draws, and puts each on its own quad:
-- the reticle, a square at the layer's center, where the game's crosshair
-  is (host_stereo_hud_reticle);
-- the top band above the reticle and the bottom band below it, on quads
-  that turn with the head's yaw only, level with the room, every element
-  inside foveation's sharp region (HUD_SHARP_RADIUS_DEGREES) with the head
-  level;
+The game draws its HUD laid out as always: 480 lines tall, its width the
+window's shape (the HUD's aspect times 480), elements at the corners and the
+center. In HEAD mode the guest splits it by the function that draws each
+element (halo_stereo.h, the stereo spec's "The reticle split, by draw"):
+the crosshairs into the reticle's layer, each HUD group (the weapon with
+its grenades, the unit, the motion tracker, the prompts, the messages) into
+a target of its own with the rectangle its draws cover, and everything else
+into the HUD layer itself. Every one is laid out as the whole HUD. The
+presenter puts:
+- the reticle's layer whole, at its natural size, centered where the game's
+  crosshair is (host_stereo_hud_reticle);
+- each group's rectangle of its own target on a quad in the top band above
+  the reticle or the bottom band below it, turning with the head's yaw only,
+  level with the room, where Task 7c's pieces sat (the counters left, the
+  meters right, the prompts and messages above them, the tracker below);
+- the HUD layer whole, head-locked at the HUD pass's projection, the
+  catch-all: nav points and the multiplayer score where the game projected
+  them;
 - while a menu, the console or a progress bar is in the layer (the guest's
-  hud_ui), or a frame has no eyes (the main menu, a load), the whole picture
+  hud_ui), or a frame has no eyes (the main menu, a load), all of them whole
   on one level, yaw-following quad of that size instead. */
 #ifndef HOST_STEREO_HUD_H
 #define HOST_STEREO_HUD_H
+
+#include "halo_stereo.h"
 
 /* how far ahead the HUD and the UI sit, in meters */
 #define HOST_STEREO_HUD_DISTANCE 2.0f
@@ -39,6 +49,23 @@ keeps it; the bands keep it unless they'd leave the sharp region, where they
 shrink to fit */
 #define HOST_STEREO_HUD_METERS_PER_LINE (1.6f / 640.0f)
 
+/* the margin, in layout lines, a group's quad shows around its rectangle,
+so linear filtering at the quad's edge never cuts a drawn texel (the target
+holds nothing else) */
+#define HOST_STEREO_HUD_GROUP_MARGIN_LINES 2.0f
+
+/* the texture a quad shows (the presenter's array of them) */
+enum
+{
+	/* the HUD layer itself: the catch-all, a menu */
+	HOST_STEREO_HUD_LAYER_HUD,
+	/* the crosshairs' layer */
+	HOST_STEREO_HUD_LAYER_RETICLE,
+	/* a HUD group's target: this plus the group (enum halo_hud_group) */
+	HOST_STEREO_HUD_LAYER_GROUP,
+	HOST_STEREO_HUD_LAYER_COUNT = HOST_STEREO_HUD_LAYER_GROUP + HALO_HUD_GROUP_COUNT
+};
+
 /* what a quad's frame follows */
 enum
 {
@@ -51,29 +78,29 @@ enum
 
 struct host_stereo_hud_quad
 {
-	/* the HUD texture's rectangle: u0, v0, u1, v1 (v down) */
+	/* its texture's rectangle: u0, v0, u1, v1 (v down) */
 	float source[4];
 	/* in its frame's meters, x right, y up, z back: its center, and the
 	half extents along its width and height (the texture's u and v reversed:
 	+y_axis is the top) */
 	float center[3], x_axis[3], y_axis[3];
 	int frame;
-	/* the catch-all: shows only what no other quad's rectangle claims
-	(host_stereo_hud_claimed) */
+	/* which texture it shows (HOST_STEREO_HUD_LAYER_*) */
+	int layer;
+	/* the catch-all: the HUD layer whole, head-locked */
 	int catch_all;
-	/* not drawn (a reticle off the view), but its rectangle is claimed */
-	int hidden;
 	/* covers what it's over whatever its texture's alpha (the zoom's inset,
 	a picture) */
 	int opaque;
 };
 
-/* most quads a layout makes */
-#define HOST_STEREO_HUD_MAXIMUM_QUADS 8
+/* most quads a layout makes: the reticle, the groups and the catch-all */
+#define HOST_STEREO_HUD_MAXIMUM_QUADS (HOST_STEREO_HUD_LAYER_COUNT)
 
-/* The reticle's quad: the square at the layer's center at its natural size
-(HOST_STEREO_HUD_METERS_PER_LINE), in the eyes' frame (x right, y up, z
-back), facing back along direction, upright. Without a position it sits
+/* The reticle's quad: the crosshairs' layer whole (layout_width lines by
+480) at its natural size (HOST_STEREO_HUD_METERS_PER_LINE), its center on
+the crosshair, in the eyes' frame (x right, y up, z back), facing back along
+direction, upright. Without a position it sits
 HOST_STEREO_HUD_DISTANCE along direction (the guest's halo_stereo_reticle):
 straight ahead, head-locked, on foot; where the game's camera aims in a
 head-tracked third-person seat; and returns 0 (no quad) when that's not
@@ -98,19 +125,19 @@ quad is empty */
 int host_stereo_hud_inset(float layout_width, const float position[3], const float direction[3],
 	struct host_stereo_hud_quad *quad);
 
-/* the quads for a HEAD-mode frame's HUD layer laid out layout_width lines
-across: with ui, the whole layer on the UI's quad; else the reticle
-(reticle: its direction, as above; first, perhaps hidden), the bands'
-pieces and, last, given the HUD pass's half tangents across and up (the
-guest's halo_stereo_hud_tangents; NULL or 0: none), the catch-all: the
-whole layer head-locked at that projection, showing only what no piece
-claims, so nothing the HUD draws is dropped. Returns the count; quads holds
+/* the quads for a HEAD-mode frame's HUD laid out layout_width lines across,
+given each HUD group's rectangle (group_extent: x0, y0, x1, y1 in layout
+lines, the guest's gpu_stereo_present hud_group_extent; an empty one, or
+NULL for all, draws no quad): with ui, the reticle's layer, every group's
+target and the HUD layer, each whole, on the UI's quad, in that order;
+else the reticle's quad (reticle: its direction, as above; none when it's
+off the view) first, then one quad per group with a rectangle, in the
+bands, and last, given the HUD pass's half tangents across and up (the
+guest's halo_stereo_hud_tangents; NULL or 0: none), the catch-all: the HUD
+layer whole, head-locked at that projection. Returns the count; quads holds
 HOST_STEREO_HUD_MAXIMUM_QUADS */
 int host_stereo_hud_layout(float layout_width, int ui, const float reticle[3], const float hud_tangents[2],
-	struct host_stereo_hud_quad *quads);
-/* 1 if a quad other than the catch-all shows the layer's texture coordinate
-u, v (the catch-all's fragment shader does the same) */
-int host_stereo_hud_claimed(const struct host_stereo_hud_quad *quads, int count, float u, float v);
+	const float (*group_extent)[4], struct host_stereo_hud_quad *quads);
 
 /* the UI's quad for a picture of the given aspect (width over height): the
 whole picture, centered ahead, as large as fits inside the sharp region */
@@ -122,9 +149,10 @@ degrees of pitch its right's (host_stereo_head.c does the same). The frame
 sits at the device's position, turned by that yaw about the room's up */
 float host_stereo_hud_level_yaw(const float right[3], const float back[3]);
 
-/* the HUD's scale for the bands at a layout width, meters per line: the
-natural scale, or smaller if the bands would leave the sharp region */
-float host_stereo_hud_band_scale(float layout_width);
+/* the HUD's scale for the bands at a layout width with the groups'
+rectangles (as host_stereo_hud_layout), meters per line: the natural
+scale, or smaller if the bands would leave the sharp region */
+float host_stereo_hud_band_scale(float layout_width, const float (*group_extent)[4]);
 
 /* The fade through black when HEAD mode's view changes between the full
 view, the screen (the film, SCREEN gameplay) and the UI's quad (a menu over
