@@ -653,8 +653,16 @@ static void render_player_frame_stereo(
 		if (eye >= 1)
 			render.time_delta_since_tick_sec = 0.0f;
 		/* port: and what renders from the local random seed (a lightning
-		bolt's shape and jitter, a fog screen layer's new offsets) draws the
-		same numbers in every pass, so eye 1 sees the bolt eye 0 does */
+		bolt's shape and jitter) draws the same numbers in every pass, so eye
+		1 sees the bolt eye 0 does. That holds only for draws made before the
+		first consumer that runs in eye 0 alone: weather's spawns (by the
+		time delta, zero in later passes) and the fog screen's wind take
+		numbers in eye 0 only, so anything drawn after them gets different
+		numbers in a later pass. Lightning draws during the object pass,
+		before both. The fog screen's own new layer offsets don't matter: a
+		repeat pass's fog screen state is put back when its window ends
+		(rasterizer_xbox_environment_fog.c). A consumer added later than
+		those needs its own per-frame seed, as Task 4's review suggested */
 		if (eye >= 1)
 			*get_global_local_random_seed_address() = local_random_seed;
 		/* the mirror's render_window runs in the eye's layer, so it skips
