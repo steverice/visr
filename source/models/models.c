@@ -229,6 +229,22 @@ typedef char verify_rasterizer_model_begin_parameters_size[sizeof(struct rasteri
 
 #include "rasterizer/rasterizer_models.h"
 
+/* port: port_config.c's */
+const char *config_string(const char *name);
+
+/* port: display.model_lod is "max" (the default) rather than "auto". It is read on
+first use and kept, since the config never reloads. */
+static boolean model_lod_is_max(void)
+{
+	static int is_max = -1;
+
+	if (is_max<0)
+	{
+		is_max = strcmp(config_string("display.model_lod"), "auto")!=0;
+	}
+	return is_max;
+}
+
 static void render_model_parts(
 	struct model const *model,
 	char const *region_permutation_indices,
@@ -316,6 +332,18 @@ static void render_model_parts(
 				{
 					model_data_error(model, "geometry");
 					continue;
+				}
+
+				/* port: under "max" a permutation without the chosen level draws its own
+				highest level below it, rather than nothing */
+				if (geometry_index==NONE && model_lod_is_max())
+				{
+					short level_index = geometry_detail_level_index;
+
+					while (geometry_index==NONE && level_index>0)
+					{
+						geometry_index = permutation->geometry_indices[--level_index];
+					}
 				}
 
 				if (!render_model_no_geometry && geometry_index!=NONE)
@@ -866,22 +894,6 @@ static void model_data_error(
 	}
 
 	return;
-}
-
-/* port: port_config.c's */
-const char *config_string(const char *name);
-
-/* port: display.model_lod is "max" (the default) rather than "auto". Only the answer is
-kept: it is read once, after the config has loaded. */
-static boolean model_lod_is_max(void)
-{
-	static int is_max = -1;
-
-	if (is_max<0)
-	{
-		is_max = strcmp(config_string("display.model_lod"), "auto")!=0;
-	}
-	return is_max;
 }
 
 void render_model(
