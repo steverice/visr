@@ -857,6 +857,10 @@ void halo_render_random_begin(
 	void);
 void halo_render_random_end(
 	void);
+void halo_render_random_stereo_pass(
+	short eye);
+void halo_render_random_stereo_end(
+	void);
 unsigned long get_random_seed(
 	void);
 

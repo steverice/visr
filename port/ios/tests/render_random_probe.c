@@ -7,9 +7,10 @@ from the same local sequence for things that reach the simulation. The probe
 checks that the game's sequence, with frames drawn between its ticks, comes
 out as it does with no frames at all, however many numbers each frame takes;
 that the render's own sequence carries on from frame to frame rather than
-repeating; that a nested bracket swaps once; that a stereo frame's restore
-of the seed between eyes (render.c) repeats the eye's numbers and leaves the
-game's alone; and that an unmatched end changes nothing. */
+repeating; that a nested bracket swaps once; that a stereo frame's passes
+draw eye 0's numbers again, leave the game's alone, and keep the numbers
+eye 0 alone draws, so the next frame does not repeat them even when the
+last pass draws nothing; and that an unmatched end changes nothing. */
 #include <assert.h>
 #include <stdio.h>
 
@@ -48,6 +49,8 @@ int main(void)
 	unsigned short first_frame[8];
 	unsigned short later_frame[8];
 	unsigned short eye[2][4];
+	unsigned short eye_0_only[8][3];
+	int frame_index;
 	unsigned long game_before;
 	int tick;
 	int i;
@@ -99,26 +102,43 @@ int main(void)
 	halo_render_random_end();
 	assert(local_seed == game_before);
 
-	/* a stereo frame: render.c saves the seed before eye 0 and puts it back
-	before eye 1, so both eyes draw the same numbers, and the game's seed
-	comes back after the frame */
+	/* stereo frames (render_player_frame_stereo): every pass repeats eye 0's
+	shared numbers, eye 0 draws more of its own after them (weather, the fog
+	screen, a new particle's sprite), eye 1 draws only the shared ones and
+	the inset none, and successive frames must not repeat eye 0's numbers;
+	the game's seed comes back after each frame */
 	game_before = local_seed;
-	halo_render_random_begin();
+	for (frame_index = 0; frame_index < 8; frame_index++)
 	{
-		unsigned long saved = local_seed;
-		int e;
+		short pass;
 
-		for (e = 0; e < 2; e++)
+		halo_render_random_begin();
+		for (pass = 0; pass < 3; pass++)
 		{
-			local_seed = saved;
-			for (i = 0; i < 4; i++)
-				eye[e][i] = draw();
+			halo_render_random_stereo_pass(pass);
+			if (pass < 2)
+			{
+				for (i = 0; i < 4; i++)
+					eye[pass][i] = draw();
+			}
+			if (pass == 0)
+			{
+				for (i = 0; i < 3; i++)
+					eye_0_only[frame_index][i] = draw();
+			}
+		}
+		halo_render_random_stereo_end();
+		halo_render_random_end();
+		for (i = 0; i < 4; i++)
+			assert(eye[0][i] == eye[1][i]);
+		assert(local_seed == game_before);
+		if (frame_index > 0)
+		{
+			for (i = 0; i < 3 && eye_0_only[frame_index][i] == eye_0_only[frame_index - 1][i]; i++)
+				;
+			assert(i < 3);
 		}
 	}
-	halo_render_random_end();
-	for (i = 0; i < 4; i++)
-		assert(eye[0][i] == eye[1][i]);
-	assert(local_seed == game_before);
 
 	/* an end without a begin changes nothing */
 	halo_render_random_end();
@@ -128,6 +148,6 @@ int main(void)
 	assert(local_seed == game_before);
 
 	puts("PASS: render random: the game's local sequence ignores the frames between ticks, "
-		"the render's carries on, nested and stereo brackets, unmatched ends");
+		"the render's carries on, nested brackets, stereo passes keep eye 0's draws, unmatched ends");
 	return 0;
 }

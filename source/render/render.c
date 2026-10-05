@@ -510,7 +510,6 @@ static void render_player_frame_stereo(
 	short pass_count;
 	struct render_camera inset_camera;
 	struct render_camera inset_rasterizer_camera;
-	unsigned long local_random_seed;
 
 	stereo = halo_stereo_frame();
 	/* the zoom's inset (halo_stereo.h): while zoomed in HEAD mode's full
@@ -609,7 +608,6 @@ static void render_player_frame_stereo(
 	halo_stereo_set_fade(fade);
 
 	time_delta_since_tick_sec = render.time_delta_since_tick_sec;
-	local_random_seed = *get_global_local_random_seed_address();
 	/* the eyes, then the zoom's inset if any (pass 2) */
 	for (eye = 0; eye < pass_count; eye++)
 	{
@@ -668,8 +666,7 @@ static void render_player_frame_stereo(
 		repeat pass's fog screen state is put back when its window ends
 		(rasterizer_xbox_environment_fog.c). A consumer added later than
 		those needs its own per-frame seed, as Task 4's review suggested */
-		if (eye >= 1)
-			*get_global_local_random_seed_address() = local_random_seed;
+		halo_render_random_stereo_pass(eye); /* render_random.c */
 		/* the mirror's render_window runs in the eye's layer, so it skips
 		render_ui_widgets, deliberately: they draw once, in the HUD pass. It
 		takes the flash as mono's mirror does (the game's function, for no
@@ -734,6 +731,8 @@ static void render_player_frame_stereo(
 		render_stereo_visibility_camera = NULL;
 	}
 	render.time_delta_since_tick_sec = time_delta_since_tick_sec;
+	/* port: the frame leaves the seed where eye 0 left it (render_random.c) */
+	halo_render_random_stereo_end();
 
 	/* the HUD pass: the presenter blends its layer over each eye by its
 	alpha, the picture's transmittance (d3d8_device.c, hud_layer_blend). The

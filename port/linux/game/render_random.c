@@ -22,9 +22,18 @@ main_game_render and main_pregame_render bracket their work with
 halo_render_random_begin and halo_render_random_end, which swap the render's
 own seed in and the game's back out, so the game's local sequence advances
 only by the game's own draws. The render's sequence starts as the bitwise
-complement of the game's seed at the first frame. render_player_frame_stereo
-(render.c) saves and restores the seed between its eyes inside the bracket,
-so the eyes still draw the same render numbers.
+complement of the game's seed at the first frame.
+
+A stereo frame (render_player_frame_stereo, render.c) draws each eye, and
+the zoom's inset, from the same render seed, so a lightning bolt has one
+shape in both eyes: halo_render_random_stereo_pass puts the seed eye 0
+started from back before each later pass. Some draws happen in eye 0 alone
+(weather's spawns, the fog screen's wind and layer offsets, a new particle's
+first sprite), so the seed a later pass leaves behind lacks them; were the
+frame to leave the seed there, a last pass that drew nothing would start
+every frame from the same seed, and eye 0 would repeat the same weather,
+sprites and fog forever. halo_render_random_stereo_end, after the passes,
+leaves the seed where eye 0 left it.
 
 port/ios/tests/render_random_probe.c includes this file with a stand-in for
 the seed.
@@ -63,4 +72,27 @@ void halo_render_random_end(void)
 		return;
 	render_seed = *seed;
 	*seed = game_seed;
+}
+
+static unsigned long stereo_start_seed;
+static unsigned long stereo_eye_0_end_seed;
+
+void halo_render_random_stereo_pass(short eye)
+{
+	unsigned long *seed = get_global_local_random_seed_address();
+
+	if (eye == 0)
+	{
+		stereo_start_seed = *seed;
+		stereo_eye_0_end_seed = *seed;
+		return;
+	}
+	if (eye == 1)
+		stereo_eye_0_end_seed = *seed;
+	*seed = stereo_start_seed;
+}
+
+void halo_render_random_stereo_end(void)
+{
+	*get_global_local_random_seed_address() = stereo_eye_0_end_seed;
 }
