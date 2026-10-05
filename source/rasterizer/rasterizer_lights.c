@@ -960,8 +960,16 @@ void rasterizer_lens_flares_draw(
 					real light_scale;
 					short reflection_index;
 
+					/* port: in a stereo eye, from the center camera (render.camera
+					in an eye's window, render.c): the reflections lie on the line
+					from the light through the camera's axis, which would otherwise
+					be each eye's own axis, so each eye would put them at different
+					points, with the light's parallax reversed (beyond infinity for
+					a light a few meters away). From the center, both eyes draw the
+					same points, at the light's depth */
 					vector_from_points3d(
-						&global_window_parameters.camera.position,
+						halo_stereo_current_layer() == 0 || halo_stereo_current_layer() == 1 ?
+							&render.camera.position : &global_window_parameters.camera.position,
 						&corona_position,
 						&eye_to_corona_vector);
 					depth = dot_product3d(&global_window_parameters.camera.forward, &eye_to_corona_vector);
