@@ -96,6 +96,11 @@ enum
 	_xgpu_sampler_2d,
 	_xgpu_sampler_3d,
 	_xgpu_sampler_cube,
+	/* a 2D screen-sized target of a foveated eye (gpu_texture_description's
+	foveated_eye): its texels are in the eye's rate map's physical layout, so
+	the lookup maps its screen coordinates through the map (nv2a_msl.c; Metal
+	only) */
+	_xgpu_sampler_2d_foveated,
 };
 
 /* everything a translated pixel shader depends on; the GLSL program cache

@@ -170,6 +170,10 @@ static id<MTLCommandQueue> queue;
 static CAMetalLayer *layer;
 /* reversed-Z (see depth_compare_function) */
 static float reversed_depth(float depth);
+@class MetalTexture;
+/* foveated eyes' targets (the foveation section) */
+static BOOL foveation_sizes(MetalTexture *record, MTLSize *screen, MTLSize *physical);
+static id<MTLTexture> foveation_resolve(MetalTexture *record, NSUInteger width, NSUInteger height);
 #include "host_config.h"
 #include "host_stereo.h"
 #if TARGET_OS_VISION
@@ -761,6 +765,46 @@ static uint32_t gpu_metal_texture_read(gpu_texture texture, void *pixels, uint32
 			return 0;
 		width = description->width;
 		height = description->height;
+		/* a foveated eye's target: resolved to its screen size first, so the
+		picture has the view's shape and each pixel weighs its screen area
+		(the depth's empty share), then read as an ordinary one */
+		{
+			MTLSize screen, physical;
+			id<MTLTexture> resolved;
+
+			if (foveation_sizes(record, &screen, &physical))
+			{
+				width = screen.width;
+				height = screen.height;
+				if (size < width * height * 4)
+					return 0;
+				resolved = foveation_resolve(record, width, height);
+				if (!resolved)
+					return 0;
+				staging = [device newBufferWithLength:width * height * 4 options:MTLResourceStorageModeShared];
+				blit = [command_buffer() blitCommandEncoder];
+				[blit copyFromTexture:resolved sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
+					sourceSize:MTLSizeMake(width, height, 1) toBuffer:staging destinationOffset:0
+					destinationBytesPerRow:width * 4 destinationBytesPerImage:width * height * 4];
+				[blit endEncoding];
+				{
+					id<MTLCommandBuffer> waited = commands;
+
+					commit(NO);
+					[waited waitUntilCompleted];
+				}
+				memcpy(pixels, staging.contents, width * height * 4);
+				if (description->format == GPU_FORMAT_DEPTH_STENCIL)
+				{
+					float *depth = pixels;
+					unsigned long index;
+
+					for (index = 0; index < width * height; index++)
+						depth[index] = reversed_depth(depth[index]);
+				}
+				return 1;
+			}
+		}
 		if (size < width * height * 4)
 			return 0;
 		/* a depth target's depth plane, which holds the reversed depth
@@ -2580,13 +2624,31 @@ static struct
 static void bind_stages(const struct gpu_draw *draw, unsigned exact)
 {
 	int stage;
+	/* a foveated eye's target read through its map (nv2a_msl.c's foveated
+	sampler): the map's parameter data, and per stage its screen and
+	physical sizes, then its allocated size */
+	float foveation[GPU_STAGE_COUNT][2][4];
+	id<MTLBuffer> foveation_map_data = nil;
 
+	memset(foveation, 0, sizeof(foveation));
 	for (stage = 0; stage < GPU_STAGE_COUNT; stage++)
 	{
 		const struct gpu_stage *packet = &draw->stages[stage];
 		__unsafe_unretained MetalTexture *record = packet->type ? texture_record(packet->texture) : nil;
 		__unsafe_unretained id<MTLTexture> texture = record ? record->texture : nil;
 		__unsafe_unretained id<MTLSamplerState> sampler;
+		MTLSize screen, physical;
+
+		if (texture && foveation_sizes(record, &screen, &physical))
+		{
+			foveation[stage][0][0] = (float)screen.width;
+			foveation[stage][0][1] = (float)screen.height;
+			foveation[stage][0][2] = (float)physical.width;
+			foveation[stage][0][3] = (float)physical.height;
+			foveation[stage][1][0] = (float)texture.width;
+			foveation[stage][1][1] = (float)texture.height;
+			foveation_map_data = foveation_parameters(record);
+		}
 
 		/* a stage with no texture, or one with no storage yet, samples black,
 		as GL's texture 0 or an incomplete texture does */
@@ -2630,6 +2692,14 @@ static void bind_stages(const struct gpu_draw *draw, unsigned exact)
 			colors[stage][3] = (float)(color >> 24) / 255.0f;
 		}
 		[encoder setFragmentBytes:colors length:sizeof(colors) atIndex:3];
+		metal_state_always(&state_cache);
+	}
+	if (foveation_map_data)
+	{
+		/* set on every foveated draw (the state cache doesn't track them) */
+		[encoder setFragmentBuffer:foveation_map_data offset:0 atIndex:1];
+		metal_state_always(&state_cache);
+		[encoder setFragmentBytes:foveation length:sizeof(foveation) atIndex:2];
 		metal_state_always(&state_cache);
 	}
 }

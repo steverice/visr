@@ -33,6 +33,7 @@ Conventions carried over from the Xbox:
 #include "posix.h"
 
 #include <math.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -879,6 +880,96 @@ static int32_t target_pixel(float coordinate, int axis)
 	return (int32_t)floorf(coordinate * target_scale[axis] + 0.5f);
 }
 
+/* The foveation audit (debug.gpu_stats, Task 10): for the first gameplay
+frame (not a film) whose eyes render through the rate maps, a line for each
+render pass (each change of the draws' targets: their layer, sizes and
+whether they're foveated) and for each texture stage that binds a
+screen-sized target (and with which sampler), to match against the stereo
+spec's audit table: a line without a row is a pass foveation missed */
+static int foveation_audit_state; /* 0 waiting, 1 this frame, 2 done */
+static unsigned long foveation_audit_frame, foveation_audit_passes, foveation_audit_reads;
+static const struct render_target_entry *foveation_audit_color, *foveation_audit_depth;
+static const struct xgpu_render_target *foveation_audit_stages[4];
+
+static const char *foveation_audit_layer(int layer)
+{
+	static char other[24];
+
+	switch (layer)
+	{
+	case HALO_STEREO_LAYER_MONO: return "mono";
+	case 0: return "left eye";
+	case 1: return "right eye";
+	case HALO_STEREO_LAYER_HUD: return "HUD";
+	case HALO_STEREO_LAYER_INSET: return "inset";
+	case HALO_STEREO_LAYER_RETICLE: return "reticle";
+	}
+	snprintf(other, sizeof(other), "HUD group %d", layer - HALO_STEREO_LAYER_HUD_GROUP);
+	return other;
+}
+
+static void foveation_audit_target(char *text, size_t size, const char *role, const struct render_target_entry *entry)
+{
+	if (!entry)
+	{
+		snprintf(text, size, "%s none", role);
+		return;
+	}
+	snprintf(text, size, "%s %08lx %lux%lu (%s, %s, %lux%lu%s)", role, entry->target.data, entry->target.width,
+		entry->target.height, foveation_audit_layer(entry->layer),
+		entry->target.width == (unsigned long)halo_screen_width() && entry->target.height == SCREEN_HEIGHT ?
+		"screen-sized" : "offscreen", entry->target.gl_width, entry->target.gl_height,
+		entry->target.foveated_eye ? ", foveated" : "");
+}
+
+/* at each draw's targets (draw_targets) */
+static void foveation_audit_pass(const struct render_target_entry *color, const struct render_target_entry *depth)
+{
+	unsigned long width, height;
+	char color_text[160], depth_text[160];
+
+	if (foveation_audit_state == 1 && device.frame != foveation_audit_frame)
+	{
+		platform_log("foveation audit: frame %lu ends: %lu passes, %lu reads of screen-sized targets",
+			foveation_audit_frame, foveation_audit_passes, foveation_audit_reads);
+		foveation_audit_state = 2;
+	}
+	if (foveation_audit_state == 0 && debug_settings.statistics && foveated_eye_allocation(&width, &height) &&
+		!halo_stereo_film())
+	{
+		foveation_audit_state = 1;
+		foveation_audit_frame = device.frame;
+		platform_log("foveation audit: frame %lu, the first gameplay frame whose eyes render through the rate maps "
+			"(allocated %lux%lu)", device.frame, width, height);
+	}
+	if (foveation_audit_state != 1 || (color == foveation_audit_color && depth == foveation_audit_depth))
+		return;
+	foveation_audit_color = color;
+	foveation_audit_depth = depth;
+	memset(foveation_audit_stages, 0, sizeof(foveation_audit_stages));
+	foveation_audit_passes++;
+	foveation_audit_target(color_text, sizeof(color_text), "color", color);
+	foveation_audit_target(depth_text, sizeof(depth_text), "depth", depth);
+	platform_log("foveation audit: pass %lu: %s; %s", foveation_audit_passes, color_text, depth_text);
+}
+
+/* at each stage that binds a render target (stages_fill) */
+static void foveation_audit_stage(int stage, const struct xgpu_render_target *target, unsigned char sampler)
+{
+	const struct render_target_entry *entry;
+
+	if (foveation_audit_state != 1 || !target || target->width != (unsigned long)halo_screen_width() ||
+		target->height != SCREEN_HEIGHT || foveation_audit_stages[stage] == target)
+		return;
+	foveation_audit_stages[stage] = target;
+	foveation_audit_reads++;
+	entry = (const struct render_target_entry *)((const char *)target - offsetof(struct render_target_entry, target));
+	platform_log("foveation audit: pass %lu: stage %d reads %08lx (%s, %lux%lu%s) with the %s sampler",
+		foveation_audit_passes, stage, target->data, foveation_audit_layer(entry->layer), target->gl_width,
+		target->gl_height, target->foveated_eye ? ", foveated" : "",
+		sampler == _xgpu_sampler_2d_foveated ? "foveated" : "plain");
+}
+
 /* the textures the current targets render to; FALSE when there are none */
 static BOOL draw_targets(gpu_texture *color_texture, gpu_texture *depth_texture)
 {
@@ -889,6 +980,7 @@ static BOOL draw_targets(gpu_texture *color_texture, gpu_texture *depth_texture)
 		depth = NULL;
 	if (!color && !depth)
 		return FALSE;
+	foveation_audit_pass(color, depth);
 	/* the reticle's and the HUD groups' targets: empty before their first
 	draw of the frame (the HUD layer's own empty, hud_layer_blend: no color,
 	the whole picture showing) */
@@ -2741,6 +2833,12 @@ static void stages_fill(struct nv2a_pixel_shader_key *key, float texture_scale[4
 				key->coverage_alpha = description.hires_coverage != FALSE;
 			key->sampler_type[stage] = type == GPU_TEXTURE_CUBE ? _xgpu_sampler_cube :
 				type == GPU_TEXTURE_3D ? _xgpu_sampler_3d : _xgpu_sampler_2d;
+			/* a foveated eye's screen-sized target: its texels are in the
+			eye's rate map's layout, so the lookup goes through the map
+			(texture_scale still takes the coordinates to the screen's) */
+			if (target && target->foveated_eye && handle == target->texture)
+				key->sampler_type[stage] = _xgpu_sampler_2d_foveated;
+			foveation_audit_stage(stage, target, key->sampler_type[stage]);
 		}
 	}
 }

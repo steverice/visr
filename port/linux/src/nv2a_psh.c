@@ -355,6 +355,15 @@ static void sample(struct xgpu_text *text, const struct nv2a_dialect *dialect, c
 	case _xgpu_sampler_cube:
 		xgpu_text_append(text, "texture(tex%d, (%s).xyz", stage, coordinates);
 		break;
+	case _xgpu_sampler_2d_foveated:
+		/* (nv2a_msl.c's remap: the stage picks its sizes; GLSL never sees one) */
+		if (dialect->msl)
+		{
+			xgpu_text_append(text, "texture_foveated(%d, tex%d, (%s).xy * texture_scale[%d].xy", stage, stage,
+				coordinates, stage);
+			break;
+		}
+		/* fall through */
 	default:
 		xgpu_text_append(text, "texture(tex%d, (%s).xy * texture_scale[%d].xy", stage, coordinates, stage);
 		break;

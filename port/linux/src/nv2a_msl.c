@@ -13,10 +13,10 @@ Bindings, which the Metal backend (port/ios/host/gpu_metal.m) follows:
   buffer 2 struct AttributeTable, buffers 10-25 the vertex buffer each of the
   16 attributes reads (see fetch_attribute);
 - fragment: buffer 0 struct Uniforms, textures and samplers 0-3 the stages;
-  compiled with EXACT_BORDERS (exact border colors, nv2a_msl_fragment_main),
-  also buffer 3 the stages' border colors (buffers 1 and 2 are
-  phase3-stereo's rate map and foveation sizes) and samplers 4-7 opaque
-  white borders.
+  with a foveated stage (_xgpu_sampler_2d_foveated), buffer 1 the eye's rate
+  map's parameter data and buffer 2 each stage's sizes; compiled with
+  EXACT_BORDERS (exact border colors, nv2a_msl_fragment_main), also buffer 3
+  the stages' border colors and samplers 4-7 opaque white borders.
 */
 
 #include "xgpu.h"
@@ -249,8 +249,29 @@ void nv2a_msl_fragment_main(struct xgpu_text *text, const struct nv2a_dialect *d
 	const struct nv2a_pixel_shader_key *key)
 {
 	unsigned long index;
-	int stage;
+	int stage, foveated = 0;
 
+	for (stage = 0; stage < 4; stage++)
+		foveated |= key->sampler_type[stage] == _xgpu_sampler_2d_foveated;
+	/* a foveated eye's screen-sized target (_xgpu_sampler_2d_foveated): its
+	texels are where the eye's rate map put each screen pixel, at the top
+	left of a target allocated larger. The lookup's normalized coordinates
+	times the screen size, inside it, go through the map's decoder (the map's
+	parameter data in buffer 1), then stay half a texel inside the map's
+	physical region (past it the texels are stale) and are divided by the
+	allocated size. Buffer 2 holds two float4s a stage: the screen size and
+	the physical size, then the allocated size (gpu_metal.m's bind_stages) */
+	if (foveated)
+		xgpu_text_append(text,
+			"static float2 foveated_coordinates(float2 coordinates, constant rasterization_rate_map_data &map,\n"
+			"\tfloat4 screen_physical, float4 allocated)\n"
+			"{\n"
+			"\trasterization_rate_map_decoder decoder(map);\n"
+			"\tfloat2 screen = clamp(coordinates * screen_physical.xy, float2(0.0), screen_physical.xy - 1.0 / 256.0);\n"
+			"\tfloat2 physical = clamp(decoder.map_screen_to_physical_coordinates(screen), float2(0.5),\n"
+			"\t\tscreen_physical.zw - 0.5);\n"
+			"\treturn physical / allocated.xy;\n"
+			"}\n");
 	/* exact border colors: EXACT_BORDERS, which the Metal backend defines
 	only when it compiles a shader again for a draw that needs it, has bit n
 	set for each stage n whose BORDER addressing has a color Metal's samplers
@@ -281,6 +302,9 @@ void nv2a_msl_fragment_main(struct xgpu_text *text, const struct nv2a_dialect *d
 		xgpu_text_append(text, ",\n\t%s tex%d [[texture(%d)]], sampler tex%d_sampler [[sampler(%d)]]",
 			type, stage, stage, stage, stage);
 	}
+	if (foveated)
+		xgpu_text_append(text, ",\n\tconstant rasterization_rate_map_data &rate_map [[buffer(1)]],"
+			"\n\tconstant float4 *foveation [[buffer(2)]]");
 	xgpu_text_append(text, "\n#if EXACT_BORDERS\n\t, constant Borders &borders [[buffer(3)]]\n#endif\n");
 	for (stage = 0; stage < 4; stage++)
 		xgpu_text_append(text, "#if EXACT_BORDERS & %d\n\t, sampler tex%d_white [[sampler(%d)]]\n#endif\n",
@@ -302,6 +326,9 @@ void nv2a_msl_fragment_main(struct xgpu_text *text, const struct nv2a_dialect *d
 		"#else\n"
 		"#define texture(t, coordinates, b) (t).sample(t##_sampler, coordinates, bias(b))\n"
 		"#endif\n");
+	if (foveated)
+		xgpu_text_append(text, "#define texture_foveated(stage, t, coordinates, b) (t).sample(t##_sampler, "
+			"foveated_coordinates(coordinates, rate_map, foveation[(stage) * 2], foveation[(stage) * 2 + 1]), bias(b))\n");
 	for (index = 0; index < VARYING_COUNT; index++)
 		xgpu_text_append(text, "\tvec4 %s = in.%s;\n", varyings[index], varyings[index]);
 	xgpu_text_append(text, "\tfloat xFog = in.xFog;\n");
