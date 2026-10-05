@@ -705,6 +705,10 @@ static void render_player_frame_stereo(
 
 		render_stereo_visibility_camera = eye < 2 ? &cull_camera : NULL;
 		render_stereo_screen_flash = &screen_flash;
+		/* port: the eye's position, for what sits at infinity in each eye
+		(the sky, render_sky); not the inset's mono pass, and set only now,
+		so the mirror's window above keeps its own camera */
+		halo_stereo_set_eye_position(eye < 2 ? &eye_camera.position : NULL);
 		render_window(
 			window->local_player_index,
 			eye < 2 ? camera : &inset_camera,
@@ -713,6 +717,7 @@ static void render_player_frame_stereo(
 			&eye_frustum,
 			_render_target_primary,
 			has_mirror);
+		halo_stereo_set_eye_position(NULL);
 		render_stereo_screen_flash = NULL;
 		render_stereo_visibility_camera = NULL;
 	}

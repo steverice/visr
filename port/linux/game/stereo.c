@@ -1015,6 +1015,20 @@ void halo_stereo_stick_look(short gamepad_index, float yaw_response, float time_
 		halo_stereo_vignette_ease(vignette_strength, turn_fraction, time_delta) : 0.0f;
 }
 
+/* the eye pass's camera position (halo_stereo.h): render.c's eye loop sets
+it around each eye's render_window */
+static const union real_point3d *eye_position;
+
+void halo_stereo_set_eye_position(const union real_point3d *position)
+{
+	eye_position = position;
+}
+
+const union real_point3d *halo_stereo_eye_position(void)
+{
+	return eye_position;
+}
+
 float halo_stereo_lod_scale(void)
 {
 	return stereo_mode == HALO_STEREO_HEAD || stereo_mode == HALO_STEREO_SIDE_BY_SIDE ? lod_scale_setting : 1.0f;

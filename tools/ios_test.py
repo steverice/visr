@@ -127,6 +127,16 @@ cull_build = render_source.find('render_camera_build_frustum(&cull_camera')
 if cull_build < 0 or render_source.find('halo_stereo_lod_projection(&cull_camera, &cull_frustum)', cull_build) < 0:
     raise SystemExit('render.c: render_player_frame_stereo must call halo_stereo_lod_projection(&cull_camera, '
                      '&cull_frustum) after render_camera_build_frustum(&cull_camera, ...)')
+# the sky at infinity in each eye: render_sky centers it on the eye's position, which the eye loop sets after the
+# mirror's window, around the eye's own render_window, and clears after
+eye_set = render_source.find('halo_stereo_set_eye_position(eye < 2 ? &eye_camera.position : NULL);')
+eye_window = render_source.find('render_window(', eye_set)
+if eye_set < 0 or render_source.rfind('structure_visibility_find_mirror', 0, eye_set) < 0 or \
+        render_source.find('halo_stereo_set_eye_position(NULL);', eye_window) < 0:
+    raise SystemExit("render.c: render_player_frame_stereo must set the eye's position after the mirror's window, "
+                     "around the eye's render_window, and clear it after")
+if 'halo_stereo_eye_position()' not in (ROOT / 'source/render/render_sky.c').read_text():
+    raise SystemExit("render_sky.c: render_sky must center the sky on the eye's position in an eye pass")
 # the head-tracked presenter's shaders, compiled from its source string at run time: compile
 # them here, as the visionOS build's preprocessor leaves them (host_stereo_vignette.h's mask is
 # macro text, which a math macro could otherwise rewrite unseen)

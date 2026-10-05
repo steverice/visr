@@ -264,6 +264,14 @@ mono's. The planes are unchanged */
 struct render_camera;
 struct render_frustum;
 void halo_stereo_lod_projection(const struct render_camera *camera, struct render_frustum *cull_frustum);
+/* The eye pass's camera position (world units). render_player_frame_stereo
+(render.c) sets it around each eye's render_window and clears it (NULL)
+after; it stays NULL in mono, the HUD, the zoom's inset and a mirror's
+window. render_sky centers the sky on it, so the sky sits at infinity in
+each eye. The pointer is the caller's, valid only while it is set */
+union real_point3d;
+void halo_stereo_set_eye_position(const union real_point3d *position);
+const union real_point3d *halo_stereo_eye_position(void);
 /* 1 when this frame is the film for a cutscene: the letterbox, held
 through the film's hold after it drops. The 16:9 narrowing (main.c) and the
 title bars (cinematics.c) follow this, not the letterbox flag itself, so the
