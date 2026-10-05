@@ -734,3 +734,12 @@ def test_fresh_config_flag_and_environment_default(monkeypatch):
     monkeypatch.setenv("HALO_FRESH_CONFIG", "0")
     assert parsed_fresh_config(monkeypatch, []) is False
 
+
+def test_native_run_ignores_warnings_but_the_ipad_scheme_keeps_them(tmp_path, monkeypatch, native):
+    launches = []
+    monkeypatch.setattr(mac_run, "launch_native", fake_launches(launches))
+    mac_run.run_native(native_args(tmp_path, native, metal_validation=True))
+    environment = launches[0]["environment"]
+    assert environment["MTL_DEBUG_LAYER_WARNING_MODE"] == "ignore"
+    assert environment["MTL_DEBUG_LAYER"] == "1" and environment["MTL_DEBUG_LAYER_ERROR_MODE"] == "nslog"
+    assert mac_run.validation_environment(True, False)["MTL_DEBUG_LAYER_WARNING_MODE"] == "nslog"

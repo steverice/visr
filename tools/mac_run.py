@@ -777,8 +777,14 @@ def run_native(args):
         seed_native_data(args, data)
     prepare(args, data, rewrite=True)
     limit = args.time_limit or args.exit_after + 120
-    finished = launch_native(args.app, data, args.out,
-                             validation_environment(args.metal_validation, args.metal_shader_validation), limit)
+    environment = validation_environment(args.metal_validation, args.metal_shader_validation)
+    if "MTL_DEBUG_LAYER_WARNING_MODE" in environment:
+        # an open-launched app's NSLog lands in stderr.log, which check-metal greps for validation errors,
+        # while the Xcode-launched iPad runner's goes to the unified log. Both runners get the same warnings
+        # (unused bindings, redundant sets), so ignore them here (Metal's default): any validation line
+        # left in the native stderr.log is then an error
+        environment["MTL_DEBUG_LAYER_WARNING_MODE"] = "ignore"
+    finished = launch_native(args.app, data, args.out, environment, limit)
     collect(data, args.out)
     if not finished:
         sys.exit(f"the native app was still running {limit} seconds after launch and was killed; "
