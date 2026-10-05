@@ -21,6 +21,7 @@ display pinned to what the iPad runner sees, so its results compare with the iPa
 """
 
 import argparse
+import difflib
 import os
 import plistlib
 import re
@@ -211,6 +212,82 @@ def _compare_files(problems, folder, a, b, files_a, files_b, contents):
 def capability_lines(log):
     """the GPU capability lines in a log"""
     return [match.group(1) for match in map(CAPABILITIES.search, log.splitlines()) if match]
+
+
+# The log lines that name a run's inputs and environment, which the iPad and native runners must print
+# identically (the native runner's parity runs): the guest image, the display the guest is told, the
+# render size, the GL implementation and the entry points it lacks, the
+# capabilities, the audio device, and a shader replay's verdict. "display pinned" is the native runner's
+# own and is not compared.
+INPUT_LINES = re.compile(
+    r"(guest image sha256 [0-9a-f]{64}"
+    r"|guest display: .*"
+    r"|screen: .* drawn at .*"
+    r"|OpenGL ES \d+\.\d+: .*"
+    r"|OpenGL function \S+ is unavailable"
+    r"|OpenGL .* on .*"
+    r"|Metal on .*"
+    r"|GPU capabilities: .*"
+    r"|audio device: .*"
+    r"|audio output active: .*"
+    r"|shader replay: .*)$")
+# the lines every game run's log must have, under either runner and either renderer: a pair of logs that
+# both lack one would otherwise compare equal on that point
+REQUIRED_INPUTS = {
+    "the guest's SHA-256": re.compile(r"^guest image sha256 "),
+    "the guest's display": re.compile(r"^guest display: "),
+    "the renderer": re.compile(r"^(OpenGL .* on |Metal on )"),
+    "the GPU capabilities": re.compile(r"^GPU capabilities: "),
+    "the audio device": re.compile(r"^audio device: "),
+}
+# a path into a run's own data folder in config.toml, which differs between the runners
+RUNNER_PATH = re.compile(r'^"[^"]*/runner(/|")')
+
+
+def input_lines(log):
+    """the lines of a log that name the run's inputs (INPUT_LINES), in order"""
+    return [match.group(1) for match in map(INPUT_LINES.search, log.splitlines()) if match]
+
+
+def config_settings(text):
+    """{"section.key": raw value} of a config.toml as prepare writes it, with paths into the run's
+    data folder written as $DATA, so two runners' files compare by their settings"""
+    settings, section = {}, ""
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1]
+            continue
+        key, _, value = line.partition("=")
+        settings[f"{section}.{key.strip()}"] = RUNNER_PATH.sub(r'"$DATA/runner\1', value.strip())
+    return settings
+
+
+def compare_inputs(a, b):
+    """the differences between what two result folders' runs were given (empty: none): the
+    INPUT_LINES of their logs, in order, and their config.toml settings"""
+    a, b = Path(a), Path(b)
+    problems = [f"{folder / name} missing" for folder in (a, b) for name in ("stderr.log", "config.toml")
+                if not (folder / name).is_file()]
+    if problems:
+        return problems
+    lines_a, lines_b = (input_lines((folder / "stderr.log").read_text(errors="replace")) for folder in (a, b))
+    for folder, lines in ((a, lines_a), (b, lines_b)):
+        for what, pattern in REQUIRED_INPUTS.items():
+            if not any(pattern.search(line) for line in lines):
+                problems.append(f"{folder}/stderr.log does not name {what}")
+    if not lines_a and not lines_b:
+        problems.append(f"{a}/stderr.log and {b}/stderr.log name none of the run's inputs")
+    elif lines_a != lines_b:
+        diff = difflib.unified_diff(lines_a, lines_b, str(a), str(b), lineterm="", n=0)
+        problems.append("log lines differ:\n  " + "\n  ".join(list(diff)[2:]))
+    config_a, config_b = (config_settings((folder / "config.toml").read_text()) for folder in (a, b))
+    for key in sorted(config_a.keys() | config_b.keys()):
+        if config_a.get(key) != config_b.get(key):
+            problems.append(f"config.toml {key}: {config_a.get(key)} against {config_b.get(key)}")
+    return problems
 
 
 def compare(a, b, tolerance=0, ignore_gl_calls=False, channel_tolerance=0, fraction=0.0, across_backends=False):
@@ -783,9 +860,18 @@ def main():
                                 help="compare gpu_stats without the GL call totals")
     compare_parser.add_argument("--across-backends", action="store_true",
                                 help="a GL run against a Metal run: shader inputs, not sources; capabilities; no GL calls")
+    inputs_parser = commands.add_parser("compare-inputs",
+                                        help="compare what two runs were given: the log lines that name their "
+                                             "inputs, and config.toml (the native runner's parity runs)")
+    inputs_parser.add_argument("a", type=Path)
+    inputs_parser.add_argument("b", type=Path)
     args = parser.parse_args()
     if args.command == "run":
         run(args)
+    elif args.command == "compare-inputs":
+        problems = compare_inputs(args.a, args.b)
+        print("\n".join(problems) if problems else "match")
+        sys.exit(1 if problems else 0)
     else:
         problems = compare(args.a, args.b, args.tolerance, args.ignore_gl_calls, args.channel_tolerance,
                            args.fraction, args.across_backends)

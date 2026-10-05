@@ -576,3 +576,89 @@ def test_a_throwaway_run_that_open_could_not_start_leaves_the_folder_unseeded(tm
         mac_run.run_native(native_args(tmp_path, native, maps=maps))
     assert not (tmp_path / "data/maps").exists()
     assert (tmp_path / "data/maps.partial/a10.map").is_file()
+
+
+SHA = "ab" * 32
+INPUT_LOG = f"""halo-ios: Halo iOS native guest starting
+halo-ios: guest image sha256 {SHA}
+halo-ios: display pinned to 1366x1024@2: 2732x2048 pixels, width 640
+halo-ios: guest display: width 640, pixels 2732x2048
+screen: 640x480 drawn at 2732x2048 (maximum texture size 16384)
+OpenGL ES 3.0 Metal - 102 on Apple M6
+OpenGL ES 3.0: copy image 0, border clamp 0, anisotropy 1, S3TC 0, sample counting 1
+OpenGL function glDrawElementsBaseVertex is unavailable
+GPU capabilities: base vertex 0
+halo-ios: audio device: 48000 Hz, 2 channels, format 0x8120, 512 sample frames
+halo-ios: audio output active: 4096 PCM bytes, peak 0.2500
+frame 30: 120 draws, 3 immediate, 4000 GL calls
+"""
+INPUT_CONFIG = """[debug]
+exit_after = 40.0
+screenshot_directory = "{root}/runner/shots"
+gpu_dump_shaders = "{root}/runner/shaders"
+"""
+
+
+def input_run(folder, log=INPUT_LOG, root="/data"):
+    folder.mkdir(parents=True)
+    (folder / "stderr.log").write_text(log)
+    (folder / "config.toml").write_text(INPUT_CONFIG.format(root=root))
+    return folder
+
+
+def test_input_lines_keep_the_lines_that_name_a_run_s_inputs():
+    lines = mac_run.input_lines(INPUT_LOG)
+    assert f"guest image sha256 {SHA}" in lines
+    assert "audio device: 48000 Hz, 2 channels, format 0x8120, 512 sample frames" in lines
+    assert "OpenGL function glDrawElementsBaseVertex is unavailable" in lines
+    assert not any("display pinned" in line or "frame 30" in line for line in lines)
+
+
+def test_runs_that_differ_only_in_their_data_folder_and_the_pin_match(tmp_path):
+    a = input_run(tmp_path / "ipad", INPUT_LOG.replace("halo-ios: display pinned to 1366x1024@2: 2732x2048 pixels, width 640\n", ""),
+                  root="/Users/x/Library/Containers/ABC/Data/Documents")
+    b = input_run(tmp_path / "native", root="/Users/x/Library/Application Support/org.example.mac/runner-data")
+    assert mac_run.compare_inputs(a, b) == []
+
+
+def test_another_guest_image_is_a_difference(tmp_path):
+    a = input_run(tmp_path / "a")
+    b = input_run(tmp_path / "b", INPUT_LOG.replace(SHA, "cd" * 32))
+    problems = mac_run.compare_inputs(a, b)
+    assert len(problems) == 1 and "guest image sha256" in problems[0]
+
+
+def test_a_gl_entry_point_found_by_only_one_runner_is_a_difference(tmp_path):
+    a = input_run(tmp_path / "a")
+    b = input_run(tmp_path / "b", INPUT_LOG.replace("OpenGL function glDrawElementsBaseVertex is unavailable\n", ""))
+    assert mac_run.compare_inputs(a, b)
+
+
+def test_a_setting_only_one_run_had_is_a_difference(tmp_path):
+    a = input_run(tmp_path / "a")
+    b = input_run(tmp_path / "b")
+    (b / "config.toml").write_text((b / "config.toml").read_text() + 'network_test = "host:bloodgulch"\n')
+    problems = mac_run.compare_inputs(a, b)
+    assert problems == ['config.toml debug.network_test: None against "host:bloodgulch"']
+
+
+def test_a_log_with_none_of_the_lines_is_a_problem_not_a_match(tmp_path):
+    a = input_run(tmp_path / "a", "nothing\n")
+    b = input_run(tmp_path / "b", "nothing\n")
+    assert any("none of the run's inputs" in problem for problem in mac_run.compare_inputs(a, b))
+
+
+def test_a_kind_of_input_both_logs_lack_is_a_problem(tmp_path):
+    log = INPUT_LOG.replace("halo-ios: audio device: 48000 Hz, 2 channels, format 0x8120, 512 sample frames\n", "")
+    a = input_run(tmp_path / "a", log)
+    b = input_run(tmp_path / "b", log)
+    problems = mac_run.compare_inputs(a, b)
+    assert problems == [f"{a}/stderr.log does not name the audio device", f"{b}/stderr.log does not name the audio device"]
+
+
+def test_compare_inputs_reports_missing_files(tmp_path):
+    a = input_run(tmp_path / "a")
+    (tmp_path / "b").mkdir()
+    problems = mac_run.compare_inputs(a, tmp_path / "b")
+    assert any("stderr.log missing" in problem for problem in problems)
+    assert any("config.toml missing" in problem for problem in problems)
