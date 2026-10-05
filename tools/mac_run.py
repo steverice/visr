@@ -390,11 +390,18 @@ LAUNCH = """tell application "{xcode}"
 				if (status of result_of_run as text) is not "not yet started" then exit repeat
 				delay 1
 			end repeat
-			if (status of result_of_run as text) is not "error occurred" then
+			set run_status to (status of result_of_run as text)
+			-- xcodegen rewrites the open project before each run; when Xcode reloads it
+			-- only after the run was asked for, the reload cancels the run before it
+			-- launches anything (seen on an M4 Mac mini): ask again
+			if run_status is "cancelled" then
+				set last_error to "Xcode cancelled the run"
+			else if run_status is not "error occurred" then
 				set started_run to true
 				exit repeat
+			else
+				set last_error to (error message of result_of_run as text)
 			end if
-			set last_error to (error message of result_of_run as text)
 		on error message_of_error
 			set last_error to message_of_error
 		end try

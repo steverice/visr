@@ -256,8 +256,17 @@ def test_launch_script_retries_when_xcode_cannot_run():
     """Xcode sometimes answers a run with "Cannot run 'HaloRunner'" right after opening the project"""
     script = mac_run.LAUNCH.format(xcode="/Applications/Xcode.app", target="HaloRunner", project="/p/HaloRunner.xcodeproj")
     assert "set result_of_run to run doc" in script
-    assert '(status of result_of_run as text) is not "error occurred" then' in script
+    assert 'else if run_status is not "error occurred" then' in script
     assert script.index("repeat 3 times") < script.index("set result_of_run to run doc")
+
+
+def test_launch_script_retries_a_cancelled_run():
+    """a project reload right after the run was asked for cancels it before anything launches,
+    which counted as started and left the runner waiting 300 s (M4 Mac mini, 2026-10-05)"""
+    script = mac_run.LAUNCH.format(xcode="/Applications/Xcode.app", target="HaloRunner", project="/p/HaloRunner.xcodeproj")
+    cancelled = script.index('if run_status is "cancelled" then')
+    assert cancelled < script.index("set started_run to true")
+    assert script.index('set last_error to "Xcode cancelled the run"') > cancelled
 
 
 def test_launch_script_fails_with_the_reason_after_three_attempts():
