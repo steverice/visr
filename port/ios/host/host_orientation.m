@@ -69,10 +69,11 @@ HALO_LANDSCAPE_PREFERENCES
 @end
 
 void host_ios_require_landscape(UIWindow *window) {
-#if TARGET_OS_VISION
+#if TARGET_OS_VISION || TARGET_OS_MACCATALYST
     /* a visionOS window has no orientation, and its scene rejects iOS's
        geometry preferences; the controllers' landscape preferences above are
-       never consulted there */
+       never consulted there. A Mac Catalyst window has none either, and its
+       scene logs a warning for the request. */
     (void)window;
     return;
 #endif

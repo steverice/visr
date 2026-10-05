@@ -77,6 +77,16 @@ int main(int argc,char **argv) {
             usingBlock:^(NSNotification *notification){(void)notification;host_exit(0);}];
 #endif
         UIApplication.sharedApplication.idleTimerDisabled=YES;
+#if TARGET_OS_MACCATALYST
+        /* a runner's run (tools/mac_run.py sets HALO_RUNNER) must not slow down when its window is covered
+           or minimized: App Nap would throttle its timers and drawable presentation */
+        static id runner_activity;
+        if(getenv("HALO_RUNNER")){
+            runner_activity=[NSProcessInfo.processInfo beginActivityWithOptions:NSActivityUserInitiated|NSActivityLatencyCritical
+                reason:@"a test run"];
+            host_logf(HOST_LOG_INFO,"runner: App Nap held off");
+        }
+#endif
         host_ios_prepare_assets(data_root);
         /* the arena is the step a device can refuse (visionOS: see port/ios/README.md) */
         if(host_load_image(NULL,0))host_fatal(host_arena?"Could not map the signed game image. See ios-runtime.log in Files.":
