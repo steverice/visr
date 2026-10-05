@@ -51,6 +51,12 @@ run(BUILD/'virtual-clock-probe')
 run('xcrun', 'clang', '-O2', '-fsanitize=address,undefined', '-Iport/linux/src',
     'port/ios/tests/texture_override_probe.c', '-o', BUILD/'texture-override-probe')
 run(BUILD/'texture-override-probe')
+# the texture upscale policy's device classifier (port/runtime/texture_policy.c)
+run('python3', 'tools/embed_texture_policy.py', 'port/assets/texture-policy.json', BUILD/'texture_policy_table.c')
+run('xcrun', 'clang', '-O2', '-fsanitize=address,undefined', '-Iport/runtime', '-Iport/linux/src',
+    'port/ios/tests/texture_policy_probe.c', 'port/runtime/texture_policy.c', BUILD/'texture_policy_table.c',
+    '-lz', '-o', BUILD/'texture-policy-probe')
+run(BUILD/'texture-policy-probe')
 
 # Parse untrusted XISO metadata and exercise extraction/cancellation under sanitizers.
 run('python3', 'tools/ios_xiso_test.py')

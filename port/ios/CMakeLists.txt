@@ -59,8 +59,17 @@ else()
     set(HALO_INFO_PLIST Info.plist)
     set(HALO_DEVICE_FAMILY "1,2")
 endif()
+# the texture upscale policy (port/assets/texture-policy.json) as a C table for port/runtime/texture_policy.c
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_custom_command(
+    OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/texture_policy_table.c"
+    COMMAND Python3::Interpreter "${ROOT}/tools/embed_texture_policy.py"
+            "${ROOT}/port/assets/texture-policy.json" "${CMAKE_CURRENT_BINARY_DIR}/texture_policy_table.c"
+    DEPENDS "${ROOT}/tools/embed_texture_policy.py" "${ROOT}/port/assets/texture-policy.json"
+    COMMENT "Embedding the texture upscale policy")
 add_executable(HaloCE MACOSX_BUNDLE
     ${HALO_PLATFORM_SOURCES} "${ROOT}/port/runtime/xiso.c"
+    "${ROOT}/port/runtime/texture_policy.c" "${CMAKE_CURRENT_BINARY_DIR}/texture_policy_table.c"
     host/host_main.m host/host_memory.c host/host_loader.c host/host_syscall.c host/guest_call.S
     host/host_thread.c host/host_sdl.c host/host_gpu.c host/host_gpu_dispatch.c host/gpu_metal.m host/host_frame_counter.m host/host_lifecycle.m
     "${ROOT}/port/linux/src/posix_files.c" host/posix_net.c
@@ -80,7 +89,7 @@ if(NOT HALO_VISIONOS)
 endif()
 target_compile_options(HaloCE PRIVATE "$<$<COMPILE_LANGUAGE:OBJC>:-fobjc-arc>")
 target_link_libraries(HaloCE PRIVATE SDL3::SDL3-static "-framework Foundation" "-framework UIKit"
-    "-framework Metal" "-framework QuartzCore")
+    "-framework Metal" "-framework QuartzCore" z)
 # display.upscaler = "metalfx" (gpu_metal.m); the simulators have no MetalFX
 if(NOT CMAKE_OSX_SYSROOT MATCHES "[Ss]imulator")
     target_link_libraries(HaloCE PRIVATE "-weak_framework MetalFX")
