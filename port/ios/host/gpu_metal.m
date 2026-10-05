@@ -239,6 +239,20 @@ static void gpu_busy_add(CFTimeInterval start, CFTimeInterval end)
 }
 static CFTimeInterval pacing_waited;
 
+#if TARGET_OS_VISION
+/* the presenters' command buffers (host_stereo.m, host_theater.m): their GPU
+time counts with the game's, so stereo's frame-time line has the whole
+frame's */
+void gpu_metal_count_gpu_time(id<MTLCommandBuffer> commands)
+{
+	[commands addCompletedHandler:^(id<MTLCommandBuffer> completed)
+	{
+		if (completed.GPUEndTime > completed.GPUStartTime)
+			gpu_busy_add(completed.GPUStartTime, completed.GPUEndTime);
+	}];
+}
+#endif
+
 /* ---------- visibility tests: state (the functions are after the draws)
 
 A test counts into entries of a ring in a shared buffer, in Metal's boolean
@@ -3355,7 +3369,14 @@ time is the time since the last present less the time spent waiting for the
 Compositor's frame. The refresh period is the shortest interval between
 presentations over the report's frames divided by the repeat count plus one
 (an on-time frame's), or 90 Hz's when that falls outside 60 to 120 Hz.
-Every 600 stereo frames. */
+Every 600 stereo frames.
+
+Both times lag by a frame, deliberately: the GPU time is what completed
+since the last count (the game's command buffers and the presenters',
+gpu_metal_count_gpu_time), and completion handlers land after the next frame
+has begun, as in pacing_schedule; the CPU time leaves out this frame's
+presenter encode, which comes after the count, and includes the last one's.
+Over a report each frame is counted once, so the medians are right. */
 static struct
 {
 	CFTimeInterval last_presentation;

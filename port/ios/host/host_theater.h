@@ -17,6 +17,9 @@ that opacity. Brightness (0 to 1) dims the picture toward black, for the
 fade of a cut to or from the screen */
 void host_theater_present_eyes(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLTexture> right,
 	id<MTLTexture> hud, const float fade[4], float brightness);
+/* gpu_metal.m: counts a presenter's command buffer's GPU time with the
+game's (pacing_gpu_nanoseconds), before it commits */
+void gpu_metal_count_gpu_time(id<MTLCommandBuffer> commands);
 #endif
 
 #if defined(__OBJC__) && !defined(__swift__)

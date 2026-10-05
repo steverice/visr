@@ -768,6 +768,7 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 				[encoder endEncoding];
 			}
 			cp_drawable_encode_present(drawable, commands);
+			gpu_metal_count_gpu_time(commands);
 			[commands commit];
 		}
 		host_theater_frame_end();
@@ -877,6 +878,7 @@ void host_stereo_present_ui(id<MTLCommandQueue> queue, id<MTLTexture> picture, i
 				[encoder endEncoding];
 			}
 			cp_drawable_encode_present(drawable, commands);
+			gpu_metal_count_gpu_time(commands);
 			[commands commit];
 		}
 		host_theater_frame_end();

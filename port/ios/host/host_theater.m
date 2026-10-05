@@ -690,6 +690,7 @@ static void present_pictures(id<MTLCommandQueue> queue, id<MTLTexture> left, id<
 				[encoder endEncoding];
 			}
 			cp_drawable_encode_present(drawable, commands);
+			gpu_metal_count_gpu_time(commands);
 			[commands commit];
 		}
 		host_theater_frame_end();
