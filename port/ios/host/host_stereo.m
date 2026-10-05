@@ -799,7 +799,7 @@ int host_stereo_ui_ready(void)
 #endif
 }
 
-void host_stereo_present_ui(id<MTLCommandQueue> queue, id<MTLTexture> picture, id<MTLTexture> hud)
+void host_stereo_present_ui(id<MTLCommandQueue> queue, id<MTLTexture> picture, id<MTLTexture> hud, float brightness)
 {
 #if TARGET_OS_VISION
 	if (@available(visionOS 26.0, *))
@@ -869,11 +869,11 @@ void host_stereo_present_ui(id<MTLCommandQueue> queue, id<MTLTexture> picture, i
 				[encoder setViewport:cp_view_texture_map_get_viewport(map)];
 				simd_float4x4 clip_from_device = simd_mul(projection, simd_inverse(cp_view_get_transform(view)));
 
-				hud_draw(encoder, picture, &quad, 1, clip_from_device, level, decode_srgb, 1.0f, 1);
+				hud_draw(encoder, picture, &quad, 1, clip_from_device, level, decode_srgb, brightness, 1);
 				/* the menu over it, by its transmittance; the quad's depth is
 				written already */
 				if (hud)
-					hud_draw(encoder, hud, &quad, 1, clip_from_device, level, decode_srgb, 1.0f, 0);
+					hud_draw(encoder, hud, &quad, 1, clip_from_device, level, decode_srgb, brightness, 0);
 				[encoder endEncoding];
 			}
 			cp_drawable_encode_present(drawable, commands);
@@ -885,5 +885,6 @@ void host_stereo_present_ui(id<MTLCommandQueue> queue, id<MTLTexture> picture, i
 	(void)queue;
 	(void)picture;
 	(void)hud;
+	(void)brightness;
 #endif
 }

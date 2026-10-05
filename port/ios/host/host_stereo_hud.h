@@ -126,4 +126,29 @@ float host_stereo_hud_level_yaw(const float right[3], const float back[3]);
 natural scale, or smaller if the bands would leave the sharp region */
 float host_stereo_hud_band_scale(float layout_width);
 
+/* The fade through black when HEAD mode's view changes between the full
+view, the screen (the film, SCREEN gameplay) and the UI's quad (a menu over
+the film, a load): the new view starts black and comes up over
+HOST_STEREO_CUT_FRAMES frames, unless a script fade already covers the cut.
+The pause menu over gameplay keeps the full view and doesn't fade. */
+#define HOST_STEREO_CUT_FRAMES 6
+enum host_stereo_view
+{
+	HOST_STEREO_VIEW_NONE = -1,        /* no stereo frame (mono, the space closed) */
+	HOST_STEREO_VIEW_FULL,
+	HOST_STEREO_VIEW_SCREEN,
+	HOST_STEREO_VIEW_UI
+};
+struct host_stereo_cut
+{
+	int shown;                         /* enum host_stereo_view: what the last frame showed */
+	int frames;                        /* the fade's frames still to come */
+};
+#define HOST_STEREO_CUT_INITIAL { HOST_STEREO_VIEW_NONE, 0 }
+/* this frame's brightness (0 to 1) for a frame showing shown, covered when
+a script fade is over the picture; *switched (may be NULL) says whether
+this frame began a fade. A frame with no view forgets the last, so a switch
+from it doesn't fade */
+float host_stereo_cut_brightness(struct host_stereo_cut *cut, int shown, int covered, int *switched);
+
 #endif

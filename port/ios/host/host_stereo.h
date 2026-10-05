@@ -48,6 +48,7 @@ host_stereo_present_ui */
 int host_stereo_ui_ready(void);
 /* that picture, with the HUD layer (nil: none) over it, on the UI's quad,
 level and turning with the head's yaw, inside foveation's sharp region
-(host_stereo_hud.h), over the dark surroundings or the room */
-void host_stereo_present_ui(id<MTLCommandQueue> queue, id<MTLTexture> picture, id<MTLTexture> hud);
+(host_stereo_hud.h), over the dark surroundings or the room. Brightness
+(0 to 1) dims the quad toward black, for the fade of a cut to or from it */
+void host_stereo_present_ui(id<MTLCommandQueue> queue, id<MTLTexture> picture, id<MTLTexture> hud, float brightness);
 #endif
