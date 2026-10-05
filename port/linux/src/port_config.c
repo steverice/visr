@@ -507,8 +507,9 @@ static const struct config_setting config_settings[] =
 		"\"bot:<seed>\" plays controller 1 with a scripted pattern (automated\n"
 		"network tests); \"look:<seed>\" stands still, only turning and looking\n"
 		"up and down; \"walklook:<seed>\" looks down, then walks;\n"
-		"\"zoom:<start>,<swaps>,<clicks>\" stands still and from poll <start>\n"
-		"swaps weapons <swaps> times, then zooms <clicks> times; empty for none." },
+		"\"zoom:<start>,<swaps>,<clicks>[,<lights>]\" stands still and from poll\n"
+		"<start> swaps weapons <swaps> times, zooms <clicks> times, then presses\n"
+		"the flashlight <lights> times (night vision); empty for none." },
 	{ "debug.side_by_side_screen", _config_boolean, "false", "HALO_SIDE_BY_SIDE_SCREEN", _environment_set_is_true,
 		_platform_ios,
 		"With display.stereo = \"side_by_side\": show the eyes SCREEN mode's\n"
