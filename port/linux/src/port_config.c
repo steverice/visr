@@ -5,9 +5,11 @@ The native ports' settings (port_config.h), parsed with tomlc17
 (port/third_party/tomlc17). Every setting is in the table below with its
 type, default, the HALO_* environment variable that overrides it and the
 comment written into a new file. The file is read once, on the first
-question (config_reload_boolean reads one setting again); unknown keys and values of the wrong type are reported in the log
-and the defaults used instead, and the file itself is never rewritten once
-it exists, so that the player's edits and comments stay.
+question (config_reload_boolean reads one setting again); unknown keys and
+values of the wrong type are reported in the log and the defaults used
+instead, and a table or key repeated in it keeps its first and is reported
+too. Once it exists, the file is only rewritten to add a newer version's
+settings or fold such repeats, keeping the player's edits and comments.
 */
 
 #include "platform.h"
@@ -848,24 +850,179 @@ static char *config_default_text(void)
 		"# it to go back to them. Each setting can also be set for one run with\n"
 		"# the environment variable named with it, which wins over this file.\n");
 #endif
+	/* each table once, in the order its first setting has in the table above,
+	with all of its settings: TOML rejects a table defined twice, and the
+	table above doesn't keep a section's settings together (iOS's input
+	settings come between display's) */
 	for (index = 0; index < NUMBER_OF_CONFIG_SETTINGS; index++)
 	{
 		const struct config_setting *setting = &config_settings[index];
 		const char *dot = strchr(setting->name, '.');
+		size_t length, other;
 		char buffer[64];
 
 		if (!(setting->platforms & CONFIG_PLATFORM) || !dot)
 			continue;
-		if (strncmp(section, setting->name, (size_t)(dot - setting->name)) ||
-			section[dot - setting->name] != 0)
+		/* (the section's name and its dot) */
+		length = (size_t)(dot - setting->name) + 1;
+		/* (a section an earlier setting opened is written already) */
+		for (other = 0; other < index; other++)
 		{
-			snprintf(section, sizeof(section), "%.*s", (int)(dot - setting->name), setting->name);
-			snprintf(buffer, sizeof(buffer), "\n[%s]\n", section);
-			config_append(&text, buffer);
+			if ((config_settings[other].platforms & CONFIG_PLATFORM) &&
+				!strncmp(config_settings[other].name, setting->name, length))
+				break;
 		}
-		config_append_setting(&text, setting);
+		if (other < index)
+			continue;
+		snprintf(section, sizeof(section), "%.*s", (int)(length - 1), setting->name);
+		snprintf(buffer, sizeof(buffer), "\n[%s]\n", section);
+		config_append(&text, buffer);
+		for (other = index; other < NUMBER_OF_CONFIG_SETTINGS; other++)
+		{
+			if ((config_settings[other].platforms & CONFIG_PLATFORM) &&
+				!strncmp(config_settings[other].name, setting->name, length))
+				config_append_setting(&text, &config_settings[other]);
+		}
 	}
 	return text.buffer;
+}
+
+static int config_line_section(const char *line, const char *end, char *section, size_t size);
+
+/* text with its repeated tables and keys folded away, or NULL if it has
+none: a table's later headers are dropped and their lines join its first,
+and a key set again in the same table keeps its first value. TOML rejects
+both, and without this the whole file would be ignored for one slip (an
+older version of this file's writer repeated [display] and [input] on
+iOS). Each repeat is logged with its line. Only "[table]" headers and
+"key = value" lines are recognized, which is all the settings use */
+static char *config_fold_repeats(const char *text)
+{
+	enum { MAXIMUM_TABLES = 32, MAXIMUM_KEYS = 512 };
+	struct config_fold_line
+	{
+		const char *start;
+		size_t length;
+		/* -1 before the first table */
+		int table;
+	};
+	char tables[MAXIMUM_TABLES][64];
+	char keys[MAXIMUM_KEYS][64];
+	int key_tables[MAXIMUM_KEYS];
+	int table_count = 0, key_count = 0, table = -1, repeats = 0, line_number = 1, order;
+	struct config_fold_line *lines = NULL;
+	size_t line_count = 0, capacity = 0, index;
+	struct config_text out = { NULL, 0, 0 };
+	const char *line;
+
+	for (line = text; *line; line_number++)
+	{
+		const char *end = line + strcspn(line, "\n");
+		const char *next = *end ? end + 1 : end;
+		const char *start = line;
+		char name[64];
+		int keep = 1;
+
+		while (start < end && (*start == ' ' || *start == '\t'))
+			start++;
+		if (start + 1 < end && start[0] == '[' && start[1] != '[' &&
+			config_line_section(start, end, name, sizeof(name)))
+		{
+			int found;
+
+			for (found = 0; found < table_count && strcmp(tables[found], name); found++)
+				;
+			if (found < table_count)
+			{
+				platform_log("config.toml line %d: [%s] is defined again; its settings join the first", line_number, name);
+				repeats++;
+				keep = 0;
+			}
+			else if (table_count < MAXIMUM_TABLES)
+			{
+				snprintf(tables[table_count], sizeof(tables[0]), "%s", name);
+				table_count++;
+			}
+			table = found < table_count ? found : -1;
+		}
+		else if (table >= 0 && start < end && *start != '#')
+		{
+			size_t length = strcspn(start, " \t=\n");
+			const char *equals = start + length;
+
+			while (equals < end && (*equals == ' ' || *equals == '\t'))
+				equals++;
+			if (length && equals < end && *equals == '=' && length < sizeof(keys[0]))
+			{
+				int found;
+
+				for (found = 0; found < key_count &&
+					(key_tables[found] != table || strncmp(keys[found], start, length) || keys[found][length]); found++)
+					;
+				if (found < key_count)
+				{
+					platform_log("config.toml line %d: %s.%.*s is set again; the first value stays", line_number,
+						tables[table], (int)length, start);
+					repeats++;
+					keep = 0;
+				}
+				else if (key_count < MAXIMUM_KEYS)
+				{
+					memcpy(keys[key_count], start, length);
+					keys[key_count][length] = 0;
+					key_tables[key_count] = table;
+					key_count++;
+				}
+			}
+		}
+		if (keep)
+		{
+			if (line_count == capacity)
+			{
+				size_t new_capacity = capacity ? capacity * 2 : 256;
+				struct config_fold_line *grown = realloc(lines, new_capacity * sizeof(*grown));
+
+				if (!grown)
+				{
+					free(lines);
+					return NULL;
+				}
+				lines = grown;
+				capacity = new_capacity;
+			}
+			lines[line_count].start = line;
+			lines[line_count].length = (size_t)(next - line);
+			lines[line_count].table = table;
+			line_count++;
+		}
+		line = next;
+	}
+	if (!repeats)
+	{
+		free(lines);
+		return NULL;
+	}
+	/* the lines before the first table, then each table's lines in order */
+	for (order = -1; order < table_count; order++)
+	{
+		for (index = 0; index < line_count; index++)
+		{
+			char *copy;
+
+			if (lines[index].table != order)
+				continue;
+			copy = config_copy(lines[index].start, lines[index].length);
+			if (!copy)
+				continue;
+			/* (the file's last line may lack its newline) */
+			if (out.length && out.buffer[out.length - 1] != '\n')
+				config_append(&out, "\n");
+			config_append(&out, copy);
+			free(copy);
+		}
+	}
+	free(lines);
+	return out.buffer;
 }
 
 /* the settings of this build that text (the file, parsed as table) lacks,
@@ -1131,8 +1288,16 @@ static void config_load(void)
 	text = config_read_file(path, &size);
 	if (text)
 	{
-		toml_result_t result = toml_parse(text, (int)size);
+		char *folded = config_fold_repeats(text);
+		toml_result_t result;
 
+		if (folded)
+		{
+			free(text);
+			text = folded;
+			size = strlen(text);
+		}
+		result = toml_parse(text, (int)size);
 		if (result.ok)
 		{
 			char *completed;
@@ -1142,8 +1307,12 @@ static void config_load(void)
 			config_report_unknown_keys(result.toptab);
 			platform_log("settings: %s", path);
 			completed = config_add_missing(text, result.toptab);
-			if (completed && !config_write_file(path, completed))
+			/* (the folded file written back, so the player's edits and the
+			settings screen's land in one place) */
+			if ((completed || folded) && !config_write_file(path, completed ? completed : text))
 				platform_log("settings: cannot write %s", path);
+			else if (folded)
+				platform_log("settings: folded the repeats out of %s", path);
 			free(completed);
 		}
 		else

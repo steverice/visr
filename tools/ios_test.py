@@ -49,6 +49,14 @@ run(BUILD/'display-probe')
 run('xcrun', 'clang', '-O2', '-fsanitize=address,undefined', '-Iport/ios/host',
     'port/ios/tests/display_pin_probe.c', '-o', BUILD/'display-pin-probe')
 run(BUILD/'display-pin-probe')
+# config.toml: the written file has each table once and parses, and one with a table or key repeated
+# keeps the first of each instead of being ignored; once with the iOS and visionOS settings (HALO_ILP32)
+# and once with the desktop's (only the address sanitizer: tomlc17's page arithmetic trips the
+# undefined-behavior one)
+for name, defines in (('config-probe-ios', ['-DHALO_ILP32=1']), ('config-probe-desktop', [])):
+    run('xcrun', 'clang', '-O2', '-fsanitize=address', *defines, '-Iport/linux/src', '-Iport/third_party/tomlc17',
+        'port/ios/tests/config_probe.c', *sdl_flags, '-o', BUILD / name)
+    run(BUILD / name)
 run('xcrun', 'clang', '-O2', '-fsanitize=address,undefined', '-Iport/linux/src',
     'port/ios/tests/virtual_clock_probe.c', '-o', BUILD/'virtual-clock-probe')
 run(BUILD/'virtual-clock-probe')
