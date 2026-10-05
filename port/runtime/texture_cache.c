@@ -1,11 +1,13 @@
 /* The upscale cache's bookkeeping (texture_cache.h): the recipe key, the action for each texture after an app update,
 the manifest, the storage rules and entry writes. A cache entry holds only the new levels; the original levels are uploaded natively. */
 #include "texture_cache.h"
+#include <dirent.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include "texture_override.h"
 
@@ -221,4 +223,52 @@ int texture_cache_write_entry(const char *directory, const struct texture_cache_
 
 	snprintf(path, sizeof(path), "%s/%016" PRIx64 "-%ux%u.bin", directory, record->hash, record->width, record->height);
 	return write_atomically(path, fill_entry, &e);
+}
+
+/* the cache's own files: the manifest, the entries, and the temporaries a crash can leave */
+static int ours(const char *name)
+{
+	size_t length = strlen(name);
+
+	return !strcmp(name, "manifest.tsv") || !strcmp(name, "manifest.tsv.tmp") ||
+		(length > 4 && !strcmp(name + length - 4, ".bin")) || (length > 8 && !strcmp(name + length - 8, ".bin.tmp"));
+}
+
+uint64_t texture_cache_size(const char *directory)
+{
+	DIR *folder = opendir(directory);
+	struct dirent *item;
+	struct stat info;
+	char path[1024];
+	uint64_t total = 0;
+
+	if (!folder)
+		return 0;
+	while ((item = readdir(folder)))
+	{
+		snprintf(path, sizeof(path), "%s/%s", directory, item->d_name);
+		if (!stat(path, &info) && S_ISREG(info.st_mode))
+			total += (uint64_t)info.st_size;
+	}
+	closedir(folder);
+	return total;
+}
+
+int texture_cache_delete_all(const char *directory)
+{
+	DIR *folder = opendir(directory);
+	struct dirent *item;
+	char path[1024];
+	int failed = 0;
+
+	if (!folder)
+		return errno == ENOENT ? 0 : -1;
+	while ((item = readdir(folder)))
+		if (ours(item->d_name))
+		{
+			snprintf(path, sizeof(path), "%s/%s", directory, item->d_name);
+			failed |= unlink(path) != 0;
+		}
+	closedir(folder);
+	return failed ? -1 : 0;
 }

@@ -150,6 +150,28 @@ static void write_fails_cleanly(void)
 	assert(access(directory, F_OK) != 0);
 }
 
+static void size_and_delete(void)
+{
+	char directory[] = "/tmp/texture-cache-size-XXXXXX", path[256];
+	struct texture_cache_record r = { 0xabc, 4, 4, TEXTURE_POLICY_BPF, TEXTURE_POLICY_COLOR, 1, 2, 64 };
+	unsigned char bytes[100] = { 0 };
+	FILE *other;
+
+	assert(mkdtemp(directory));
+	assert(texture_cache_size(directory) == 0);
+	assert(texture_cache_write_entry(directory, &r, bytes, sizeof(bytes)) == 0);
+	assert(texture_cache_manifest_save(directory, &r, 1) == 0);
+	assert(texture_cache_size(directory) > 100);
+	snprintf(path, sizeof(path), "%s/notes.txt", directory);          /* not ours: left alone */
+	other = fopen(path, "w"); fputs("x", other); fclose(other);
+	assert(texture_cache_delete_all(directory) == 0);
+	assert(texture_cache_size(directory) == 1);
+	unlink(path);
+	assert(rmdir(directory) == 0);
+	assert(texture_cache_size("/tmp/no-such-texture-cache") == 0);
+	assert(texture_cache_delete_all("/tmp/no-such-texture-cache") == 0);
+}
+
 int main(void)
 {
 	keys();
@@ -157,6 +179,7 @@ int main(void)
 	manifest_round_trip();
 	storage();
 	write_fails_cleanly();
+	size_and_delete();
 	puts("texture_cache_probe: ok");
 	return 0;
 }

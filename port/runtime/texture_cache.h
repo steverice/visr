@@ -84,3 +84,11 @@ int texture_cache_background_may_run(uint64_t free_bytes, uint64_t next_entry_by
 int texture_cache_write_entry(const char *directory, const struct texture_cache_record *record, const void *bytes,
 	size_t size);
 void texture_cache_set_write_fault(long fail_after_bytes);   /* tests only: -1 off */
+
+/* ---------- the storage control (the Settings app's "Delete upscaled textures")
+The cache lives in this folder under the data root, excluded from backup. */
+#define TEXTURE_CACHE_DIRECTORY "texture-cache"
+/* the bytes of every regular file in the folder (0 if it is missing) */
+uint64_t texture_cache_size(const char *directory);
+/* deletes only the cache's own files (manifest, entries, leftover temporaries); a missing folder is 0, any failure -1 */
+int texture_cache_delete_all(const char *directory);

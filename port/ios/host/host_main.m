@@ -2,6 +2,9 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #include "ios_host.h"
+#if !TARGET_OS_TV
+#include "host_texture_settings.h"
+#endif
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 #include <errno.h>
@@ -67,6 +70,10 @@ int main(int argc,char **argv) {
 #endif
         UIApplication.sharedApplication.idleTimerDisabled=YES;
         host_ios_prepare_assets(data_root);
+#if !TARGET_OS_TV
+        /* the Settings app's texture pane: acted on now and at every return to the foreground */
+        host_texture_settings_observe(data_root);
+#endif
         /* the arena is the step a device can refuse (visionOS: see port/ios/README.md) */
         if(host_load_image(NULL,0))host_fatal(host_arena?"Could not map the signed game image. See ios-runtime.log in Files.":
             "Could not reserve the game's 4 GB memory arena. See ios-runtime.log in Files.");

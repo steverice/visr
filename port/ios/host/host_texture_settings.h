@@ -1,0 +1,11 @@
+/* The Settings app's texture pane (Settings.bundle/Root.plist): the size of the upscaled textures and a switch that
+   deletes them. Only this file pair and Root.plist know about the pane, so an in-game menu can replace them. */
+#ifndef HOST_TEXTURE_SETTINGS_H
+#define HOST_TEXTURE_SETTINGS_H
+
+/* acts on the delete switch (and turns it back off), then publishes the cache's size */
+void host_texture_settings_apply(const char *data_root);
+/* applies now, and again every time the app returns to the foreground */
+void host_texture_settings_observe(const char *data_root);
+
+#endif

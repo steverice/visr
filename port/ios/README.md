@@ -134,6 +134,18 @@ Keep `maps` directly inside Documents. `config.toml`, `debug.txt`, and
 `ios-runtime.log` are available there for diagnostics. Back up `Documents/save`
 before uninstalling or changing bundle IDs.
 
+### Upscaled textures in the Settings app
+
+On iPhone, iPad and Apple Vision Pro, the app's page in the system Settings app
+(`Settings.bundle`) has a Textures group. "Upscaled textures" shows how much
+storage the upscaled textures take (`Documents/texture-cache`), and the
+"Delete upscaled textures" switch deletes them. iOS's own storage screen can
+only delete the whole app, imported game included. The app acts on the switch
+at launch and whenever it returns to the foreground, deletes only the cache's
+own files, and turns the switch back off; the textures are made again when a
+level needs them. Apple TV has no per-app Settings page. The code is in
+`host/host_texture_settings.m`.
+
 ## Controls
 
 ### Resolution
