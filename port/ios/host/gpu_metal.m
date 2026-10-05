@@ -3337,8 +3337,8 @@ A cutscene (present->cinematic, the 3D film) is on the screen in any mode,
 and the script fade (present->fade) tints the space around the screen. A cut
 between any two of the full view, the screen and HEAD mode's UI quad (a
 cutscene starting or ending in HEAD mode, a load starting or ending, a menu
-over the film) goes to black and fades back in over HOST_STEREO_CUT_FRAMES
-frames, unless a script fade already covers it (present->cut_covered,
+over the film) goes to black and fades back in over HOST_STEREO_CUT_SECONDS,
+unless a script fade already covers it (present->cut_covered,
 stereo.c's halo_stereo_cut_covered). */
 #if TARGET_OS_VISION
 /* what the last stereo frame showed (host_stereo_hud.h's cut, which also
@@ -3350,12 +3350,15 @@ static const char *stereo_view_name(int view)
 	return view == HOST_STEREO_VIEW_SCREEN ? "the screen" : view == HOST_STEREO_VIEW_UI ? "the UI's quad" : "the full view";
 }
 
-/* the brightness of a frame showing view (enum host_stereo_view):
-HOST_STEREO_CUT_FRAMES frames from black after a cut no script fade covers */
+/* the brightness of a frame showing view (enum host_stereo_view): coming up
+from black over HOST_STEREO_CUT_SECONDS after a cut no script fade covers */
 static float stereo_cut_brightness(int view, int covered)
 {
 	int last = stereo_cut.shown, switched;
-	float brightness = host_stereo_cut_brightness(&stereo_cut, view, covered, &switched);
+	/* a frame stays up for the repeat count plus one refreshes of the
+	Vision Pro's 90 Hz, so the fade lasts the same time at 45 */
+	float frame_seconds = (float)(host_theater_frame_repeat() + 1) / 90.0f;
+	float brightness = host_stereo_cut_brightness(&stereo_cut, view, covered, frame_seconds, &switched);
 
 	if (switched)
 		platform_log("stereo: from %s to %s through black", stereo_view_name(last), stereo_view_name(view));

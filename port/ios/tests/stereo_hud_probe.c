@@ -379,45 +379,59 @@ static void level_checks(void)
 quad (host_stereo_cut_brightness) */
 static void cut_checks(void)
 {
+	const float refresh = 1.0f / 90.0f;
 	struct host_stereo_cut cut = HOST_STEREO_CUT_INITIAL;
-	int switched, frame;
+	int switched, frame, repeat;
 	float brightness, last;
 
-	brightness = host_stereo_cut_brightness(&cut, HOST_STEREO_VIEW_UI, 0, &switched);
+	brightness = host_stereo_cut_brightness(&cut, HOST_STEREO_VIEW_UI, 0, refresh, &switched);
 	check(brightness == 1.0f && !switched, "the first view after none shows at once");
-	check(host_stereo_cut_brightness(&cut, HOST_STEREO_VIEW_UI, 0, &switched) == 1.0f && !switched,
+	check(host_stereo_cut_brightness(&cut, HOST_STEREO_VIEW_UI, 0, refresh, &switched) == 1.0f && !switched,
 		"the same view again doesn't fade");
-	/* a load ends: the UI's quad to the full view */
-	brightness = host_stereo_cut_brightness(&cut, HOST_STEREO_VIEW_FULL, 0, &switched);
-	check(switched && brightness == 0.0f, "the UI's quad to the full view starts black");
-	last = brightness;
-	for (frame = 1; frame < HOST_STEREO_CUT_FRAMES; frame++)
+	/* a load ends: the UI's quad to the full view, at 90 and at 45 frames a
+	second (display.frame_repeat 0 and 1): the same duration, so 6 frames
+	and 3 */
+	for (repeat = 0; repeat <= 1; repeat++)
 	{
-		brightness = host_stereo_cut_brightness(&cut, HOST_STEREO_VIEW_FULL, 0, &switched);
-		check(!switched && brightness > last && brightness < 1.0f, "the full view comes up over the cut's frames");
+		float frame_seconds = refresh * (float)(repeat + 1);
+		int frames = repeat ? 3 : 6;
+		char what[160];
+
+		cut.shown = HOST_STEREO_VIEW_UI;
+		cut.elapsed = HOST_STEREO_CUT_SECONDS;
+		brightness = host_stereo_cut_brightness(&cut, HOST_STEREO_VIEW_FULL, 0, frame_seconds, &switched);
+		check(switched && brightness == 0.0f, "the UI's quad to the full view starts black");
 		last = brightness;
+		for (frame = 1; frame < frames; frame++)
+		{
+			brightness = host_stereo_cut_brightness(&cut, HOST_STEREO_VIEW_FULL, 0, frame_seconds, &switched);
+			check(!switched && brightness > last && brightness < 1.0f, "the full view comes up over the cut");
+			last = brightness;
+		}
+		snprintf(what, sizeof(what), "the full view is at full brightness after %d frames at %d frames a second "
+			"(%.0f ms)", frames, repeat ? 45 : 90, 1000.0f * HOST_STEREO_CUT_SECONDS);
+		check(host_stereo_cut_brightness(&cut, HOST_STEREO_VIEW_FULL, 0, frame_seconds, NULL) == 1.0f, what);
 	}
-	check(host_stereo_cut_brightness(&cut, HOST_STEREO_VIEW_FULL, 0, NULL) == 1.0f,
-		"the full view is at full brightness after HOST_STEREO_CUT_FRAMES frames");
-	/* the full view to the UI's quad (a load starts), and the screen to it */
-	check(host_stereo_cut_brightness(&cut, HOST_STEREO_VIEW_UI, 0, &switched) == 0.0f && switched,
+	/* the full view to the UI's quad (a load starts), and the UI's quad to
+	the screen */
+	check(host_stereo_cut_brightness(&cut, HOST_STEREO_VIEW_UI, 0, refresh, &switched) == 0.0f && switched,
 		"the full view to the UI's quad starts black");
-	cut.frames = 0;
-	check(host_stereo_cut_brightness(&cut, HOST_STEREO_VIEW_SCREEN, 0, &switched) == 0.0f && switched,
+	cut.elapsed = HOST_STEREO_CUT_SECONDS;
+	check(host_stereo_cut_brightness(&cut, HOST_STEREO_VIEW_SCREEN, 0, refresh, &switched) == 0.0f && switched,
 		"the UI's quad to the screen starts black");
-	cut.frames = 0;
+	cut.elapsed = HOST_STEREO_CUT_SECONDS;
 	/* a script fade covers the cut */
-	check(host_stereo_cut_brightness(&cut, HOST_STEREO_VIEW_FULL, 1, &switched) == 1.0f && !switched,
+	check(host_stereo_cut_brightness(&cut, HOST_STEREO_VIEW_FULL, 1, refresh, &switched) == 1.0f && !switched,
 		"a cut under a script fade doesn't go through black");
 	/* no view (mono) forgets the last: the next view shows at once */
-	check(host_stereo_cut_brightness(&cut, HOST_STEREO_VIEW_NONE, 0, &switched) == 1.0f && !switched &&
+	check(host_stereo_cut_brightness(&cut, HOST_STEREO_VIEW_NONE, 0, refresh, &switched) == 1.0f && !switched &&
 		cut.shown == HOST_STEREO_VIEW_NONE, "a frame without a view forgets the last");
-	check(host_stereo_cut_brightness(&cut, HOST_STEREO_VIEW_UI, 0, &switched) == 1.0f && !switched,
+	check(host_stereo_cut_brightness(&cut, HOST_STEREO_VIEW_UI, 0, refresh, &switched) == 1.0f && !switched,
 		"a view after none shows at once");
 	/* a switch in the middle of a fade starts it over */
-	host_stereo_cut_brightness(&cut, HOST_STEREO_VIEW_FULL, 0, NULL);
-	host_stereo_cut_brightness(&cut, HOST_STEREO_VIEW_FULL, 0, NULL);
-	check(host_stereo_cut_brightness(&cut, HOST_STEREO_VIEW_UI, 0, &switched) == 0.0f && switched,
+	host_stereo_cut_brightness(&cut, HOST_STEREO_VIEW_FULL, 0, refresh, NULL);
+	host_stereo_cut_brightness(&cut, HOST_STEREO_VIEW_FULL, 0, refresh, NULL);
+	check(host_stereo_cut_brightness(&cut, HOST_STEREO_VIEW_UI, 0, refresh, &switched) == 0.0f && switched,
 		"a cut during a fade starts again from black");
 }
 

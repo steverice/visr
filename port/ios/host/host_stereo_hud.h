@@ -129,9 +129,10 @@ float host_stereo_hud_band_scale(float layout_width);
 /* The fade through black when HEAD mode's view changes between the full
 view, the screen (the film, SCREEN gameplay) and the UI's quad (a menu over
 the film, a load): the new view starts black and comes up over
-HOST_STEREO_CUT_FRAMES frames, unless a script fade already covers the cut.
-The pause menu over gameplay keeps the full view and doesn't fade. */
-#define HOST_STEREO_CUT_FRAMES 6
+HOST_STEREO_CUT_SECONDS (6 frames at 90 Hz, 3 at 45), unless a script fade
+already covers the cut. The pause menu over gameplay keeps the full view and
+doesn't fade. */
+#define HOST_STEREO_CUT_SECONDS (6.0f / 90.0f)
 enum host_stereo_view
 {
 	HOST_STEREO_VIEW_NONE = -1,        /* no stereo frame (mono, the space closed) */
@@ -142,13 +143,15 @@ enum host_stereo_view
 struct host_stereo_cut
 {
 	int shown;                         /* enum host_stereo_view: what the last frame showed */
-	int frames;                        /* the fade's frames still to come */
+	float elapsed;                     /* seconds since the cut began; HOST_STEREO_CUT_SECONDS or more: none */
 };
-#define HOST_STEREO_CUT_INITIAL { HOST_STEREO_VIEW_NONE, 0 }
+#define HOST_STEREO_CUT_INITIAL { HOST_STEREO_VIEW_NONE, HOST_STEREO_CUT_SECONDS }
 /* this frame's brightness (0 to 1) for a frame showing shown, covered when
-a script fade is over the picture; *switched (may be NULL) says whether
-this frame began a fade. A frame with no view forgets the last, so a switch
-from it doesn't fade */
-float host_stereo_cut_brightness(struct host_stereo_cut *cut, int shown, int covered, int *switched);
+a script fade is over the picture, which stays up frame_seconds (the
+refresh period times the repeat count plus one); *switched (may be NULL)
+says whether this frame began a fade. A frame with no view forgets the
+last, so a switch from it doesn't fade */
+float host_stereo_cut_brightness(struct host_stereo_cut *cut, int shown, int covered, float frame_seconds,
+	int *switched);
 
 #endif
