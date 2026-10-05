@@ -562,7 +562,7 @@ static void render_player_frame_stereo(
 	and the narrowest tangent is the worst case, so back by the larger of
 	max|x| / min(horizontal tangent) and max|y| / min(vertical tangent), plus
 	any eye's own offset back. render.camera stays the center camera (level of
-	detail, sprites); only the planes move. */
+	detail, sprites); only the planes move (the pixel scale is mono's, below). */
 	cull_bounds.x0 = -MAX(stereo->eyes[0].left, stereo->eyes[1].left) / (aspect * field_of_view_tangent);
 	cull_bounds.x1 = MAX(stereo->eyes[0].right, stereo->eyes[1].right) / (aspect * field_of_view_tangent);
 	cull_bounds.y0 = -MAX(stereo->eyes[0].down, stereo->eyes[1].down) / field_of_view_tangent;
@@ -585,6 +585,11 @@ static void render_player_frame_stereo(
 	cull_camera.position.z -= cull_camera.forward.k * cull_distance_back;
 	cull_camera.z_far += cull_distance_back;
 	render_camera_build_frustum(&cull_camera, &cull_bounds, &cull_frustum, TRUE);
+	/* port: what the game sizes in pixels (model detail, the model cull,
+	particles, sprites) reads the culling frustum's pixel scale, which the
+	union's bounds would make about half mono's: keep mono's, times
+	display.lod_scale (stereo_lod.c). The planes stay the union's */
+	halo_stereo_lod_projection(&cull_camera, &cull_frustum);
 	halo_stereo_log_culling(cull_distance_back);
 
 	cross_product3d(&window->rasterizer_camera.forward, &window->rasterizer_camera.up, &right);

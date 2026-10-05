@@ -115,6 +115,12 @@ run('xcrun', 'clang', '-O2', '-fsanitize=address,undefined', '-DHALO_IOS=1', '-I
     'port/ios/tests/stereo_screen_probe.c', 'port/ios/host/host_stereo_head.c',
     '-o', BUILD/'stereo-screen-probe')
 run(BUILD/'stereo-screen-probe')
+# the stereo culling frustum's pixel scale: model detail, particles and sprites at mono's, times
+# display.lod_scale, and the planes untouched (the probe includes port/linux/game/stereo_lod.c
+# and port/linux/game/stereo.c)
+run('xcrun', 'clang', '-O2', '-fsanitize=address,undefined', '-Iport/linux/src',
+    'port/ios/tests/stereo_lod_probe.c', '-o', BUILD/'stereo-lod-probe')
+run(BUILD/'stereo-lod-probe')
 # the head-tracked presenter's shaders, compiled from its source string at run time: compile
 # them here, as the visionOS build's preprocessor leaves them (host_stereo_vignette.h's mask is
 # macro text, which a math macro could otherwise rewrite unseen)

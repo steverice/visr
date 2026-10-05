@@ -123,6 +123,10 @@ static const struct config_setting config_settings[] =
 		"highest they have, so they never pop between levels or drop out with\n"
 		"distance; \"auto\" picks by on-screen size, as the Xbox did. The console's\n"
 		"rasterizer_debug_model_lod overrides it." },
+	{ "display.lod_scale", _config_real, "1.0", "HALO_LOD_SCALE", _environment_value, _platform_ios,
+		"HEAD mode: a multiplier on the pixel size the game picks model detail by;\n"
+		"1.0 is the Xbox's (0.5 to 4). Higher keeps detail, particles and models\n"
+		"farther out, for the headset's denser pixels, at some frame time. Read at start." },
 	{ "display.compressed_textures", _config_boolean, "true", "HALO_COMPRESSED_TEXTURES", _environment_value, _platform_ios,
 		"With the Metal renderer, keep the game's DXT textures compressed on the GPU\n"
 		"where it supports them (BC1-3): a quarter to an eighth of the memory, and\n"

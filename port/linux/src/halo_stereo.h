@@ -251,6 +251,19 @@ int halo_stereo_first_person_eye(struct halo_stereo_eye *eye);
 /* debug.gpu_stats: logs the culling camera's distance back behind the
 center camera (render.c), once for each mode and mapping */
 void halo_stereo_log_culling(float distance_back);
+/* display.lod_scale in HEAD mode and the side-by-side view (1.0 otherwise):
+a multiplier on the pixel size the game picks model detail by, 1.0 the
+Xbox's, clamped to 0.5 to 4 */
+float halo_stereo_lod_scale(void);
+/* render.c's stereo frame, after it builds the culling frustum
+(port/linux/game/stereo_lod.c): sets that frustum's pixel scale
+(projection_world_to_screen) to mono's for the same camera, times
+halo_stereo_lod_scale, since model detail, the model cull, particles and
+sprites read it; the union of the eyes' bounds would give about half
+mono's. The planes are unchanged */
+struct render_camera;
+struct render_frustum;
+void halo_stereo_lod_projection(const struct render_camera *camera, struct render_frustum *cull_frustum);
 /* 1 when this frame is the film for a cutscene: the letterbox, held
 through the film's hold after it drops. The 16:9 narrowing (main.c) and the
 title bars (cinematics.c) follow this, not the letterbox flag itself, so the

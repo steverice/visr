@@ -217,6 +217,11 @@ negative until read */
 static struct screen_mapping film_mapping = { -1.0f, 0.0f, 0.0f }, gameplay_mapping;
 static int screen_framing_band = 1, side_by_side_screen, stereo_stats;
 static float side_by_side_lean;
+/* display.lod_scale, read once (mapping_settings): HEAD mode's multiplier
+on the pixel size the game picks model detail by (halo_stereo_lod_scale) */
+#define LOD_SCALE_MIN 0.5f
+#define LOD_SCALE_MAX 4.0f
+static float lod_scale_setting = 1.0f;
 /* the culling camera's distance back, logged under debug.gpu_stats once
 for each mode and mapping (halo_stereo_log_culling) */
 static unsigned culling_logged;
@@ -330,6 +335,8 @@ static void mapping_settings(void)
 	if (side_by_side_lean != side_by_side_lean)
 		side_by_side_lean = 0.0f;
 	stereo_stats = config_boolean("debug.gpu_stats") != 0;
+	lod_scale_setting = clamped_setting("display.lod_scale", (float)config_real("display.lod_scale"),
+		LOD_SCALE_MIN, LOD_SCALE_MAX, "times the Xbox's pixel scale");
 }
 
 /* SCREEN gameplay's eyes rather than HEAD-like ones: SCREEN mode, or the
@@ -1006,6 +1013,11 @@ void halo_stereo_stick_look(short gamepad_index, float yaw_response, float time_
 	*yaw = 0.0f;
 	vignette_strength = comfort_vignette && turn_mode == TURN_SMOOTH ?
 		halo_stereo_vignette_ease(vignette_strength, turn_fraction, time_delta) : 0.0f;
+}
+
+float halo_stereo_lod_scale(void)
+{
+	return stereo_mode == HALO_STEREO_HEAD || stereo_mode == HALO_STEREO_SIDE_BY_SIDE ? lod_scale_setting : 1.0f;
 }
 
 float halo_stereo_vignette(void)
