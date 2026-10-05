@@ -510,6 +510,7 @@ static void render_player_frame_stereo(
 	short pass_count;
 	struct render_camera inset_camera;
 	struct render_camera inset_rasterizer_camera;
+	unsigned long local_random_seed;
 
 	stereo = halo_stereo_frame();
 	/* the zoom's inset (halo_stereo.h): while zoomed in HEAD mode's full
@@ -603,6 +604,7 @@ static void render_player_frame_stereo(
 	halo_stereo_set_fade(fade);
 
 	time_delta_since_tick_sec = render.time_delta_since_tick_sec;
+	local_random_seed = *get_global_local_random_seed_address();
 	/* the eyes, then the zoom's inset if any (pass 2) */
 	for (eye = 0; eye < pass_count; eye++)
 	{
@@ -650,6 +652,11 @@ static void render_player_frame_stereo(
 		moment (halo_stereo_repeat_pass) */
 		if (eye >= 1)
 			render.time_delta_since_tick_sec = 0.0f;
+		/* port: and what renders from the local random seed (a lightning
+		bolt's shape and jitter, a fog screen layer's new offsets) draws the
+		same numbers in every pass, so eye 1 sees the bolt eye 0 does */
+		if (eye >= 1)
+			*get_global_local_random_seed_address() = local_random_seed;
 		/* the mirror's render_window runs in the eye's layer, so it skips
 		render_ui_widgets, deliberately: they draw once, in the HUD pass. It
 		takes the flash as mono's mirror does (the game's function, for no
