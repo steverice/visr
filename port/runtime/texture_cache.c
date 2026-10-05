@@ -1,5 +1,5 @@
 /* The upscale cache's bookkeeping (texture_cache.h): the recipe key, the action for each texture after an app update,
-the manifest. A cache entry holds only the new levels; the original levels are uploaded natively. */
+the manifest, the storage rules and entry writes. A cache entry holds only the new levels; the original levels are uploaded natively. */
 #include "texture_cache.h"
 #include <errno.h>
 #include <inttypes.h>
@@ -111,21 +111,18 @@ int texture_cache_manifest_load(const char *directory, struct texture_cache_reco
 	return 0;
 }
 
-int texture_cache_manifest_save(const char *directory, const struct texture_cache_record *records, size_t count)
+/* writes <path> through <path>.tmp: fill, flush, fsync, close, rename; on any failure the .tmp is removed and the old
+<path>, if any, is untouched; 0 on success */
+static int write_atomically(const char *path, int (*fill)(FILE *, const void *), const void *context)
 {
-	char path[1024], temporary[1040];
+	char temporary[1040];
 	FILE *file;
-	size_t i;
-	int failed = 0;
+	int failed;
 
-	manifest_path(directory, path, sizeof(path));
 	snprintf(temporary, sizeof(temporary), "%s.tmp", path);
-	if (!(file = fopen(temporary, "w")))
+	if (!(file = fopen(temporary, "wb")))
 		return -1;
-	for (i = 0; i < count && !failed; i++)
-		failed = fprintf(file, "%016" PRIx64 "\t%u\t%u\t%u\t%u\t%016" PRIx64 "\t%016" PRIx64 "\t%" PRIu64 "\n",
-			records[i].hash, records[i].width, records[i].height, (unsigned)records[i].result,
-			(unsigned)records[i].treatment, records[i].recipe_key, records[i].global_key, records[i].bytes) < 0;
+	failed = fill(file, context) != 0;
 	failed |= fflush(file) != 0;
 	failed |= fsync(fileno(file)) != 0;
 	failed |= fclose(file) != 0;
@@ -135,4 +132,93 @@ int texture_cache_manifest_save(const char *directory, const struct texture_cach
 		return -1;
 	}
 	return 0;
+}
+
+struct manifest_contents
+{
+	const struct texture_cache_record *records;
+	size_t count;
+};
+
+static int fill_manifest(FILE *file, const void *context)
+{
+	const struct manifest_contents *m = context;
+	size_t i;
+
+	for (i = 0; i < m->count; i++)
+		if (fprintf(file, "%016" PRIx64 "\t%u\t%u\t%u\t%u\t%016" PRIx64 "\t%016" PRIx64 "\t%" PRIu64 "\n",
+			m->records[i].hash, m->records[i].width, m->records[i].height, (unsigned)m->records[i].result,
+			(unsigned)m->records[i].treatment, m->records[i].recipe_key, m->records[i].global_key,
+			m->records[i].bytes) < 0)
+			return -1;
+	return 0;
+}
+
+int texture_cache_manifest_save(const char *directory, const struct texture_cache_record *records, size_t count)
+{
+	char path[1024];
+	struct manifest_contents m = { records, count };
+
+	manifest_path(directory, path, sizeof(path));
+	return write_atomically(path, fill_manifest, &m);
+}
+
+/* ---------- storage: entry sizes, the low-storage floor, the level-start decision, entry writes */
+static long write_fault = -1;
+
+void texture_cache_set_write_fault(long fail_after_bytes)
+{
+	write_fault = fail_after_bytes;
+}
+
+uint64_t texture_cache_entry_bytes(uint32_t width, uint32_t height, uint32_t scale, uint32_t bits_per_texel)
+{
+	uint64_t texels = (uint64_t)width * height * 4;   /* the 2x level */
+
+	if (scale == 4)
+		texels += (uint64_t)width * height * 16;
+	return texels * bits_per_texel / 8;
+}
+
+int texture_cache_floor_ok(uint64_t free_bytes, uint64_t missing_bytes)
+{
+	return free_bytes >= missing_bytes + TEXTURE_CACHE_FLOOR_SLACK;
+}
+
+enum texture_cache_level_start texture_cache_level_start(const struct texture_cache_level_plan *plan,
+	uint64_t free_bytes)
+{
+	if (!plan->missing && !plan->redo_blocking)
+		return TEXTURE_CACHE_LOAD_UPSCALED;
+	return texture_cache_floor_ok(free_bytes, plan->blocking_bytes) ? TEXTURE_CACHE_UPSCALE_FIRST :
+		TEXTURE_CACHE_LOW_STORAGE;
+}
+
+int texture_cache_background_may_run(uint64_t free_bytes, uint64_t next_entry_bytes)
+{
+	return texture_cache_floor_ok(free_bytes, next_entry_bytes);
+}
+
+struct entry_contents
+{
+	const void *bytes;
+	size_t size;
+};
+
+static int fill_entry(FILE *file, const void *context)
+{
+	const struct entry_contents *e = context;
+	size_t size = write_fault >= 0 && (size_t)write_fault < e->size ? (size_t)write_fault : e->size;
+
+	return fwrite(e->bytes, 1, size, file) != e->size ? -1 : 0;
+}
+
+int texture_cache_write_entry(const char *directory, const struct texture_cache_record *record, const void *bytes,
+	size_t size)
+{
+	char path[1024];
+	struct entry_contents e = { bytes, size };
+
+	snprintf(path, sizeof(path), "%s/%016" PRIx64 "-%ux%u.bin", directory, record->hash, record->width, record->height);
+	return write_atomically(path, fill_entry, &e);
 }

@@ -811,6 +811,12 @@ long scenario_tags_load(
 
 				hud_hires_tags_loaded();
 			}
+			/* port: upscaled textures are decided per level (port/linux/src/texture_upscale_state.h) */
+			{
+				extern void texture_upscale_map_loaded(void);
+
+				texture_upscale_map_loaded();
+			}
 			result = cache_file_globals.tag_header->scenario_tag_index;
 		}
 	}

@@ -109,11 +109,54 @@ static void manifest_round_trip(void)
 	rmdir(directory);
 }
 
+static void storage(void)
+{
+	struct texture_cache_level_plan plan = { 0 };
+
+	assert(texture_cache_entry_bytes(256, 256, 2, 32) == 512ull * 512 * 4);
+	assert(texture_cache_entry_bytes(256, 256, 4, 32) == (1024ull * 1024 + 512ull * 512) * 4);
+	assert(texture_cache_entry_bytes(256, 256, 2, 8) == 512ull * 512);           /* BC3 or ASTC 4x4: a byte per texel */
+	assert(texture_cache_floor_ok(TEXTURE_CACHE_FLOOR_SLACK + 100, 100));
+	assert(!texture_cache_floor_ok(TEXTURE_CACHE_FLOOR_SLACK + 99, 100));
+	assert(texture_cache_level_start(&plan, 0) == TEXTURE_CACHE_LOAD_UPSCALED);   /* nothing to make: no check */
+	plan.missing = 3; plan.blocking_bytes = 1 << 20;
+	assert(texture_cache_level_start(&plan, TEXTURE_CACHE_FLOOR_SLACK + (1 << 20)) == TEXTURE_CACHE_UPSCALE_FIRST);
+	assert(texture_cache_level_start(&plan, TEXTURE_CACHE_FLOOR_SLACK) == TEXTURE_CACHE_LOW_STORAGE);
+	plan.missing = 0; plan.redo_blocking = 1;
+	assert(texture_cache_level_start(&plan, TEXTURE_CACHE_FLOOR_SLACK) == TEXTURE_CACHE_LOW_STORAGE);
+	assert(texture_cache_background_may_run(TEXTURE_CACHE_FLOOR_SLACK + 10, 10));
+	assert(!texture_cache_background_may_run(TEXTURE_CACHE_FLOOR_SLACK + 9, 10));
+	assert(strstr(TEXTURE_CACHE_LOW_STORAGE_TEXT, "Delete upscaled textures"));
+}
+
+static void write_fails_cleanly(void)
+{
+	char directory[] = "/tmp/texture-cache-write-XXXXXX", path[256];
+	struct texture_cache_record r = { 0xabc, 4, 4, TEXTURE_POLICY_BPF, TEXTURE_POLICY_COLOR, 1, 2, 64 };
+	unsigned char bytes[64] = { 1 };
+
+	assert(mkdtemp(directory));
+	assert(texture_cache_write_entry(directory, &r, bytes, sizeof(bytes)) == 0);
+	snprintf(path, sizeof(path), "%s/0000000000000abc-4x4.bin", directory);
+	assert(access(path, F_OK) == 0);
+	unlink(path);
+	texture_cache_set_write_fault(10);              /* the disk fills ten bytes in */
+	assert(texture_cache_write_entry(directory, &r, bytes, sizeof(bytes)) != 0);
+	texture_cache_set_write_fault(-1);
+	assert(access(path, F_OK) != 0);
+	snprintf(path, sizeof(path), "%s/0000000000000abc-4x4.bin.tmp", directory);
+	assert(access(path, F_OK) != 0);                /* nothing partial is kept */
+	rmdir(directory);                               /* fails if anything was left behind */
+	assert(access(directory, F_OK) != 0);
+}
+
 int main(void)
 {
 	keys();
 	invalidation_table();
 	manifest_round_trip();
+	storage();
+	write_fails_cleanly();
 	puts("texture_cache_probe: ok");
 	return 0;
 }

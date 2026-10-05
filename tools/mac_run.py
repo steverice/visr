@@ -78,6 +78,7 @@ DEFAULTS = {
     "display.upscaler": '"bilinear"',
     "display.high_res_hud": "true",
     "display.high_res_text": "true",
+    "display.upscaled_textures": "true",
     "display.immersive": "false",
     "display.mirror_resolution": '"half"',
     "display.theater_width": "60.0",

@@ -19,6 +19,7 @@ memory_watch.c detects that by write-protecting the pages.
 #include "text_hires.h"
 #include "port_config.h"
 #include "texture_override.h"
+#include "texture_upscale_state.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -757,6 +758,18 @@ static gpu_texture texture_override_find(const char *directory, uint64_t hash, u
 	return result->texture;
 }
 
+/* ---------- upscaled textures, per level (texture_upscale_state.h) */
+static struct texture_upscale_state texture_upscale;
+
+/* port: called from cache_files.c when a map has loaded, before its textures upload */
+void texture_upscale_map_loaded(void)
+{
+	texture_upscale_state_map_loaded(&texture_upscale, config_boolean("display.upscaled_textures"));
+	if (config_boolean("debug.texture_log"))
+		platform_log("textures: upscaled textures %s for this level",
+			texture_upscale_state_enabled(&texture_upscale) ? "on" : "off");
+}
+
 /* after an upload: the override standing for the pixels now at the entry's
 address (the game's texture cache reuses that memory for other bitmaps). 2D
 textures only: not linear ones, and P8 ones only with the bump maps' palette */
@@ -769,6 +782,8 @@ static void texture_override_apply(struct texture_entry *entry, const D3DCOLOR *
 	unsigned long level0_size;
 	uint64_t hash;
 
+	if (!texture_upscale_state_enabled(&texture_upscale))
+		directory = "";   /* this level plays original; logging still shows each hash */
 	if (logging < 0)
 		logging = config_boolean("debug.texture_log");
 	if ((!*directory && !logging) || entry->type != GPU_TEXTURE_2D || description->linear)

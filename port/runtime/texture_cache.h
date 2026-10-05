@@ -50,3 +50,37 @@ enum texture_cache_action texture_cache_action(const struct texture_cache_record
 /* the manifest: <directory>/manifest.tsv, one record per line; load returns 0 with *records malloc'd and *count set (a missing manifest: 0 records), or -1 if it exists but cannot be read (no records) */
 int texture_cache_manifest_load(const char *directory, struct texture_cache_record **records, size_t *count);
 int texture_cache_manifest_save(const char *directory, const struct texture_cache_record *records, size_t count);
+
+/* ---------- storage (spec "Cache and versioning": skips, low storage, the storage floor)
+The floor: a level that has entries to make first starts only if free storage covers them plus this slack. */
+#define TEXTURE_CACHE_FLOOR_SLACK (256ull << 20)
+#define TEXTURE_CACHE_LOW_STORAGE_TEXT "There is not enough free storage to upscale this level's textures, so it will " \
+	"play with the original textures. To free space, turn on Delete upscaled textures in this app's page of the " \
+	"Settings app."
+/* a level's actions counted (enum texture_cache_action), and the projected bytes of what the blocking screen makes */
+struct texture_cache_level_plan
+{
+	size_t keep, missing, delete_now, replace_background, redo_blocking;
+	uint64_t blocking_bytes;
+};
+enum texture_cache_level_start
+{
+	TEXTURE_CACHE_LOAD_UPSCALED,       /* nothing to make first */
+	TEXTURE_CACHE_UPSCALE_FIRST,       /* the blocking screen ("Upscaling assets", press A to skip) */
+	TEXTURE_CACHE_LOW_STORAGE          /* the notice, then the level plays original */
+};
+/* new levels only: the 2x level, plus the 4x level for scale 4 */
+uint64_t texture_cache_entry_bytes(uint32_t width, uint32_t height, uint32_t scale, uint32_t bits_per_texel);
+/* free storage covers the missing bytes plus TEXTURE_CACHE_FLOOR_SLACK */
+int texture_cache_floor_ok(uint64_t free_bytes, uint64_t missing_bytes);
+/* How a level starts. The caller's rules (piece 3):
+   - a failed write during the blocking upscale ends it, and the level plays original
+     (texture_upscale_state_request_original before the map loads); a skip does the same;
+   - entries finished before either are kept and the manifest saved;
+   - the background queue checks texture_cache_background_may_run before each entry and pauses while it is false. */
+enum texture_cache_level_start texture_cache_level_start(const struct texture_cache_level_plan *, uint64_t free_bytes);
+int texture_cache_background_may_run(uint64_t free_bytes, uint64_t next_entry_bytes);
+/* <directory>/<hash>-<w>x<h>.bin through a .tmp and a rename; on any failure nothing is left behind; 0 on success */
+int texture_cache_write_entry(const char *directory, const struct texture_cache_record *record, const void *bytes,
+	size_t size);
+void texture_cache_set_write_fault(long fail_after_bytes);   /* tests only: -1 off */
