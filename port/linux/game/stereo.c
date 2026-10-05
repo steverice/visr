@@ -345,9 +345,13 @@ static void mapping_settings(void)
 	{
 		const char *tangents = config_string("debug.side_by_side_tangents");
 		float parsed[4];
+		int consumed = -1;
 
 		if (tangents && tangents[0] != '\0') {
-			if (sscanf(tangents, "%f,%f,%f,%f", &parsed[0], &parsed[1], &parsed[2], &parsed[3]) == 4 &&
+			/* %n notes how far the four tangents reached: anything after
+			them but whitespace ("1,1,0.6,1.4,9") is rejected */
+			if (sscanf(tangents, "%f,%f,%f,%f%n", &parsed[0], &parsed[1], &parsed[2], &parsed[3], &consumed) == 4 &&
+				consumed >= 0 && tangents[consumed + strspn(tangents + consumed, " \t\r\n")] == '\0' &&
 				parsed[0] > 0.0f && parsed[1] > 0.0f && parsed[2] > 0.0f && parsed[3] > 0.0f &&
 				parsed[0] <= 4.0f && parsed[1] <= 4.0f && parsed[2] <= 4.0f && parsed[3] <= 4.0f) {
 				memcpy(side_by_side_tangents, parsed, sizeof(parsed));

@@ -680,8 +680,10 @@ static void render_player_frame_stereo(
 
 			saved_cluster_index = (short)render.cluster_index;
 			render_camera_mirror(&eye_camera, &mirror, &mirror_camera);
-			/* port: render_camera_mirror negates the reflected up (right' =
-			reflect(right), up' = -reflect(up)), so the eye's ray at vertical
+			/* port: render_camera_mirror's reflecting branch negates the
+			reflected up (right' = reflect(right), up' = -reflect(up)); its
+			refracting branch (index_of_refraction != 0) doesn't negate up,
+			so what follows holds for reflections. The eye's ray at vertical
 			tangent y leaves the mirror at -y, and the floor's lookup of the
 			target (by the eye's screen position) is flipped to match. Mono's
 			bounds are symmetric, so reusing them was exact; an eye's need not
