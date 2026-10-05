@@ -776,6 +776,10 @@ static void present_pictures(id<MTLCommandQueue> queue, id<MTLTexture> left, id<
 				}
 				if (color.textureType == MTLTextureType2DArray)
 					pass.renderTargetArrayLength = 1;
+				/* foveated (HEAD mode's menus, loads and films): the screen and
+				the fade's tint go through the view's rate map; the viewport stays
+				the texture map's, the logical one in the map's screen coordinates */
+				pass.rasterizationRateMap = host_theater_view_rate_map(drawable, map);
 				uniforms.clip_from_screen = simd_mul(projection,
 					simd_mul(simd_inverse(origin_from_view), origin_from_screen));
 				uniforms.half_size = (simd_float2){ screen_width / 2.0f,

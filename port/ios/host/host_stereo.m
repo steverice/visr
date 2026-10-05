@@ -685,12 +685,31 @@ static void stereo_frame(struct halo_stereo_frame *frame) API_AVAILABLE(visionos
 				projection.columns[0].x, projection.columns[1].y, projection.columns[2].x, projection.columns[2].y);
 	}
 	{
-		MTLViewport viewport = cp_view_texture_map_get_viewport(
-			cp_view_get_view_texture_map(cp_drawable_get_view(drawable, 0)));
+		cp_view_texture_map_t texture_map = cp_view_get_view_texture_map(cp_drawable_get_view(drawable, 0));
+		MTLViewport viewport = cp_view_texture_map_get_viewport(texture_map);
+		id<MTLRasterizationRateMap> rate_map = host_theater_view_rate_map(drawable, texture_map);
 
-		/* even, as the picture size the game renders at (host_stereo_picture_size) */
-		frame->eye_width = (int32_t)viewport.width & ~1;
-		frame->eye_height = (int32_t)viewport.height & ~1;
+		/* even, as the picture size the game renders at (host_stereo_picture_size).
+		Foveated (display.foveation), the map's screen size: the presenter
+		writes the view through the map, and the game renders its eyes
+		unfoveated at that size (composite-only foveation; the eye passes
+		through the maps come later, so debug.foveation_eye_passes renders the
+		same way for now) */
+		if (rate_map)
+		{
+			frame->eye_width = (int32_t)rate_map.screenSize.width & ~1;
+			frame->eye_height = (int32_t)rate_map.screenSize.height & ~1;
+			frame->foveated = 1;
+			if (stereo_frames == 0)
+				host_logf(HOST_LOG_INFO, "stereo: foveated: the eyes render unfoveated at the rate map's screen size "
+					"%dx%d (the view's logical viewport %.0fx%.0f), and only the presenter goes through the maps "
+					"(composite-only)", frame->eye_width, frame->eye_height, viewport.width, viewport.height);
+		}
+		else
+		{
+			frame->eye_width = (int32_t)viewport.width & ~1;
+			frame->eye_height = (int32_t)viewport.height & ~1;
+		}
 		picture_width = frame->eye_width;
 		picture_height = frame->eye_height;
 	}
@@ -770,6 +789,7 @@ void host_stereo_frame(struct halo_stereo_frame *frame)
 	frame->head_roll = 0.0f;
 	frame->eye_width = 0;
 	frame->eye_height = 0;
+	frame->foveated = 0;
 #if TARGET_OS_VISION
 	head_frame_open = 0;
 	if (@available(visionOS 26.0, *))
@@ -980,6 +1000,11 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 				}
 				if (color.textureType == MTLTextureType2DArray)
 					pass.renderTargetArrayLength = 1;
+				/* foveated: every draw into the view goes through its rate map,
+				the eye's picture, the inset and the HUD's quads alike; the
+				viewport stays the texture map's, the logical one in the map's
+				screen coordinates */
+				pass.rasterizationRateMap = host_theater_view_rate_map(drawable, map);
 				id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
 				[encoder setViewport:cp_view_texture_map_get_viewport(map)];
 				[encoder setDepthStencilState:depth_always];
@@ -1112,6 +1137,11 @@ void host_stereo_present_ui(id<MTLCommandQueue> queue, id<MTLTexture> picture, i
 				}
 				if (color.textureType == MTLTextureType2DArray)
 					pass.renderTargetArrayLength = 1;
+				/* foveated: every draw into the view goes through its rate map,
+				the eye's picture, the inset and the HUD's quads alike; the
+				viewport stays the texture map's, the logical one in the map's
+				screen coordinates */
+				pass.rasterizationRateMap = host_theater_view_rate_map(drawable, map);
 				id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
 				[encoder setViewport:cp_view_texture_map_get_viewport(map)];
 				simd_float4x4 clip_from_device = simd_mul(projection, simd_inverse(cp_view_get_transform(view)));

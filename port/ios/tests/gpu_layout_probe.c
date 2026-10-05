@@ -84,5 +84,6 @@ int main(void)
 	FIELD(halo_stereo_frame, eyes);
 	FIELD(halo_stereo_frame, eye_width);
 	FIELD(halo_stereo_frame, eye_height);
+	FIELD(halo_stereo_frame, foveated);
 	return 0;
 }

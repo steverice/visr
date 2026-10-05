@@ -172,10 +172,12 @@ static void screen_mode_choose(long *width, float scale[2])
 	}
 	{
 		/* display.render_scale: a fraction of the display's pixels each way
-		(display.upscaler scales the picture back up) */
+		(display.upscaler scales the picture back up). Not for foveated eyes:
+		the Compositor's rate map sets their size, at the render quality, which
+		takes the scale's place */
 		double render_scale = render_scale_live >= 0.0 ? render_scale_live : config_real("display.render_scale");
 
-		if (render_scale >= 0.25 && render_scale < 1.0)
+		if (render_scale >= 0.25 && render_scale < 1.0 && !(head_eyes_frame() && halo_stereo_frame()->foveated))
 		{
 			drawable_width = (int)lround(drawable_width * render_scale);
 			drawable_height = (int)lround(drawable_height * render_scale);
@@ -1312,14 +1314,15 @@ void halo_screen_commit_stereo_scale(void)
 	long width;
 	float scale[2];
 	/* what the scale depends on, to skip the work while it doesn't change */
-	static int32_t last_mode = -1, last_eye_count, last_width, last_height;
+	static int32_t last_mode = -1, last_eye_count, last_width, last_height, last_foveated;
 	static double last_render_scale;
 
 	if (!screen_width)
 		return;
 	if (stereo->mode == last_mode && stereo->eye_count == last_eye_count && stereo->eye_width == last_width &&
-		stereo->eye_height == last_height && render_scale_live == last_render_scale)
+		stereo->eye_height == last_height && stereo->foveated == last_foveated && render_scale_live == last_render_scale)
 		return;
+	last_foveated = stereo->foveated;
 	last_mode = stereo->mode;
 	last_eye_count = stereo->eye_count;
 	last_width = stereo->eye_width;
