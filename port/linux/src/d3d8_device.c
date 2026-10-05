@@ -4159,8 +4159,11 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 	pthread_mutex_lock(&vertical_blank_lock);
 	/* the Xbox keeps at most two frames queued behind its 60 Hz display;
 	with interpolation, frames come at the real display's rate instead,
-	paced by vsync (platform_video_swap) */
-	if (halo_interpolation_enabled())
+	paced by vsync (platform_video_swap); a frame with stereo's eyes is
+	paced by the Compositor's frames (host_theater_frame_begin waits for
+	each), at 90 Hz or the rate display.frame_repeat sets, so the Xbox's
+	60 Hz queue never holds it back, interpolation or not */
+	if (halo_interpolation_enabled() || halo_stereo_frame()->eye_count == 2)
 	{
 		flip_count++;
 	}
