@@ -44,6 +44,9 @@ void d3d8_surface_resize(D3DSurface *surface, D3DFORMAT format, unsigned long wi
 void render_interpolation_next_frame_due(unsigned long microseconds);
 /* input_replay.c */
 void input_replay_frame(long width, long height);
+/* source/models/models.c: models drawn at each detail level (0 the lowest, 4
+the highest) and models the size cull dropped since the last call */
+void halo_model_counts_take(unsigned long drawn[5], unsigned long *culled);
 
 struct gpu_capabilities device_capabilities;
 
@@ -4199,6 +4202,15 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 			platform_log("stereo: the HUD layer's last 60 frames: %lu draws with exact transmittance, %lu without",
 				hud_layer_exact, hud_layer_inexact);
 		hud_layer_exact = hud_layer_inexact = 0;
+		{
+			unsigned long models_drawn[5], models_culled;
+
+			halo_model_counts_take(models_drawn, &models_culled);
+			platform_log("models: the last 60 frames: %lu drawn (detail level 0, the lowest, to 4: %lu %lu %lu %lu %lu), "
+				"%lu culled by size", models_drawn[0] + models_drawn[1] + models_drawn[2] + models_drawn[3] +
+				models_drawn[4], models_drawn[0], models_drawn[1], models_drawn[2], models_drawn[3], models_drawn[4],
+				models_culled);
+		}
 	}
 	platform_pump_events();
 

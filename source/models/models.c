@@ -245,6 +245,23 @@ static boolean model_lod_is_max(void)
 	return is_max;
 }
 
+/* port: debug.gpu_stats' model counts (d3d8_device.c logs them every 60
+frames through halo_model_counts_take): models drawn other than as a shadow,
+by the detail level drawn, and models the size cull (render_model's
+detail_cutoff_pixels[0] test) dropped. Each eye of a stereo frame counts */
+static struct
+{
+	unsigned long drawn[NUMBER_OF_DETAIL_LEVELS_PER_MODEL];
+	unsigned long culled;
+} model_counts;
+
+void halo_model_counts_take(unsigned long drawn[NUMBER_OF_DETAIL_LEVELS_PER_MODEL], unsigned long *culled)
+{
+	csmemcpy(drawn, model_counts.drawn, sizeof(model_counts.drawn));
+	*culled = model_counts.culled;
+	csmemset(&model_counts, 0, sizeof(model_counts));
+}
+
 static void render_model_parts(
 	struct model const *model,
 	char const *region_permutation_indices,
@@ -929,6 +946,10 @@ void render_model(
 
 	/* port: with display.model_lod = "max" a model smaller than the lowest cutoff
 	is drawn too, not dropped, so nothing pops out at a distance either */
+	if (level_of_detail_pixels<model->detail_cutoff_pixels[0] && !TEST_FLAG(flags, _render_model_shadow_bit) && !model_lod_is_max())
+	{
+		model_counts.culled++; /* port: debug.gpu_stats */
+	}
 	if (level_of_detail_pixels>=model->detail_cutoff_pixels[0] || TEST_FLAG(flags, _render_model_shadow_bit) || model_lod_is_max())
 	{
 		real_matrix4x3 relative_node_matrices[MAXIMUM_NODES_PER_MODEL];
@@ -1031,6 +1052,10 @@ void render_model(
 			"c:\\halo\\SOURCE\\models\\models.c",
 			169,
 			geometry_detail_level_index>=0 && geometry_detail_level_index<NUMBER_OF_DETAIL_LEVELS_PER_MODEL);
+		if (!TEST_FLAG(flags, _render_model_shadow_bit))
+		{
+			model_counts.drawn[geometry_detail_level_index]++; /* port: debug.gpu_stats */
+		}
 
 		if (!TEST_FLAG(flags, _render_model_shadow_bit))
 		{
