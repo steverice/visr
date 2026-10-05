@@ -628,9 +628,13 @@ static void offscreen_target_scale(unsigned long width, unsigned long height, DW
 	}
 }
 
-/* the zoom's inset shades its central square and this share of its side
-on either side (target_inset_columns) */
-#define INSET_MARGIN_SHARE (1.0f / 16.0f)
+/* the zoom's inset shades its central square and a margin of this many
+pixels on either side (target_inset_columns): halo_stereo_inset_margin_lines
+of the screen's lines at the target's height */
+static int32_t inset_margin_pixels(unsigned long target_height)
+{
+	return (int32_t)ceilf(halo_stereo_inset_margin_lines() * (float)target_height / (float)SCREEN_HEIGHT);
+}
 
 /* the layer a screen-sized target is drawn for now: in a stereo frame each
 eye, the HUD and the zoom's inset have their own textures (the one layer
@@ -712,10 +716,10 @@ static struct render_target_entry *render_target_get_layer(const D3DSurface *sur
 		{
 			float width = (float)entry->target.gl_width;
 			float side = (float)entry->target.gl_height < width ? (float)entry->target.gl_height : width;
-			float shaded = side + 2.0f * ceilf(side * INSET_MARGIN_SHARE);
+			float shaded = side + 2.0f * (float)inset_margin_pixels(entry->target.gl_height);
 
 			platform_log("stereo: the inset's target %lux%lu is %.2f times the %.0f-pixel square it shows; "
-				"its draws shade %.2f times it (the square and the blur's margin)",
+				"its draws shade %.2f times it now (the square and the blur's margin)",
 				entry->target.gl_width, entry->target.gl_height, width / side, side,
 				(shaded < width ? shaded : width) / side);
 		}
@@ -756,12 +760,12 @@ static float target_scale[2] = { 1.0f, 1.0f };
 /* the bound color target is stereo's HUD layer (draw_targets) */
 static BOOL target_hud_layer;
 /* the bound color target is the zoom's inset: the columns of its central
-square, the part the presenter shows (halo_stereo.h), and a margin of
-INSET_MARGIN_SHARE of its side on either side, in target pixels; width 0
-otherwise (draw_targets). Its draws are scissored to them, so the rest of
-the screen-sized target isn't shaded. The margin is what the zoom's blur
-reads past the square's edges: without it, an edge band about 1% of the
-side wide came out brighter (Task 9's a30 pistol capture) */
+square, the part the presenter shows (halo_stereo.h), and a margin on
+either side (inset_margin_pixels), in target pixels; width 0 otherwise
+(draw_targets). Its draws are scissored to them, so the rest of the
+screen-sized target isn't shaded. The margin covers what the zoom's screen
+effect reads past the square's edges: without one, an 11-pixel band at the
+edges came out brighter (Task 9's a30 pistol capture) */
 static int32_t target_inset_columns[2];
 /* something drew into the HUD layer this frame under render.c's UI span
 (halo_stereo_set_ui_span) */
@@ -793,8 +797,7 @@ static BOOL draw_targets(gpu_texture *color_texture, gpu_texture *depth_texture)
 	if (color && color->layer == HALO_STEREO_LAYER_INSET && color->target.gl_width > color->target.gl_height)
 	{
 		int32_t width = (int32_t)color->target.gl_width;
-		int32_t columns = (int32_t)color->target.gl_height +
-			2 * (int32_t)ceilf((float)color->target.gl_height * INSET_MARGIN_SHARE);
+		int32_t columns = (int32_t)color->target.gl_height + 2 * inset_margin_pixels(color->target.gl_height);
 
 		target_inset_columns[1] = columns < width ? columns : width;
 		target_inset_columns[0] = (width - target_inset_columns[1]) / 2;

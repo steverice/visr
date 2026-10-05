@@ -97,6 +97,17 @@ int halo_stereo_inset_begin(int zoomed);
 /* d3d8_device.c, as it presents a stereo frame: whether the HUD layer went
 whole on the UI's quad (a menu, the console, a progress bar) */
 void halo_stereo_set_ui_shown(int shown);
+/* the inset's pass shades only the square the presenter shows and a margin
+beside it (d3d8_device.c), as wide as the zoom's screen effect reads past a
+pixel: at least HALO_STEREO_INSET_MARGIN_LINES of the screen's 480 lines,
+and more if a blur or warp has read farther this run, plus
+HALO_STEREO_INSET_MARGIN_SLACK_LINES for the bilinear taps.
+rasterizer_xbox_screen_effect.c reports each reach in the inset's pass
+(the convolution radius, twice it for a warp without a mask) */
+#define HALO_STEREO_INSET_MARGIN_LINES 30.0f
+#define HALO_STEREO_INSET_MARGIN_SLACK_LINES 2.0f
+void halo_stereo_inset_blur_reach(float lines);
+float halo_stereo_inset_margin_lines(void);
 /* the inset's vertical field of view in radians for the zoom's
 magnification (the game's weapon_get_zoom_magnification): the quad's
 angle with its tangent divided by the magnification, so things in it are

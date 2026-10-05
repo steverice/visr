@@ -589,6 +589,25 @@ static void zoom_inset(void)
 	reset_game();
 }
 
+/* the inset's shaded margin: at least HALO_STEREO_INSET_MARGIN_LINES, and
+wider once a screen effect has read farther (halo_stereo_inset_blur_reach) */
+static void inset_margin(void)
+{
+	printf("the inset's margin:\n");
+	check(halo_stereo_inset_margin_lines() == HALO_STEREO_INSET_MARGIN_LINES, "no blur yet: the minimum margin");
+	halo_stereo_inset_blur_reach(5.0f);
+	check(halo_stereo_inset_margin_lines() == HALO_STEREO_INSET_MARGIN_LINES,
+		"a 5-line blur stays within the minimum margin");
+	halo_stereo_inset_blur_reach(40.0f);
+	check(halo_stereo_inset_margin_lines() == 40.0f + HALO_STEREO_INSET_MARGIN_SLACK_LINES,
+		"a 40-line reach widens the margin to the reach and the bilinear slack");
+	check(strstr(last_log, "reads 40.0 lines past a pixel; the inset shades a margin of 42.0 lines") != NULL,
+		"and logs it, since it's past the minimum");
+	halo_stereo_inset_blur_reach(10.0f);
+	check(halo_stereo_inset_margin_lines() == 40.0f + HALO_STEREO_INSET_MARGIN_SLACK_LINES,
+		"a later, shorter reach keeps the widest");
+}
+
 int main(void)
 {
 	const struct screen_mapping gameplay = { SCREEN_DEPTH_SHARE, SCREEN_CONVERGENCE_METERS, SCREEN_LEAN_SCALE };
@@ -609,6 +628,7 @@ int main(void)
 	reasons();
 	first_person_eye();
 	zoom_inset();
+	inset_margin();
 	if (failures) {
 		printf("stereo screen probe: %d failed\n", failures);
 		return 1;

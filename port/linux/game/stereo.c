@@ -908,6 +908,27 @@ int halo_stereo_inset(void)
 	return inset_pass;
 }
 
+/* the farthest the zoom's blur or warp has read past a pixel in the inset's
+pass this run, in the screen's lines (halo_stereo_inset_blur_reach) */
+static float inset_blur_reach;
+
+void halo_stereo_inset_blur_reach(float lines)
+{
+	if (!(lines > inset_blur_reach))
+		return;
+	inset_blur_reach = lines;
+	if (stereo_stats || inset_blur_reach + HALO_STEREO_INSET_MARGIN_SLACK_LINES > HALO_STEREO_INSET_MARGIN_LINES)
+		platform_log("stereo: the zoom's screen effect reads %.1f lines past a pixel; the inset shades a margin of "
+			"%.1f lines beside its square", lines, halo_stereo_inset_margin_lines());
+}
+
+float halo_stereo_inset_margin_lines(void)
+{
+	float margin = inset_blur_reach + HALO_STEREO_INSET_MARGIN_SLACK_LINES;
+
+	return margin > HALO_STEREO_INSET_MARGIN_LINES ? margin : HALO_STEREO_INSET_MARGIN_LINES;
+}
+
 int halo_stereo_eye_unzoomed(void)
 {
 	return inset_frame && (stereo_layer == 0 || stereo_layer == 1);
