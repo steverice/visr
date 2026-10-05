@@ -684,3 +684,53 @@ def test_compare_inputs_reports_missing_files(tmp_path):
     problems = mac_run.compare_inputs(a, tmp_path / "b")
     assert any("stderr.log missing" in problem for problem in problems)
     assert any("config.toml missing" in problem for problem in problems)
+
+
+def ipad_args(root, **overrides):
+    values = dict(runner="ipad", app=root, bundle_id="org.example.ipad", team="TEAM", maps=None, out=root / "out",
+                  xiso=None, simulator=None, exit_after=40.0, time_limit=0.0, set=[], init=[], screenshot_every=0,
+                  dump_shaders=False, replay=None, metal_validation=False, metal_shader_validation=False,
+                  fresh_config=False)
+    values.update(overrides)
+    return argparse.Namespace(**values)
+
+
+def ipad_run_rewrite(tmp_path, monkeypatch, **overrides):
+    """what rewrite the iPad path hands to prepare"""
+    (tmp_path / "HaloCE").write_text("")
+    seen = []
+    monkeypatch.setattr(mac_run, "build_wrapper", lambda args: None)
+    monkeypatch.setattr(mac_run, "container_documents", lambda args: tmp_path)
+    monkeypatch.setattr(mac_run, "prepare", lambda args, documents, rewrite=False: seen.append(rewrite))
+    monkeypatch.setattr(mac_run, "launch", lambda documents: None)
+    monkeypatch.setattr(mac_run, "wait_for", lambda condition, limit: True)
+    monkeypatch.setattr(mac_run, "collect", lambda documents, out: None)
+    mac_run.run(ipad_args(tmp_path, **overrides))
+    return seen
+
+
+def parsed_fresh_config(monkeypatch, argv):
+    seen = []
+    monkeypatch.setattr(mac_run, "run", lambda args: seen.append(args.fresh_config))
+    monkeypatch.setattr("sys.argv", ["mac_run.py", "run", "--out", "out"] + argv)
+    mac_run.main()
+    return seen[0]
+
+
+def test_ipad_run_merges_config_without_fresh_config(tmp_path, monkeypatch):
+    assert ipad_run_rewrite(tmp_path, monkeypatch) == [False]
+
+
+def test_ipad_run_rewrites_config_with_fresh_config(tmp_path, monkeypatch):
+    assert ipad_run_rewrite(tmp_path, monkeypatch, fresh_config=True) == [True]
+
+
+def test_fresh_config_flag_and_environment_default(monkeypatch):
+    monkeypatch.delenv("HALO_FRESH_CONFIG", raising=False)
+    assert parsed_fresh_config(monkeypatch, []) is False
+    assert parsed_fresh_config(monkeypatch, ["--fresh-config"]) is True
+    monkeypatch.setenv("HALO_FRESH_CONFIG", "1")
+    assert parsed_fresh_config(monkeypatch, []) is True
+    monkeypatch.setenv("HALO_FRESH_CONFIG", "0")
+    assert parsed_fresh_config(monkeypatch, []) is False
+

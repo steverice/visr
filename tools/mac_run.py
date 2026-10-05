@@ -809,7 +809,7 @@ def run(args):
         sys.exit(f"no CMake-built app at {args.app}; run tools/ios_build.py --team ... first")
     build_wrapper(args)
     documents = container_documents(args)
-    prepare(args, documents)
+    prepare(args, documents, rewrite=args.fresh_config)
     launch(documents)
     limit = args.time_limit or args.exit_after + 120
     finished = wait_for(lambda: not running(), limit)
@@ -858,6 +858,11 @@ def main():
                             help="turn on Metal's API validation (for display.renderer=\"metal\" runs)")
     run_parser.add_argument("--metal-shader-validation", action="store_true",
                             help="turn on Metal's shader validation too (slow: a10 needs a longer --time-limit)")
+    run_parser.add_argument("--fresh-config", action="store_true", default=os.environ.get("HALO_FRESH_CONFIG") == "1",
+                            help="iPad runner: write config.toml from the defaults and this run's settings instead of "
+                                 "merging into the container's file (parity: a container shared with other branches "
+                                 "carries their settings); the native runner always does. "
+                                 "HALO_FRESH_CONFIG=1 turns it on")
     compare_parser = commands.add_parser("compare", help="compare two result folders")
     compare_parser.add_argument("a", type=Path)
     compare_parser.add_argument("b", type=Path)
