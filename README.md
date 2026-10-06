@@ -1,159 +1,226 @@
-<img src="port/ios/Assets.xcassets/AppIcon.appiconset/AppIcon-180.png" width="96" alt="VISR app icon">
+<img src="port/ios/Assets.xcassets/AppIcon.appiconset/AppIcon-180.png" width="96" alt="The VISR app icon: a cyan HUD reticle on a dark teal grid">
 
-# VISR for iPhone and iPad
+# VISR
 
-VISR: An unofficial Halo: Combat Evolved experience on Apple Vision Pro.
+VISR is an unofficial native port of the Halo: Combat Evolved decompilation to
+Apple platforms: iPhone, iPad, Apple Vision Pro, Apple TV and the Mac. It runs
+the original Xbox game's code compiled for ARM64, with an OpenGL ES or Metal
+renderer, SDL audio, touch controls and game controller support.
 
-[![iOS build](https://github.com/NicholasDominici/halo-ce-ios/actions/workflows/ios.yml/badge.svg?branch=ios-port)](https://github.com/NicholasDominici/halo-ce-ios/actions/workflows/ios.yml)
+VISR ships no game data. You bring your own copy of the original Xbox disc, and
+the app imports its maps on your device.
 
-Halo: Combat Evolved running natively on iPhone and iPad. It's a port of the
-Halo decompilation projects (see [credits](#credits)), compiled for ARM64 with
-OpenGL ES 3 graphics, SDL audio, and on-screen touch controls.
+VISR is a fan project. It is not affiliated with or endorsed by Microsoft,
+Halo Studios (formerly 343 Industries) or Bungie. See [Legal](#legal).
 
-You'll need to provide your own Halo: Combat Evolved XISO, which the app imports right on
-your device.
+## Bring your own disc
 
-I've been testing it on an iPhone 17 Pro Max and an iPad Pro 13-inch (M5).
-The iPad imports a XISO on-device and runs at its native 2752 × 2064 resolution.
-It stays horizontal when turned upright. It's still early, so if you hit a bug,
-please [open an issue](#reporting-bugs).
+The app contains the decompiled game code and nothing else of the game: no
+maps, sounds, textures, videos or fonts from the disc. To play, you need a disc
+image (`.iso` or `.xiso`) of the original Xbox release of Halo: Combat Evolved,
+made from a disc you own:
 
-![Halo's main menu with the on-screen controls](docs/ios/menu.png)
+- NTSC-US, map build `01.10.12.2276`
+- PAL, map build `01.01.14.2342`
 
-## What you need
+The importer checks the image's file system, the map build numbers and that the
+full campaign is there before it copies anything. PC, Custom Edition and Master
+Chief Collection files are not supported.
 
-- An iPhone or iPad on iOS 16 or newer
-- Your own Halo: Combat Evolved XISO, from the original Xbox release (NTSC-US or PAL)
-- An Apple account to sign the app
+## Features
 
-The importer checks the map build number and accepts `01.10.12.2276` (NTSC-US)
-and `01.01.14.2342` (PAL).
+- **Native code, no emulator.** The game's code is compiled for ARM64 with
+  32-bit pointers and runs inside a 4 GB block of memory, straight out of the
+  signed app. It does not use JIT or writable executable memory.
+- **On-device import.** Pick your disc image in Files, or drop it into the
+  app's folder, and VISR extracts the maps with a progress bar. Interrupted or
+  invalid imports never replace maps you already have.
+- **Native resolution.** The game renders at the display's full resolution,
+  with the HUD and controls at their original size. You can lower the render
+  resolution or switch to the original 4:3 framing in `config.toml`.
+- **Two renderers.** OpenGL ES 3 is the default on iPhone and iPad. The Metal
+  renderer adds MetalFX upscaling, compressed textures, anisotropic filtering,
+  larger shadow maps and full-resolution active camouflage.
+- **Touch and controllers.** On-screen sticks and buttons, which you can hide,
+  and any controller the system supports.
+- **Apple Vision Pro.** The game plays in a window with a game controller, with
+  Metal at the window's resolution. On visionOS 26 and later, theater mode puts
+  the picture on a screen in an immersive space.
+- **Mac.** The same app builds for Mac Catalyst on Apple silicon.
+- **Multiplayer from upstream.** Split-screen co-op, LAN play and internet play
+  through invite links and a server browser come from
+  [OpenCE](https://github.com/OpenCommunityEdition/OpenCE). On iPhone and iPad,
+  internet hosting and clipboard joining are off by default, and multiplayer
+  has not been validated yet.
 
-## Installing
+### Planned
 
-1. Download `Halo-CE-iOS-unsigned.ipa` from
-   [Releases](https://github.com/NicholasDominici/halo-ce-ios/releases). If you
-   want the very latest build, every
-   [Actions run](https://github.com/NicholasDominici/halo-ce-ios/actions/workflows/ios.yml)
-   also uploads one as `halo-ce-ios-unsigned`.
-2. Sign and install it with your Apple account. New to sideloading?
-   [AltStore](https://faq.altstore.io/) and [Sideloadly](https://sideloadly.io/faq)
-   both have guides. You can also build and sign it yourself with Xcode
-   ([see below](#building-from-source)).
-3. Open **VISR**, tap **Choose Halo XISO**, and pick your disc image in Files.
+These are in development on other branches and are not in `main` yet:
 
-The app checks the image, pulls the maps out of it (there's a progress bar), and
-starts the game when it's done. After that, it opens straight into Halo.
+- Stereo rendering on Apple Vision Pro, so the game world has depth, with
+  foveated rendering driven by the Vision Pro's rate maps
+- Further renderer and texture quality work
 
-![The XISO import screen](docs/ios/import.jpg)
+## Status
 
-You can also drop your `.iso` or `.xiso` into the VISR folder yourself
-(Files app > On My iPhone > VISR, or your iPhone's Files tab in Finder) and
-then open the app. It'll find the image and import it automatically. Once
-that's done, you can delete the ISO from the folder to free up the space.
+VISR is early. The menus and the campaign run on iPhone and iPad, and the
+[validation record](port/ios/VALIDATION.md) lists what has been tested on which
+devices and the known issues. Apple TV, Apple Vision Pro and the Mac build are
+less tested than iPhone and iPad. Bink intro videos do not play.
 
-### Updating
+There are no prebuilt releases yet, so for now you build VISR from source and
+sign it with your own Apple account.
 
-Sign new versions with the same bundle ID and your saves carry over. They live
-in the `save` folder inside VISR's folder in Files, so back that up before
-you delete the app.
+## Device requirements
 
-## Controls
+| Platform | Minimum | Notes |
+| --- | --- | --- |
+| iPhone and iPad | iOS and iPadOS 16 | Landscape only. Tested on iPhone 17 Pro Max and iPad Pro 13-inch (M5). |
+| Apple Vision Pro | visionOS 2 | Metal only. Theater mode needs visionOS 26. A game controller is required. |
+| Apple TV | tvOS 16 | Imports the disc image over the local network. |
+| Mac | Apple silicon | Mac Catalyst build. |
 
-- **Left stick** to move, **right stick** to look
-- **A** jump / select, **B** melee / back, **X** reload / use, **Y** switch weapons
-- **Arrow buttons** for menus
-- **FIRE**, **GRENADE**, **CROUCH**, **ZOOM**, **LIGHT** (flashlight),
-  **SWAP G** (switch grenades), and **PAUSE** each get their own button
-
-Tap **Hide controls** for a clean screen, and **Show controls** to bring them back.
-
-## Display settings
-
-Halo runs at native display resolution by default and stays in landscape on
-iPhone and iPad. You can lower the render resolution or use original 4:3
-framing in `Documents/config.toml`; see [resolution settings](port/ios/README.md#resolution).
-An in-app graphics menu and anti-aliasing are not implemented yet.
-
-The [validation record](port/ios/VALIDATION.md) lists what has been tested and
-known issues, including a cropped portrait canvas on an iPadOS 27 beta simulator
-cold start.
+Every platform needs enough free storage for the extracted maps, plus the disc
+image while it imports.
 
 ## Building from source
 
-You'll need an Apple Silicon Mac with Xcode and Python 3. I'm using Xcode 27 and
-Homebrew's LLVM 23.1.2.
+You need an Apple silicon Mac with Xcode, Python 3 and Homebrew. The validated
+toolchain is Xcode 27 with Homebrew LLVM and LLD 23.1.2.
 
 ```sh
-git clone https://github.com/NicholasDominici/halo-ce-ios.git
-cd halo-ce-ios
+git clone https://github.com/steverice/visr.git
+cd visr
 brew install cmake ninja llvm lld sdl3 pkgconf
 
-# Run the tests
+# Run the regression tests
 python3 tools/ios_test.py
 
-# Build and sign for your own device
+# Build and sign for your own iPhone or iPad
 # (add your Apple account in Xcode > Settings > Accounts first)
-python3 tools/ios_build.py --team YOUR_TEAM_ID --bundle-id com.yourname.haloce
+python3 tools/ios_build.py --team YOUR_TEAM_ID --bundle-id com.yourname.visr
 
-# Or build an unsigned IPA to sign later
-python3 tools/ios_build.py --unsigned --ipa dist/Halo-CE-iOS-unsigned.ipa
+# Build an unsigned IPA to sign later
+python3 tools/ios_build.py --unsigned --ipa dist/VISR-iOS-unsigned.ipa
 
-# Or build for the simulator
+# Build for the simulator
 python3 tools/ios_build.py --simulator
+
+# Other platforms
+python3 tools/ios_build.py --visionos --team YOUR_TEAM_ID --bundle-id com.yourname.visr.vision
+python3 tools/ios_build.py --tvos --team YOUR_TEAM_ID --bundle-id com.yourname.visr.tv
+python3 tools/ios_build.py --mac
 ```
 
-The build script downloads SDL, musl, and the Khronos GL headers by itself. The
-[iOS guide](port/ios/README.md) goes deeper on installing from the command line,
-troubleshooting, and the internals.
+The build script downloads SDL, musl and the Khronos headers itself. The
+[build and install guide](port/ios/README.md) covers installing to a device
+from the command line, the simulator, Apple Vision Pro, display settings and
+troubleshooting.
 
-If you'd rather extract the maps on your Mac, there's a script for that too, and
-the guide shows [how to copy them over](port/ios/README.md#optional-manual-extraction):
+To sign an unsigned IPA without Xcode,
+[AltStore](https://faq.altstore.io/) and [Sideloadly](https://sideloadly.io/faq)
+have guides. Keep the same bundle ID when you update, and your saves carry over.
 
-```sh
-python3 tools/ios_extract_assets.py /path/to/Halo.iso --output assets
-```
+## Playing
+
+1. Open **VISR** and tap **Choose Halo XISO**, then pick your disc image in
+   Files. You can also copy the image into the VISR folder in Files (or in
+   Finder's Files tab for your device) and open the app.
+2. Wait for the import to finish. The game starts by itself, and from then on
+   the app opens straight into the game.
+3. Once the import is done, you can delete the disc image from the VISR
+   folder to free up space.
+
+Saves live in the `save` folder inside the VISR folder in Files. Back it up
+before you delete the app.
+
+### Controls
+
+- **Left stick** to move, **right stick** to look
+- **A** jump and select, **B** melee and back, **X** reload and use, **Y**
+  switch weapons
+- **Arrow buttons** for menus
+- **FIRE**, **GRENADE**, **CROUCH**, **ZOOM**, **LIGHT** (flashlight),
+  **SWAP G** (switch grenades) and **PAUSE** each have their own button
+
+Tap **Hide controls** for a clear screen when you use a controller.
 
 ## How it works
 
-Halo's code expects 32-bit pointers. The port compiles the game for ARM64 with
-32-bit pointers, rewrites its memory accesses to land inside a 4 GB block of
-memory, and runs it straight out of the signed app.
+The game's data structures use 32-bit pointers. The port compiles the game for
+ARM64 with 32-bit pointers, rewrites its memory accesses to land inside an
+aligned 4 GB block of memory, and embeds the result in the app's signed code.
 
+- `source/` is the decompiled game, from the upstream decompilation projects
 - `port/runtime` is the portable runtime
-- `port/ios` is the iOS app: UIKit, touch controls, audio, the loader, and the
-  XISO importer
-- `port/linux` has the renderer and the Xbox compatibility layer, which come
-  from the upstream Linux port
+- `port/ios` is the Apple app: UIKit, touch controls, audio, the loader, the
+  disc importer, the Metal renderer and the visionOS scenes
+- `port/linux` holds the platform layer, the OpenGL renderer and the Xbox
+  compatibility layer shared with the upstream desktop ports
+- `tools/` has the build, packaging and test scripts
+
+The upstream desktop builds for Linux and Windows still build from this tree;
+see [README.upstream.md](README.upstream.md).
 
 ## Reporting bugs
 
-[Open an issue](https://github.com/NicholasDominici/halo-ce-ios/issues) with
-your device, iOS version, the app version, and what you were doing when it went
-wrong. Logs help a ton: `ios-runtime.log` and `debug.txt` are in the VISR
-folder in Files. Give them a quick skim for anything personal before you post
-them.
+[Open an issue](https://github.com/steverice/visr/issues) with your device, OS
+version, the app's version and what you were doing when it went wrong.
+`ios-runtime.log` and `debug.txt` in the VISR folder help a lot. Skim them for
+anything personal before you attach them. Please do not attach game files or
+disc images.
+
+Security problems go through [SECURITY.md](SECURITY.md) instead.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Everyone who takes part agrees to the
+[code of conduct](CODE_OF_CONDUCT.md).
 
 ## Credits
 
-This is built on a lot of other people's work:
+VISR is built on a lot of other people's work:
 
 - [punpckhdq/halo](https://github.com/punpckhdq/halo), the original Halo: CE
   decompilation
 - [bnunu/halo-1](https://github.com/bnunu/halo-1), bnunu's fork of the
-  decompilation
-- [cybersecurity/halo-ce-universal](https://github.com/cybersecurity/halo-ce-universal),
-  the native ports this one is based on, including the ARM64 runtime,
-  renderer, and audio code
+  decompilation, with Jonas Volman and the other contributors in its history
+- [OpenCE](https://github.com/OpenCommunityEdition/OpenCE) (formerly
+  cybersecurity/halo-ce-universal), the native ports this one is based on:
+  the ARM64 runtime, the renderer, audio, the high-resolution HUD and menus,
+  and multiplayer
+- [NicholasDominici/halo-ce-ios](https://github.com/NicholasDominici/halo-ce-ios),
+  the iOS port this repository started from: the 32-bit pointer model on
+  ARM64, the iOS host and the on-device importer
 - [pfista/halo-og](https://github.com/pfista/halo-og), Michael Pfister's port
   with a native Metal renderer for macOS: exact texture border colors, pixel
   shader combiner fixes, and the pre-HUD spot for post-processing
+- [xemu](https://xemu.app/), the Xbox emulator, whose model of the Xbox GPU's
+  pixel shaders the shader translators follow
 
 The XISO importer builds on [extract-xiso](https://github.com/XboxDev/extract-xiso).
 This product includes software developed by in <in@fishtank.com>.
 
-The code is CC0, same as upstream (see [LICENSE.md](LICENSE.md)). Third-party
-notices are in [THIRD_PARTY.md](port/ios/THIRD_PARTY.md).
+The fonts are Overpass and OpenCE (SIL Open Font License 1.1) and Newtown by
+Roger White (public domain). The third-party libraries and their licenses are
+listed in [NOTICE.md](NOTICE.md).
 
-This is a fan project. Halo, Master Chief, and all of the game's art and assets
-belong to Microsoft.
+## License
+
+The code is under CC0 1.0, the same as every upstream project (see
+[LICENSE.md](LICENSE.md)). Third-party components keep their own licenses,
+listed in [NOTICE.md](NOTICE.md). The CC0 dedication covers only what its
+contributors could dedicate. It does not grant any rights to Microsoft's game,
+its assets or its trademarks.
+
+## Legal
+
+Halo, Halo: Combat Evolved, Master Chief and the related names and logos are
+trademarks of Microsoft Corporation. Halo: Combat Evolved © Microsoft
+Corporation. VISR is an unofficial fan project. It is not affiliated with,
+sponsored by or endorsed by Microsoft, Xbox Game Studios, Halo Studios
+(formerly 343 Industries) or Bungie.
+
+VISR does not include or distribute the game's maps, sounds, textures, videos
+or other content, and it does not help you obtain them. You need your own copy
+of the original Xbox game. VISR is free and is not sold.
