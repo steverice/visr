@@ -1,3 +1,10 @@
+<!--
+DRAFT pending the maintainer's license choice (see the publishing audit).
+Recommended: keep CC0 1.0 for the whole repository, as every upstream does.
+Delete this comment before the first public push; GitHub's license
+detection may not recognize the file while it is here.
+-->
+
 Creative Commons Legal Code
 
 CC0 1.0 Universal
