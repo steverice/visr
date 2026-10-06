@@ -872,7 +872,8 @@ static uint32_t gpu_metal_stream(uint32_t kind, const void *data, uint32_t size,
 
 /* ---------- shaders */
 
-static MTLCompileOptions *compile_options;
+/* vertex shaders' and pixel shaders' (gpu_metal_initialize) */
+static MTLCompileOptions *compile_options, *pixel_compile_options;
 
 /* the translators' MSL (nv2a_msl.c); 0 if it doesn't compile, which the front
 end counts as a draw skipped for its program, as under GL */
@@ -881,7 +882,8 @@ static gpu_shader gpu_metal_shader_create(uint32_t stage, const char *source)
 	@autoreleasepool
 	{
 		NSError *error = nil;
-		id<MTLLibrary> library = [device newLibraryWithSource:@(source) options:compile_options error:&error];
+		id<MTLLibrary> library = [device newLibraryWithSource:@(source)
+			options:stage == GPU_SHADER_VERTEX ? compile_options : pixel_compile_options error:&error];
 		MetalShader *record;
 
 		/* debug.gl_debug: the warnings of a shader that compiled */
@@ -2493,14 +2495,25 @@ static void gpu_metal_initialize(uint32_t flags, struct gpu_capabilities *capabi
 		samplers = [NSMutableDictionary dictionary];
 		scratch_colors = [NSMutableDictionary dictionary];
 		compile_options = [MTLCompileOptions new];
-		/* no fast math: the GLSL is highp, and the compiler mustn't reorder
-		its arithmetic; invariance keeps a position computed in two passes
-		identical, as GLSL's invariant gl_Position does */
+		/* vertex shaders: no fast math. The GLSL is highp, and the compiler
+		mustn't reorder its arithmetic; invariance keeps a position computed in
+		two passes identical, as GLSL's invariant gl_Position does */
 		if (@available(iOS 18.0, tvOS 18.0, visionOS 2.0, *))
 			compile_options.mathMode = MTLMathModeSafe;
 		else
 			compile_options.fastMathEnabled = NO;
 		compile_options.preserveInvariance = YES;
+		/* pixel shaders: relaxed math, which may reassociate, contract into
+		fused multiply-adds and divide by reciprocals, but keeps infinities and
+		NaNs. The scene's pixel shaders are bound by ALU work, and under
+		exact IEEE arithmetic they took about twice the GPU time of the same
+		shaders under ANGLE, which compiles with fast math. No pixel shader
+		writes depth, so positions and depth tests are untouched. Before iOS
+		18 the only other choice is fast math, which also drops infinities and
+		NaNs, so there pixel shaders keep the vertex shaders' options. */
+		pixel_compile_options = [compile_options copy];
+		if (@available(iOS 18.0, tvOS 18.0, visionOS 2.0, *))
+			pixel_compile_options.mathMode = MTLMathModeRelaxed;
 		{
 			static const uint8_t black[4] = { 0, 0, 0, 0xff };
 			MTLTextureType types[4] = { MTLTextureType2D, MTLTextureType2D, MTLTextureType3D, MTLTextureTypeCube };
