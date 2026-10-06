@@ -852,3 +852,47 @@ def test_the_native_app_comes_from_the_checkout_by_default():
 def test_the_native_app_comes_from_a_host_s_designated_folder(tmp_path):
     assert mac_run.native_app_default({"HALO_MAC_BUILD": str(tmp_path)}) == \
         tmp_path / mac_run.ROOT.name / "app/Release-maccatalyst/HaloCE.app"
+
+
+def test_build_wrapper_closes_the_runner_projects_before_xcodegen_rewrites_them(tmp_path, monkeypatch):
+    """xcodegen rewrote the open HaloRunner.xcodeproj under Xcode, which answered with a modal
+    "changed on disk" alert that no one could click: every later run failed with "Build operations are
+    disabled: 'project.xcworkspace' has changed and is reloading" (an M4 build host, 2026-10-05) or waited 300 s,
+    and Xcode later aborted in the same handler (an M6 build host, 2026-10-06)"""
+    calls = []
+    monkeypatch.setattr(mac_run, "RUNNER", tmp_path / "build/mac-runner")
+    monkeypatch.setattr(mac_run, "xcode_app", lambda: "/Applications/Xcode.app")
+    monkeypatch.setattr(mac_run, "xcode_running", lambda xcode: True)
+    monkeypatch.setattr(mac_run, "run_command", lambda *args, **options: calls.append((args, options.get("input"))))
+    args = mac_run.argparse.Namespace(team="T", bundle_id="org.example.runner", app=tmp_path / "HaloCE.app")
+    mac_run.build_wrapper(args)
+    programs = [call[0][0] for call in calls]
+    assert programs.index("osascript") < programs.index("xcodegen")
+    close = calls[programs.index("osascript")][1]
+    assert 'whose path contains "/HaloRunner.xcodeproj"' in close
+    assert "does not start with" not in close
+
+
+def test_build_wrapper_does_not_start_xcode_to_close_projects(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(mac_run, "RUNNER", tmp_path / "build/mac-runner")
+    monkeypatch.setattr(mac_run, "xcode_app", lambda: "/Applications/Xcode.app")
+    monkeypatch.setattr(mac_run, "xcode_running", lambda xcode: False)
+    monkeypatch.setattr(mac_run, "run_command", lambda *args, **options: calls.append(args[0]))
+    args = mac_run.argparse.Namespace(team="T", bundle_id="org.example.runner", app=tmp_path / "HaloCE.app")
+    mac_run.build_wrapper(args)
+    assert "osascript" not in calls
+
+
+def test_close_runner_projects_gives_up_on_an_xcode_held_by_a_dialog():
+    """a modal alert keeps Xcode from answering: fail in seconds with the reason, not after 300 s"""
+    close = mac_run.CLOSE_RUNNER_PROJECTS.format(xcode="/Applications/Xcode.app", target="HaloRunner")
+    assert close.index("with timeout of") < close.index("close")
+
+
+def test_launch_script_does_not_count_a_run_that_never_started():
+    """a run left at "not yet started" (Xcode held by a dialog) counted as started, so the runner
+    waited 300 s for a game Xcode never launched"""
+    script = mac_run.LAUNCH.format(xcode="/Applications/Xcode.app", target="HaloRunner", project="/p/HaloRunner.xcodeproj")
+    never = script.index('else if run_status is "not yet started" then')
+    assert never < script.index("set started_run to true")

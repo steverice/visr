@@ -440,6 +440,25 @@ CLOSE_OTHERS = """tell application "{xcode}"
 end tell
 """
 
+# xcodegen rewrites HaloRunner.xcodeproj before every run. With the project open, Xcode
+# reloads it, and sometimes answers with a modal "changed on disk" alert instead,
+# which no one is there to click: every later run then fails with "Build operations
+# are disabled: 'project.xcworkspace' has changed and is reloading" or stays "not yet
+# started" (an M4 build host, 2026-10-05), and Xcode later aborted in that same handler
+# (an M6 build host, 2026-10-06). So every runner project is closed before xcodegen runs, and
+# LAUNCH opens this one again. An Xcode held by such an alert does not answer: give
+# up in seconds, with the reason
+CLOSE_RUNNER_PROJECTS = """with timeout of 30 seconds
+	tell application "{xcode}"
+		repeat with runner in (every workspace document whose path contains "/{target}.xcodeproj")
+			try
+				close runner saving no
+			end try
+		end repeat
+	end tell
+end timeout
+"""
+
 LAUNCH = """tell application "{xcode}"
 	repeat 120 times
 		if exists (first workspace document whose path is "{project}") then exit repeat
@@ -480,6 +499,9 @@ LAUNCH = """tell application "{xcode}"
 			-- launches anything (seen on an M4 Mac mini): ask again
 			if run_status is "cancelled" then
 				set last_error to "Xcode cancelled the run"
+			-- still not started after two minutes: Xcode is held (a dialog, a reload)
+			else if run_status is "not yet started" then
+				set last_error to "Xcode never started the run (is a dialog open in Xcode?)"
 			else if run_status is not "error occurred" then
 				set started_run to true
 				exit repeat
@@ -504,6 +526,22 @@ def run_command(*args, **options):
 def xcode_app():
     developer = subprocess.check_output(["xcode-select", "--print-path"], text=True).strip()
     return str(Path(developer).parents[1])
+
+
+def xcode_running(xcode):
+    return subprocess.run(["pgrep", "-f", f"{xcode}/Contents/MacOS/Xcode"], capture_output=True).returncode == 0
+
+
+def close_runner_projects():
+    """close every runner project in Xcode before xcodegen rewrites this one (see CLOSE_RUNNER_PROJECTS)"""
+    xcode = xcode_app()
+    if not xcode_running(xcode):
+        return
+    try:
+        run_command("osascript", input=CLOSE_RUNNER_PROJECTS.format(xcode=xcode, target=TARGET), text=True)
+    except subprocess.CalledProcessError:
+        sys.exit(f"Xcode ({xcode}) did not close its {TARGET} projects within 30 seconds: "
+                 "a dialog is probably open in it on this Mac's screen; answer it, then run again")
 
 
 def running():
@@ -532,6 +570,7 @@ def build_wrapper(args):
         target=TARGET, team=args.team, bundle_id=args.bundle_id, app=args.app.resolve(),
         environment=scheme_environment(validation_environment(getattr(args, "metal_validation", False),
                                                              getattr(args, "metal_shader_validation", False)))))
+    close_runner_projects()
     run_command("xcodegen", "generate", "--spec", RUNNER / "project.yml", "--project", RUNNER, "--quiet")
     run_command("xcodebuild", "-project", RUNNER / f"{TARGET}.xcodeproj", "-scheme", TARGET,
                 "-destination", DESTINATION, "-allowProvisioningUpdates", "build",
