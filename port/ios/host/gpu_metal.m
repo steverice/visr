@@ -175,6 +175,9 @@ static int metal_debug;
 /* display.compressed_textures, where the GPU has BC formats: DXT textures
 upload as they are, not decoded to BGRA8 (gpu_capabilities.s3tc) */
 static BOOL compressed_textures;
+/* debug.metal_specialize = false: vertex_function returns the unspecialized
+function, its fallback when specializing fails */
+static BOOL specialize_off;
 /* debug.fixed_timestep: visibility answers wait for the GPU (visibility_result) */
 static BOOL visibility_wait;
 
@@ -1580,7 +1583,7 @@ static id<MTLFunction> vertex_function(MetalShader *vertex, const uint8_t kinds[
 	NSData *name = [NSData dataWithBytes:kinds length:GPU_ATTRIBUTE_COUNT];
 	id<MTLFunction> function;
 
-	if (!vertex->library)
+	if (!vertex->library || specialize_off)
 		return vertex->function;
 	if (!vertex->specialized)
 		vertex->specialized = [NSMutableDictionary dictionary];
@@ -2761,6 +2764,9 @@ static void gpu_metal_initialize(uint32_t flags, struct gpu_capabilities *capabi
 		visibility_wait = (flags & GPU_INITIALIZE_FIXED_TIMESTEP) != 0;
 		metalfx_wanted = (flags & GPU_INITIALIZE_METALFX) != 0;
 		metal_state_initialize(&state_cache, !(flags & GPU_INITIALIZE_NO_STATE_CACHE));
+		specialize_off = (flags & GPU_INITIALIZE_NO_SPECIALIZE) != 0;
+		if (specialize_off)
+			platform_log("Metal: vertex shaders are not specialized (debug.metal_specialize)");
 #ifndef HAVE_METALFX
 		if (metalfx_wanted)
 			platform_log("Metal: this build has no MetalFX; the picture is scaled bilinearly");

@@ -433,6 +433,10 @@ enum
 	call a draw has, without skipping the ones that set what the encoder
 	already holds (metal_state_cache.h) */
 	GPU_INITIALIZE_NO_STATE_CACHE = 512,
+	/* debug.metal_specialize = false: the Metal backend draws with each
+	vertex shader's unspecialized function (vertex_function), its fallback
+	when specializing fails */
+	GPU_INITIALIZE_NO_SPECIALIZE = 1024,
 };
 /* probe the context, which must be current, and set it up */
 void gpu_initialize(uint32_t flags, struct gpu_capabilities *capabilities);

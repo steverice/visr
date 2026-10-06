@@ -338,6 +338,10 @@ static const struct config_setting config_settings[] =
 	{ "debug.metal_state_cache", _config_boolean, "true", "HALO_METAL_STATE_CACHE", _environment_value, _platform_ios,
 		"With the Metal renderer, skip the encoder calls that set what the\n"
 		"encoder already holds; false makes every call, to compare." },
+	{ "debug.metal_specialize", _config_boolean, "true", "HALO_METAL_SPECIALIZE", _environment_value, _platform_ios,
+		"With the Metal renderer, specialize each pipeline's vertex shader for its\n"
+		"attribute formats; false uses the unspecialized shaders, which read the\n"
+		"formats per draw (the fallback when specializing fails), to compare." },
 	{ "debug.gpu_flush_draws", _config_integer, "-1", "HALO_GPU_FLUSH_DRAWS", _environment_value, _platform_desktop,
 		"Flush the GPU's pipeline every this many draws: -1 for every 3 on Intel\n"
 		"graphics with Mesa's driver (which can hang without), 0 never." },
