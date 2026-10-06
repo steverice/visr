@@ -1007,3 +1007,53 @@ def test_osascript_failure_passes_on_any_other_error(monkeypatch):
     error = _osascript_error("execution error: run failed after 3 attempts: Build operations are disabled (-2700)")
     message = mac_run.osascript_failure("/Applications/Xcode.app", "running HaloRunner", error)
     assert "Build operations are disabled" in message
+
+
+@pytest.fixture
+def wrapper(tmp_path, monkeypatch):
+    """build_wrapper with Xcode open and xcodegen and xcodebuild faked: returns the programs it ran"""
+    calls = []
+    monkeypatch.setattr(mac_run, "RUNNER", tmp_path / "build/mac-runner")
+    monkeypatch.setattr(mac_run, "xcode_app", lambda: "/Applications/Xcode.app")
+    monkeypatch.setattr(mac_run, "xcode_running", lambda xcode: True)
+
+    def run_command(*args, **options):
+        calls.append(args[0])
+        if args[0] == "xcodegen":
+            project = mac_run.RUNNER / "HaloRunner.xcodeproj"
+            project.mkdir(parents=True, exist_ok=True)
+            (project / "project.pbxproj").write_text("// made by the fake xcodegen\n")
+        return mac_run.subprocess.CompletedProcess(args, 0, stdout="0\n", stderr="")
+    monkeypatch.setattr(mac_run, "run_command", run_command)
+    return calls
+
+
+def _wrapper_args(tmp_path, **overrides):
+    values = dict(team="T", bundle_id="org.example.runner", app=tmp_path / "HaloCE.app")
+    values.update(overrides)
+    return mac_run.argparse.Namespace(**values)
+
+
+def test_build_wrapper_leaves_an_unchanged_project_alone(tmp_path, wrapper):
+    """rewriting the project Xcode has open is what raised the "changed on disk" alert"""
+    mac_run.build_wrapper(_wrapper_args(tmp_path))
+    wrapper.clear()
+    mac_run.build_wrapper(_wrapper_args(tmp_path))
+    assert "xcodegen" not in wrapper
+    assert "osascript" not in wrapper
+    assert "xcodebuild" in wrapper
+
+
+def test_build_wrapper_regenerates_a_changed_project(tmp_path, wrapper):
+    mac_run.build_wrapper(_wrapper_args(tmp_path))
+    wrapper.clear()
+    mac_run.build_wrapper(_wrapper_args(tmp_path, metal_validation=True))
+    assert wrapper.index("osascript") < wrapper.index("xcodegen")
+
+
+def test_build_wrapper_regenerates_when_the_stamp_does_not_match(tmp_path, wrapper):
+    mac_run.build_wrapper(_wrapper_args(tmp_path))
+    (mac_run.RUNNER / "project.yml.sha256").write_text("stale\n")
+    wrapper.clear()
+    mac_run.build_wrapper(_wrapper_args(tmp_path))
+    assert "xcodegen" in wrapper

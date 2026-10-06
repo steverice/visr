@@ -24,6 +24,7 @@ display pinned to what the iPad runner sees, so its results compare with the iPa
 import argparse
 import datetime
 import difflib
+import hashlib
 import os
 import plistlib
 import re
@@ -441,14 +442,14 @@ CLOSE_OTHERS = """tell application "{xcode}"
 end tell
 """
 
-# xcodegen rewrites HaloRunner.xcodeproj before every run. With the project open, Xcode
-# reloads it, and sometimes answers with a modal "changed on disk" alert instead,
-# which no one is there to click: every later run then fails with "Build operations
-# are disabled: 'project.xcworkspace' has changed and is reloading" or stays "not yet
-# started" (an M4 build host, 2026-10-05), and Xcode later aborted in that same handler
-# (an M6 build host, 2026-10-06). So every runner project is closed before xcodegen runs, and
-# LAUNCH opens this one again. An Xcode held by such an alert does not answer: give
-# up in seconds, with the reason
+# xcodegen rewrites HaloRunner.xcodeproj whenever its inputs change (regenerate_project).
+# With the project open, Xcode reloads it, and sometimes answers with a modal "changed
+# on disk" alert instead, which no one is there to click: every later run then fails
+# with "Build operations are disabled: 'project.xcworkspace' has changed and is
+# reloading" or stays "not yet started" (an M4 build host, 2026-10-05), and Xcode later aborted
+# in that same handler (an M6 build host, 2026-10-06). So every runner project is closed before
+# xcodegen runs, and LAUNCH opens this one again. An Xcode held by such an alert does
+# not answer: give up in seconds, with the reason (osascript_failure)
 CLOSE_RUNNER_PROJECTS = """with timeout of 30 seconds
 	tell application "{xcode}"
 		repeat with runner in (every workspace document whose path contains "/{target}.xcodeproj")
@@ -640,11 +641,35 @@ def build_wrapper(args):
         target=TARGET, team=args.team, bundle_id=args.bundle_id, app=args.app.resolve(),
         environment=scheme_environment(validation_environment(getattr(args, "metal_validation", False),
                                                              getattr(args, "metal_shader_validation", False)))))
-    close_runner_projects()
-    run_command("xcodegen", "generate", "--spec", RUNNER / "project.yml", "--project", RUNNER, "--quiet")
+    regenerate_project()
     run_command("xcodebuild", "-project", RUNNER / f"{TARGET}.xcodeproj", "-scheme", TARGET,
                 "-destination", DESTINATION, "-allowProvisioningUpdates", "build",
                 stdout=subprocess.DEVNULL)
+
+
+def project_inputs_hash():
+    """what xcodegen makes HaloRunner.xcodeproj from: the spec, the stub and the xcodegen it runs"""
+    xcodegen = shutil.which("xcodegen")
+    digest = hashlib.sha256()
+    for part in ((RUNNER / "project.yml").read_bytes(), (RUNNER / "stub.c").read_bytes(),
+                 str(Path(xcodegen).resolve() if xcodegen else "").encode()):
+        digest.update(hashlib.sha256(part).digest())
+    return digest.hexdigest()
+
+
+def regenerate_project():
+    """run xcodegen only when its inputs changed since the last run, so an unchanged project stays as
+    Xcode has it open; when they did, close the runner projects first (CLOSE_RUNNER_PROJECTS)"""
+    stamp = RUNNER / "project.yml.sha256"
+    inputs = project_inputs_hash()
+    project = RUNNER / f"{TARGET}.xcodeproj/project.pbxproj"
+    if project.is_file() and stamp.is_file() and stamp.read_text().strip() == inputs:
+        print(f"{TARGET}.xcodeproj is up to date: not regenerating it", flush=True)
+        return
+    stamp.unlink(missing_ok=True)
+    close_runner_projects()
+    run_command("xcodegen", "generate", "--spec", RUNNER / "project.yml", "--project", RUNNER, "--quiet")
+    stamp.write_text(inputs + "\n")
 
 
 def launch(documents=None):
