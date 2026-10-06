@@ -43,6 +43,12 @@ long halo_screen_width(void);
 long halo_screen_commit(void);
 /* while TRUE, drawing shifts right to center 640-column layouts */
 void halo_screen_ui_offset(unsigned char centered);
+/* a player's view of the world is drawn and its HUD is next (render_window,
+before interface_draw_screen): where a post-process pass over the view goes
+(port/linux/src/d3d8_device.c) */
+union rectangle2d;
+void halo_render_before_hud(short local_player_index, short rasterizer_target,
+	union rectangle2d const *viewport_bounds);
 /* the mouse in the menus (source/interface/ui_widget.c) */
 #include "halo_ui_pointer.h"
 
