@@ -22,3 +22,11 @@ def test_alpha_tests_use_the_xbox_compare_values():
     (never,) = struct.unpack_from("<I", keys["ps_alpha0"], 244)
     (always,) = struct.unpack_from("<I", keys["ps_alpha7"], 244)
     assert (never, always) == (0x200, 0x207)
+
+
+def test_combiner_state_words_land_at_their_indices():
+    keys = shader_fixture_keys.keys()
+    (dot_mapping,) = struct.unpack_from("<I", keys["ps_dot_gl"], 4 * shader_fixture_keys.DOT_MAPPING)
+    (input_texture,) = struct.unpack_from("<I", keys["ps_bump_input"], 4 * shader_fixture_keys.INPUT_TEXTURE)
+    (rgb_outputs,) = struct.unpack_from("<I", keys["ps_mux_lsb"], 4 * shader_fixture_keys.RGB_OUTPUTS)
+    assert (dot_mapping, input_texture, rgb_outputs) == (0x222, 1 << 20, 0x4c00)
