@@ -34,10 +34,15 @@ but never returns to its run loop, which would otherwise drain them.
 #endif
 #include <math.h>
 #include <os/lock.h>
+#include <pthread.h>
 #include <stdatomic.h>
 #include <stddef.h>
 #include <stdlib.h>
+#include <ctype.h>
 #include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/resource.h>
 
 /* the platform layer's (host_gpu.c) */
 void platform_log(const char *format, ...) __attribute__((format(printf, 1, 2)));
@@ -907,6 +912,8 @@ static struct
 	double seconds[COMPILE_KINDS], longest[COMPILE_KINDS];
 	unsigned long total_count[COMPILE_KINDS];
 	double total_seconds[COMPILE_KINDS];
+	/* made while drawing, outside warming (the map's list missed them) */
+	unsigned long during_play[COMPILE_KINDS];
 } compile_stats;
 
 static void compile_count(int kind, CFTimeInterval started)
@@ -921,49 +928,89 @@ static void compile_count(int kind, CFTimeInterval started)
 	compile_stats.total_seconds[kind] += seconds;
 }
 
+/* compiling at map load (gpu_warm_begin to gpu_warm_end): shaders compile
+in parallel, joining warm_group until they are done, and the pipelines the
+map's list names wait in warm_list for warm_end, which builds them in
+parallel too */
+static BOOL warming;
+static dispatch_group_t warm_group;
+static NSMutableData *warm_list;
+
+/* a shader's library made into its record: its function (a vertex shader's
+unspecialized one) and what later specializations or variants compile from;
+NO, logged, if it can't be */
+static BOOL shader_finish(MetalShader *record, uint32_t stage, NSString *text, id<MTLLibrary> library, NSError *error)
+{
+	/* debug.gl_debug: the warnings of a shader that compiled */
+	if (library && error && metal_debug)
+		platform_log("the %s shader compiled with warnings:\n%s", stage == GPU_SHADER_VERTEX ? "vertex" : "pixel",
+			error.localizedDescription.UTF8String);
+	if (!library)
+	{
+		platform_log("cannot compile the %s shader:\n%s\n%s", stage == GPU_SHADER_VERTEX ? "vertex" : "pixel",
+			error.localizedDescription.UTF8String, text.UTF8String);
+		return NO;
+	}
+	/* a vertex shader's attribute kinds are function constants, which the
+	unspecialized function leaves undefined: its fetches read the kinds
+	from the attribute table (nv2a_msl.c) */
+	error = nil;
+	record->function = stage == GPU_SHADER_VERTEX ?
+		[library newFunctionWithName:@"vertex_main" constantValues:[MTLFunctionConstantValues new] error:&error] :
+		[library newFunctionWithName:@"fragment_main"];
+	if (!record->function)
+	{
+		platform_log("cannot make the %s shader's function: %s", stage == GPU_SHADER_VERTEX ? "vertex" : "pixel",
+			error ? error.localizedDescription.UTF8String : "no entry point");
+		return NO;
+	}
+	if (stage != GPU_SHADER_VERTEX)
+		record->source = text;
+	else
+		record->library = library;
+	return YES;
+}
+
 /* the translators' MSL (nv2a_msl.c); 0 if it doesn't compile, which the front
-end counts as a draw skipped for its program, as under GL */
+end counts as a draw skipped for its program, as under GL. While warming,
+the handle comes back at once and the shader compiles in the background; one
+that fails then has no function, and its draws are skipped as a pipeline
+that can't be made (draw_pipeline) */
 static gpu_shader gpu_metal_shader_create(uint32_t stage, const char *source)
 {
 	@autoreleasepool
 	{
 		NSError *error = nil;
 		NSString *text = @(source);
-		CFTimeInterval started = CACurrentMediaTime();
-		id<MTLLibrary> library = [device newLibraryWithSource:text
-			options:stage == GPU_SHADER_VERTEX ? compile_options : pixel_compile_options error:&error];
+		MTLCompileOptions *options = stage == GPU_SHADER_VERTEX ? compile_options : pixel_compile_options;
+		MetalShader *record = [MetalShader new];
+		CFTimeInterval started;
+		id<MTLLibrary> library;
 
+		/* (each on a worker thread, compiled synchronously there: not with
+		newLibraryWithSource's completion handler, which runs on Metal's
+		compiler queue, where shader_finish's newFunctionWithName waits on
+		that same queue and libdispatch traps) */
+		if (warming)
+		{
+			dispatch_group_async(warm_group, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^
+			{
+				@autoreleasepool
+				{
+					NSError *failure = nil;
+					id<MTLLibrary> compiled = [device newLibraryWithSource:text options:options error:&failure];
+
+					shader_finish(record, stage, text, compiled, failure);
+				}
+			});
+			return [shaders add:record];
+		}
+		started = CACurrentMediaTime();
+		library = [device newLibraryWithSource:text options:options error:&error];
 		compile_count(COMPILE_LIBRARY, started);
-		MetalShader *record;
-
-		/* debug.gl_debug: the warnings of a shader that compiled */
-		if (library && error && metal_debug)
-			platform_log("the %s shader compiled with warnings:\n%s", stage == GPU_SHADER_VERTEX ? "vertex" : "pixel",
-				error.localizedDescription.UTF8String);
-		if (!library)
-		{
-			platform_log("cannot compile the %s shader:\n%s\n%s", stage == GPU_SHADER_VERTEX ? "vertex" : "pixel",
-				error.localizedDescription.UTF8String, source);
+		compile_stats.during_play[COMPILE_LIBRARY]++;
+		if (!shader_finish(record, stage, text, library, error))
 			return 0;
-		}
-		record = [MetalShader new];
-		/* a vertex shader's attribute kinds are function constants, which the
-		unspecialized function leaves undefined: its fetches read the kinds
-		from the attribute table (nv2a_msl.c) */
-		error = nil;
-		record->function = stage == GPU_SHADER_VERTEX ?
-			[library newFunctionWithName:@"vertex_main" constantValues:[MTLFunctionConstantValues new] error:&error] :
-			[library newFunctionWithName:@"fragment_main"];
-		if (!record->function)
-		{
-			platform_log("cannot make the %s shader's function: %s", stage == GPU_SHADER_VERTEX ? "vertex" : "pixel",
-				error ? error.localizedDescription.UTF8String : "no entry point");
-			return 0;
-		}
-		if (stage != GPU_SHADER_VERTEX)
-			record->source = text;
-		else
-			record->library = library;
 		return [shaders add:record];
 	}
 }
@@ -1613,6 +1660,7 @@ static id<MTLFunction> vertex_function(MetalShader *vertex, const uint8_t kinds[
 		started = CACurrentMediaTime();
 		function = [vertex->library newFunctionWithName:@"vertex_main" constantValues:values error:&error];
 		compile_count(COMPILE_SPECIALIZE, started);
+		compile_stats.during_play[COMPILE_SPECIALIZE]++;
 		if (!function)
 		{
 			/* (once for each shader and set of kinds, which the dictionary
@@ -1626,6 +1674,245 @@ static id<MTLFunction> vertex_function(MetalShader *vertex, const uint8_t kinds[
 	return function;
 }
 
+/* a pipeline's descriptor, its functions made first (vertex_function,
+pixel_function), which may compile */
+static MTLRenderPipelineDescriptor *pipeline_descriptor(const struct pipeline_key *key, MetalShader *vertex,
+	MetalShader *pixel)
+{
+	MTLRenderPipelineDescriptor *descriptor = [MTLRenderPipelineDescriptor new];
+	MTLRenderPipelineColorAttachmentDescriptor *attachment = descriptor.colorAttachments[0];
+
+	descriptor.vertexFunction = vertex_function(vertex, key->attribute_kinds);
+	descriptor.fragmentFunction = pixel_function(pixel, key->exact_borders) ?: pixel->function;
+	attachment.pixelFormat = (MTLPixelFormat)key->color_format;
+	attachment.writeMask = write_mask(key->write_mask);
+	if (key->blend)
+	{
+		attachment.blendingEnabled = YES;
+		attachment.sourceRGBBlendFactor = attachment.sourceAlphaBlendFactor = blend_factor(key->source);
+		attachment.destinationRGBBlendFactor = attachment.destinationAlphaBlendFactor = blend_factor(key->destination);
+		attachment.rgbBlendOperation = attachment.alphaBlendOperation = blend_operation(key->operation);
+	}
+	descriptor.depthAttachmentPixelFormat = (MTLPixelFormat)key->depth_format;
+	descriptor.stencilAttachmentPixelFormat = (MTLPixelFormat)key->depth_format;
+	return descriptor;
+}
+
+/* the pipelines this device has compiled before, kept between launches in
+the app's caches folder: a pipeline found there is loaded rather than
+compiled, and one that isn't is compiled and added, then written out at the
+next warm_end (archive_save). The file's name holds the app's build, the
+GPU and the system's version, which an archive is only good for; any other
+file there is a stale one and is deleted, and one that can't be read is
+replaced by an empty archive. */
+static id<MTLBinaryArchive> archive;
+static NSURL *archive_url;
+static BOOL archive_dirty;
+/* the archive's reads (pipelines loaded from it, in parallel at warm_end)
+share this lock, and its writes (pipelines added, the file written) hold it
+alone: Metal's headers promise nothing about using one archive from several
+threads at once */
+static pthread_rwlock_t archive_lock = PTHREAD_RWLOCK_INITIALIZER;
+
+static void archive_open(void)
+{
+	NSFileManager *files = [NSFileManager defaultManager];
+	/* (the bundle's own folder: an app outside a sandbox, the Mac app, shares
+	its caches folder with every other) */
+	NSURL *folder = [[[files URLsForDirectory:NSCachesDirectory inDomains:NSUserDomainMask].firstObject
+		URLByAppendingPathComponent:[NSBundle mainBundle].bundleIdentifier ?: @"VISR" isDirectory:YES]
+		URLByAppendingPathComponent:@"metal-pipelines" isDirectory:YES];
+	NSString *build = [NSBundle mainBundle].infoDictionary[@"CFBundleVersion"] ?: @"0";
+	NSString *system = [NSProcessInfo processInfo].operatingSystemVersionString;
+	NSMutableString *name = [NSMutableString stringWithFormat:@"%@ %@ %@", build, device.name, system];
+	MTLBinaryArchiveDescriptor *descriptor = [MTLBinaryArchiveDescriptor new];
+	NSError *error = nil;
+	NSUInteger index;
+
+	/* a file name: letters, digits, dots and dashes */
+	for (index = 0; index < name.length; index++)
+	{
+		unichar c = [name characterAtIndex:index];
+
+		if (!(isalnum(c) || c == '.' || c == '-'))
+			[name replaceCharactersInRange:NSMakeRange(index, 1) withString:@"_"];
+	}
+	[files createDirectoryAtURL:folder withIntermediateDirectories:YES attributes:nil error:nil];
+	archive_url = [folder URLByAppendingPathComponent:[name stringByAppendingString:@".binarchive"]];
+	for (NSURL *old in [files contentsOfDirectoryAtURL:folder includingPropertiesForKeys:nil options:0 error:nil])
+	{
+		if (![old.lastPathComponent isEqualToString:archive_url.lastPathComponent])
+		{
+			platform_log("Metal: deleting a stale pipeline archive, %s", old.lastPathComponent.UTF8String);
+			[files removeItemAtURL:old error:nil];
+		}
+	}
+	if ([files fileExistsAtPath:archive_url.path])
+	{
+		descriptor.url = archive_url;
+		archive = [device newBinaryArchiveWithDescriptor:descriptor error:&error];
+		if (!archive)
+		{
+			platform_log("Metal: the pipeline archive can't be read (%s); starting a new one",
+				error.localizedDescription.UTF8String);
+			[files removeItemAtURL:archive_url error:nil];
+		}
+	}
+	if (!archive)
+	{
+		descriptor.url = nil;
+		archive = [device newBinaryArchiveWithDescriptor:descriptor error:&error];
+		if (!archive)
+			platform_log("Metal: no pipeline archive: %s", error.localizedDescription.UTF8String);
+	}
+	platform_log("Metal: pipeline archive %s", archive_url.lastPathComponent.UTF8String);
+}
+
+/* writes the archive out if pipelines were added since */
+static void archive_save(void)
+{
+	NSError *error = nil;
+	CFTimeInterval started = CACurrentMediaTime();
+
+	if (!archive || !archive_dirty)
+		return;
+	pthread_rwlock_wrlock(&archive_lock);
+	if ([archive serializeToURL:archive_url error:&error])
+	{
+		platform_log("Metal: wrote the pipeline archive in %.0f ms", (CACurrentMediaTime() - started) * 1e3);
+		archive_dirty = NO;
+	}
+	else
+	{
+		/* (diagnosis, 2026-10-06: the Mac app's writes to its caches folder
+		fail with "cannot create temporary file"; try the temporary folder,
+		then move the file into place) */
+		NSURL *temporary = [NSURL fileURLWithPath:[NSTemporaryDirectory()
+			stringByAppendingPathComponent:archive_url.lastPathComponent]];
+		NSError *second = nil, *moved = nil;
+		char folder[1024];
+
+		struct rlimit limit = { 0 };
+		int descriptor, open_files = 0;
+		char user_temporary[1024] = "?";
+
+		getrlimit(RLIMIT_NOFILE, &limit);
+		for (descriptor = 0; descriptor < (int)(limit.rlim_cur < 65536 ? limit.rlim_cur : 65536); descriptor++)
+			open_files += fcntl(descriptor, F_GETFD) != -1;
+		confstr(_CS_DARWIN_USER_TEMP_DIR, user_temporary, sizeof(user_temporary));
+		platform_log("Metal: the pipeline archive write failed (%s); TMPDIR %s, user temporary folder %s, HOME %s, "
+			"working folder %s, its folder %s, %d files open of %llu (hard limit %llu)",
+			error.localizedDescription.UTF8String, getenv("TMPDIR") ?: "(unset)", user_temporary,
+			getenv("HOME") ?: "(unset)", getcwd(folder, sizeof(folder)) ?: "?",
+			[[NSFileManager defaultManager] isWritableFileAtPath:archive_url.URLByDeletingLastPathComponent.path] ?
+			"writable" : "not writable", open_files, (unsigned long long)limit.rlim_cur, (unsigned long long)limit.rlim_max);
+		[[NSFileManager defaultManager] removeItemAtURL:temporary error:nil];
+		if ([archive serializeToURL:temporary error:&second])
+		{
+			[[NSFileManager defaultManager] removeItemAtURL:archive_url error:nil];
+			if ([[NSFileManager defaultManager] moveItemAtURL:temporary toURL:archive_url error:&moved])
+			{
+				archive_dirty = NO;
+				platform_log("Metal: wrote the pipeline archive by way of the temporary folder in %.0f ms (directly: %s)",
+					(CACurrentMediaTime() - started) * 1e3, error.localizedDescription.UTF8String);
+			}
+			else
+				platform_log("Metal: wrote the pipeline archive to the temporary folder but can't move it: %s",
+					moved.localizedDescription.UTF8String);
+		}
+		else
+			platform_log("Metal: can't write the pipeline archive %s: %s; nor to the temporary folder: %s",
+				archive_url.path.UTF8String, error.description.UTF8String, second.description.UTF8String);
+	}
+	pthread_rwlock_unlock(&archive_lock);
+}
+
+/* the pipeline for a descriptor, or NSNull, logged, if it can't be made
+(as a GL link failure: the draws are skipped): loaded from the archive when
+it has it, else compiled and added to it. Safe on any thread. */
+static id pipeline_make(MTLRenderPipelineDescriptor *descriptor)
+{
+	NSError *error = nil;
+	id pipeline = nil;
+
+	if (descriptor.vertexFunction && descriptor.fragmentFunction)
+	{
+		if (archive)
+		{
+			descriptor.binaryArchives = @[archive];
+			pthread_rwlock_rdlock(&archive_lock);
+			pipeline = [device newRenderPipelineStateWithDescriptor:descriptor
+				options:MTLPipelineOptionFailOnBinaryArchiveMiss reflection:nil error:nil];
+			pthread_rwlock_unlock(&archive_lock);
+		}
+		if (!pipeline)
+		{
+			/* (compiled without the archive: Metal would read it outside
+			archive_lock, while another thread adds to it) */
+			descriptor.binaryArchives = nil;
+			pipeline = [device newRenderPipelineStateWithDescriptor:descriptor error:&error];
+			if (pipeline && archive)
+			{
+				pthread_rwlock_wrlock(&archive_lock);
+				if ([archive addRenderPipelineFunctionsWithDescriptor:descriptor error:nil])
+					archive_dirty = YES;
+				pthread_rwlock_unlock(&archive_lock);
+			}
+		}
+	}
+
+	if (!pipeline)
+	{
+		platform_log("cannot link a shader program: %s",
+			error ? error.localizedDescription.UTF8String : "a shader did not compile");
+		pipeline = [NSNull null];
+	}
+	return pipeline;
+}
+
+/* a key's description in the front end's terms (gpu.h), and back */
+static void pipeline_describe(const struct pipeline_key *key, struct gpu_pipeline_description *description)
+{
+	memset(description, 0, sizeof(*description));
+	description->vertex_shader = key->vertex_shader;
+	description->pixel_shader = key->pixel_shader;
+	description->blend = key->blend;
+	description->source = key->source;
+	description->destination = key->destination;
+	description->operation = key->operation;
+	description->write_mask = key->write_mask;
+	description->exact_borders = key->exact_borders;
+	description->depth = key->depth_format != MTLPixelFormatInvalid;
+	memcpy(description->attribute_kinds, key->attribute_kinds, sizeof(description->attribute_kinds));
+}
+
+static void pipeline_key_from_description(const struct gpu_pipeline_description *description, struct pipeline_key *key)
+{
+	memset(key, 0, sizeof(*key));
+	key->vertex_shader = description->vertex_shader;
+	key->pixel_shader = description->pixel_shader;
+	key->blend = description->blend != 0;
+	if (key->blend)
+	{
+		key->source = description->source;
+		key->destination = description->destination;
+		key->operation = description->operation;
+	}
+	key->write_mask = description->write_mask & 0xf;
+	key->exact_borders = description->exact_borders & 0xf;
+	/* every pass draws to BGRA8 (pass_begin's scratch color in a depth-only
+	one) and depth-stencil targets are Depth32Float_Stencil8 */
+	key->color_format = (uint32_t)MTLPixelFormatBGRA8Unorm;
+	key->depth_format = (uint32_t)(description->depth ? MTLPixelFormatDepth32Float_Stencil8 : MTLPixelFormatInvalid);
+	memcpy(key->attribute_kinds, description->attribute_kinds, sizeof(key->attribute_kinds));
+}
+
+/* pipelines built for draws outside warming, which gpu_pipeline_built_take
+hands to the front end to log and record (shader_list.c), oldest first */
+static NSMutableData *built_during_play;
+static unsigned long built_taken;
+
+/* the pipeline for a draw, or nil if it can't be made (cached either way) */
 static id<MTLRenderPipelineState> draw_pipeline(const struct gpu_draw *draw, const struct draw_attributes *attributes,
 	MetalShader *vertex, MetalShader *pixel, unsigned exact, MTLPixelFormat color, MTLPixelFormat depth)
 {
@@ -1656,51 +1943,268 @@ static id<MTLRenderPipelineState> draw_pipeline(const struct gpu_draw *draw, con
 	pipeline = pipelines[name];
 	if (!pipeline)
 	{
-		MTLRenderPipelineDescriptor *descriptor = [MTLRenderPipelineDescriptor new];
-		MTLRenderPipelineColorAttachmentDescriptor *attachment = descriptor.colorAttachments[0];
-		MTLRenderPipelineReflection *reflection = nil;
-		NSError *error = nil;
-		CFTimeInterval started;
+		MTLRenderPipelineDescriptor *descriptor = pipeline_descriptor(&key, vertex, pixel);
+		CFTimeInterval started = CACurrentMediaTime();
 
-		descriptor.vertexFunction = vertex_function(vertex, key.attribute_kinds);
-		descriptor.fragmentFunction = pixel_function(pixel, exact) ?: pixel->function;
-		attachment.pixelFormat = color;
-		attachment.writeMask = write_mask(key.write_mask);
-		if (key.blend)
+		if (metal_debug && !layout_checked && descriptor.vertexFunction && descriptor.fragmentFunction)
 		{
-			attachment.blendingEnabled = YES;
-			attachment.sourceRGBBlendFactor = attachment.sourceAlphaBlendFactor = blend_factor(key.source);
-			attachment.destinationRGBBlendFactor = attachment.destinationAlphaBlendFactor = blend_factor(key.destination);
-			attachment.rgbBlendOperation = attachment.alphaBlendOperation = blend_operation(key.operation);
-		}
-		descriptor.depthAttachmentPixelFormat = depth;
-		descriptor.stencilAttachmentPixelFormat = depth;
-		started = CACurrentMediaTime();
-		if (metal_debug && !layout_checked)
-		{
+			MTLRenderPipelineReflection *reflection = nil;
+
 			pipeline = [device newRenderPipelineStateWithDescriptor:descriptor
-				options:MTLPipelineOptionBindingInfo | MTLPipelineOptionBufferTypeInfo reflection:&reflection error:&error];
+				options:MTLPipelineOptionBindingInfo | MTLPipelineOptionBufferTypeInfo reflection:&reflection error:nil];
 			if (pipeline)
 			{
 				check_uniform_layout(reflection);
 				layout_checked = YES;
 			}
 		}
-		else
-		{
-			pipeline = [device newRenderPipelineStateWithDescriptor:descriptor error:&error];
-		}
-		compile_count(COMPILE_PIPELINE, started);
 		if (!pipeline)
-		{
-			/* as a GL link failure: logged once, the draws skipped */
-			platform_log("cannot link a shader program: %s", error.localizedDescription.UTF8String);
-			pipeline = [NSNull null];
-		}
+			pipeline = pipeline_make(descriptor);
+		compile_count(COMPILE_PIPELINE, started);
+		compile_stats.during_play[COMPILE_PIPELINE]++;
 		pipelines[name] = pipeline;
+		{
+			struct gpu_pipeline_description built;
+
+			pipeline_describe(&key, &built);
+			[built_during_play appendBytes:&built length:sizeof(built)];
+		}
 	}
 	front_cache_put(&pipeline_cache, &key, sizeof(key), pipeline);
 	return pipeline == [NSNull null] ? nil : pipeline;
+}
+
+static uint32_t gpu_metal_pipeline_built_take(struct gpu_pipeline_description *description)
+{
+	unsigned long count = built_during_play.length / sizeof(*description);
+
+	if (built_taken >= count)
+	{
+		[built_during_play setLength:0];
+		built_taken = 0;
+		return 0;
+	}
+	memcpy(description, (const struct gpu_pipeline_description *)built_during_play.bytes + built_taken++,
+		sizeof(*description));
+	return 1;
+}
+
+/* ---------- compiling at map load (gpu.h; the front end's shader_list.c) */
+
+static uint32_t gpu_metal_warm_list_read(const char *name, char *text, uint32_t size)
+{
+	@autoreleasepool
+	{
+		NSString *path = [[NSBundle mainBundle] pathForResource:@(name) ofType:@"txt" inDirectory:@"shader-lists"];
+		NSData *list = path ? [NSData dataWithContentsOfFile:path] : nil;
+
+		if (!list)
+			return 0;
+		if (list.length <= size)
+			memcpy(text, list.bytes, list.length);
+		return (uint32_t)list.length;
+	}
+}
+
+static void gpu_metal_warm_begin(void)
+{
+	warming = YES;
+	warm_list = [NSMutableData data];
+	warm_group = dispatch_group_create();
+}
+
+static void gpu_metal_pipeline_warm(const struct gpu_pipeline_description *description)
+{
+	if (warming)
+		[warm_list appendBytes:description length:sizeof(*description)];
+}
+
+/* waits for the shaders, then builds the listed pipelines: the vertex
+functions' specializations and the pipelines themselves in parallel, the
+bookkeeping (dictionaries, which aren't thread-safe) on this thread */
+static void gpu_metal_warm_end(void)
+{
+	@autoreleasepool
+	{
+		const struct gpu_pipeline_description *list = warm_list.bytes;
+		unsigned long count = warm_list.length / sizeof(*list), index;
+		NSMutableArray *names = [NSMutableArray array], *descriptors = [NSMutableArray array];
+		NSMutableSet *named = [NSMutableSet set];
+		NSMutableArray *specialize = [NSMutableArray array];
+		NSMutableDictionary<NSData *, id> *specialized = [NSMutableDictionary dictionary];
+		CFTimeInterval started = CACurrentMediaTime(), shaders_done;
+		NSMutableArray *made;
+
+		if (!warming)
+			return;
+		dispatch_group_wait(warm_group, DISPATCH_TIME_FOREVER);
+		warming = NO;
+		shaders_done = CACurrentMediaTime();
+		/* the specializations the pipelines need and don't have, made in
+		parallel and filed under their shaders here */
+		for (index = 0; index < count; index++)
+		{
+			struct pipeline_key key;
+			MetalShader *vertex;
+			NSMutableData *name;
+
+			pipeline_key_from_description(&list[index], &key);
+			vertex = table_get(shaders, key.vertex_shader);
+			if (!vertex || !vertex->library || specialize_off)
+				continue;
+			name = [NSMutableData dataWithBytes:&key.vertex_shader length:sizeof(key.vertex_shader)];
+			[name appendBytes:key.attribute_kinds length:sizeof(key.attribute_kinds)];
+			if (vertex->specialized[[NSData dataWithBytes:key.attribute_kinds length:sizeof(key.attribute_kinds)]] ||
+				specialized[name])
+				continue;
+			specialized[name] = [NSNull null];
+			[specialize addObject:name];
+		}
+		{
+			NSMutableArray *functions = [NSMutableArray arrayWithCapacity:specialize.count];
+
+			for (index = 0; index < specialize.count; index++)
+				[functions addObject:[NSNull null]];
+			dispatch_apply(specialize.count, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^(size_t item)
+			{
+				NSData *name = specialize[item];
+				gpu_shader handle;
+				MetalShader *vertex;
+				MTLFunctionConstantValues *values = [MTLFunctionConstantValues new];
+				NSUInteger attribute;
+				id function;
+
+				memcpy(&handle, name.bytes, sizeof(handle));
+				vertex = table_get(shaders, handle);
+				for (attribute = 0; attribute < GPU_ATTRIBUTE_COUNT; attribute++)
+				{
+					uint32_t kind = ((const uint8_t *)name.bytes)[sizeof(handle) + attribute];
+
+					[values setConstantValue:&kind type:MTLDataTypeUInt atIndex:attribute];
+				}
+				function = [vertex->library newFunctionWithName:@"vertex_main" constantValues:values error:nil];
+				if (function)
+				{
+					@synchronized (functions)
+					{
+						functions[item] = function;
+					}
+				}
+			});
+			for (index = 0; index < specialize.count; index++)
+			{
+				NSData *name = specialize[index];
+				gpu_shader handle;
+
+				MetalShader *vertex;
+
+				memcpy(&handle, name.bytes, sizeof(handle));
+				vertex = table_get(shaders, handle);
+				if (!vertex->specialized)
+					vertex->specialized = [NSMutableDictionary dictionary];
+				/* (one that failed gets the unspecialized function, as
+				vertex_function files it, rather than compiling again there) */
+				if (functions[index] == [NSNull null])
+					platform_log("Metal: cannot specialize vertex shader %p for its attributes, which it then reads per draw",
+						(__bridge void *)vertex);
+				vertex->specialized[[name subdataWithRange:NSMakeRange(sizeof(handle), GPU_ATTRIBUTE_COUNT)]] =
+					functions[index] != [NSNull null] ? functions[index] : vertex->function;
+			}
+		}
+		/* the pixel shaders' exact-border variants the pipelines need
+		(pixel_function), compiled in parallel too and filed here, so that
+		pipeline_descriptor finds them made */
+		{
+			NSMutableArray *variants = [NSMutableArray array], *compiled = [NSMutableArray array];
+			NSMutableSet *seen = [NSMutableSet set];
+
+			for (index = 0; index < count; index++)
+			{
+				struct pipeline_key key;
+				MetalShader *pixel;
+				NSData *variant;
+
+				pipeline_key_from_description(&list[index], &key);
+				pixel = table_get(shaders, key.pixel_shader);
+				if (!key.exact_borders || !pixel || !pixel->source || (pixel->exact_tried & (1u << key.exact_borders)))
+					continue;
+				variant = [NSData dataWithBytes:(uint32_t[2]){ key.pixel_shader, key.exact_borders } length:8];
+				if ([seen containsObject:variant])
+					continue;
+				[seen addObject:variant];
+				[variants addObject:variant];
+				[compiled addObject:[NSNull null]];
+			}
+			dispatch_apply(variants.count, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^(size_t item)
+			{
+				@autoreleasepool
+				{
+					const uint32_t *variant = ((NSData *)variants[item]).bytes;
+					MetalShader *pixel = table_get(shaders, variant[0]);
+					NSString *text = [NSString stringWithFormat:@"#define EXACT_BORDERS %u\n%@", variant[1], pixel->source];
+					id<MTLLibrary> library = [device newLibraryWithSource:text options:pixel_compile_options error:nil];
+					id function = [library newFunctionWithName:@"fragment_main"];
+
+					if (function)
+					{
+						@synchronized (compiled)
+						{
+							compiled[item] = function;
+						}
+					}
+				}
+			});
+			for (index = 0; index < variants.count; index++)
+			{
+				const uint32_t *variant = ((NSData *)variants[index]).bytes;
+				MetalShader *pixel = table_get(shaders, variant[0]);
+
+				/* (one that failed is left untried, for pixel_function to compile and log) */
+				if (compiled[index] == [NSNull null])
+					continue;
+				pixel->exact_tried |= 1u << variant[1];
+				pixel->exact[variant[1]] = compiled[index];
+			}
+		}
+		/* the descriptors, then the pipelines in parallel */
+		for (index = 0; index < count; index++)
+		{
+			struct pipeline_key key;
+			MetalShader *vertex, *pixel;
+			NSData *name;
+
+			pipeline_key_from_description(&list[index], &key);
+			name = [NSData dataWithBytes:&key length:sizeof(key)];
+			vertex = table_get(shaders, key.vertex_shader);
+			pixel = table_get(shaders, key.pixel_shader);
+			if (pipelines[name] || [named containsObject:name] || !vertex || !pixel)
+				continue;
+			[names addObject:name];
+			[named addObject:name];
+			[descriptors addObject:pipeline_descriptor(&key, vertex, pixel)];
+		}
+		made = [NSMutableArray arrayWithCapacity:names.count];
+		for (index = 0; index < names.count; index++)
+			[made addObject:[NSNull null]];
+		dispatch_apply(names.count, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^(size_t item)
+		{
+			id pipeline = pipeline_make(descriptors[item]);
+
+			@synchronized (made)
+			{
+				made[item] = pipeline;
+			}
+		});
+		for (index = 0; index < names.count; index++)
+			pipelines[names[index]] = made[index];
+		warm_list = nil;
+		warm_group = nil;
+		archive_save();
+		platform_log("Metal: warmed %lu pipelines (%lu listed, %lu specializations) in %.0f ms, after waiting %.0f ms "
+			"for the shaders",
+			(unsigned long)names.count, count, (unsigned long)specialize.count,
+			(CACurrentMediaTime() - shaders_done) * 1e3, (shaders_done - started) * 1e3);
+	}
 }
 
 static id<MTLDepthStencilState> depth_state(const struct gpu_depth_stencil_state *state)
@@ -2736,10 +3240,12 @@ static uint32_t gpu_metal_present(gpu_texture back_buffer)
 			pipeline_changes.changes = pipeline_changes.same_shaders = 0;
 			if (metal_debug)
 				platform_log("Metal: so far %lu shader libraries (%.0f ms), %lu vertex specializations (%.0f ms), "
-					"%lu pipelines (%.0f ms)", compile_stats.total_count[COMPILE_LIBRARY],
+					"%lu pipelines (%.0f ms) made while drawing; outside a map's list: %lu libraries, %lu "
+					"specializations, %lu pipelines", compile_stats.total_count[COMPILE_LIBRARY],
 					compile_stats.total_seconds[COMPILE_LIBRARY] * 1e3, compile_stats.total_count[COMPILE_SPECIALIZE],
 					compile_stats.total_seconds[COMPILE_SPECIALIZE] * 1e3, compile_stats.total_count[COMPILE_PIPELINE],
-					compile_stats.total_seconds[COMPILE_PIPELINE] * 1e3);
+					compile_stats.total_seconds[COMPILE_PIPELINE] * 1e3, compile_stats.during_play[COMPILE_LIBRARY],
+					compile_stats.during_play[COMPILE_SPECIALIZE], compile_stats.during_play[COMPILE_PIPELINE]);
 			metal_state_take_counts(&state_cache);
 		}
 		if (frames % 600 == 0)
@@ -2775,6 +3281,7 @@ static void gpu_metal_initialize(uint32_t flags, struct gpu_capabilities *capabi
 		metalfx_wanted = (flags & GPU_INITIALIZE_METALFX) != 0;
 		metal_state_initialize(&state_cache, !(flags & GPU_INITIALIZE_NO_STATE_CACHE));
 		specialize_off = (flags & GPU_INITIALIZE_NO_SPECIALIZE) != 0;
+		built_during_play = [NSMutableData data];
 		if (specialize_off)
 			platform_log("Metal: vertex shaders are not specialized (debug.metal_specialize)");
 #ifndef HAVE_METALFX
@@ -2788,6 +3295,9 @@ static void gpu_metal_initialize(uint32_t flags, struct gpu_capabilities *capabi
 		if (!layer || !device)
 			host_fatal("Metal is unavailable (layer %p, device %p)", (__bridge void *)layer, (__bridge void *)device);
 		queue = [device newCommandQueue];
+		/* (after the device: the archive is the device's, and named by its GPU) */
+		if (!(flags & GPU_INITIALIZE_NO_PIPELINE_ARCHIVE))
+			archive_open();
 #if TARGET_OS_VISION
 		if (flags & GPU_INITIALIZE_IMMERSIVE)
 		{
