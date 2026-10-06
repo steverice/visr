@@ -1794,7 +1794,7 @@ static void bind_stages(const struct gpu_draw *draw, unsigned exact)
 			colors[stage][2] = (float)(color & 0xff) / 255.0f;
 			colors[stage][3] = (float)(color >> 24) / 255.0f;
 		}
-		[encoder setFragmentBytes:colors length:sizeof(colors) atIndex:1];
+		[encoder setFragmentBytes:colors length:sizeof(colors) atIndex:3];
 		metal_state_always(&state_cache);
 	}
 }

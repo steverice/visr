@@ -14,8 +14,9 @@ Bindings, which the Metal backend (port/ios/host/gpu_metal.m) follows:
   16 attributes reads (see fetch_attribute);
 - fragment: buffer 0 struct Uniforms, textures and samplers 0-3 the stages;
   compiled with EXACT_BORDERS (exact border colors, nv2a_msl_fragment_main),
-  also buffer 1 the stages' border colors and samplers 4-7 opaque white
-  borders.
+  also buffer 3 the stages' border colors (buffers 1 and 2 are
+  phase3-stereo's rate map and foveation sizes) and samplers 4-7 opaque
+  white borders.
 */
 
 #include "xgpu.h"
@@ -237,7 +238,7 @@ void nv2a_msl_fragment_main(struct xgpu_text *text, const struct nv2a_dialect *d
 	sampler) and an opaque white one (sampler 4 + n): their difference is the
 	border's weight in the filtered sample, the same in every channel, so
 	black + color * (white - black) is the sample with the game's color
-	(borders, buffer 1). Without it, the text compiles as it always has. */
+	(borders, buffer 3). Without it, the text compiles as it always has. */
 	xgpu_text_append(text,
 		"#ifndef EXACT_BORDERS\n"
 		"#define EXACT_BORDERS 0\n"
@@ -260,7 +261,7 @@ void nv2a_msl_fragment_main(struct xgpu_text *text, const struct nv2a_dialect *d
 		xgpu_text_append(text, ",\n\t%s tex%d [[texture(%d)]], sampler tex%d_sampler [[sampler(%d)]]",
 			type, stage, stage, stage, stage);
 	}
-	xgpu_text_append(text, "\n#if EXACT_BORDERS\n\t, constant Borders &borders [[buffer(1)]]\n#endif\n");
+	xgpu_text_append(text, "\n#if EXACT_BORDERS\n\t, constant Borders &borders [[buffer(3)]]\n#endif\n");
 	for (stage = 0; stage < 4; stage++)
 		xgpu_text_append(text, "#if EXACT_BORDERS & %d\n\t, sampler tex%d_white [[sampler(%d)]]\n#endif\n",
 			1 << stage, stage, 4 + stage);
