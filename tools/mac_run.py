@@ -651,7 +651,7 @@ def run_simulator(args):
 
 def native_app_default(environment=None):
     """the Catalyst app tools/ios_build.py --mac built: in the checkout, or under $HALO_MAC_BUILD (a host
-    that runs developer-built apps only from one folder: the MacBook's Santa)"""
+    that runs developer-built apps only from one folder)"""
     environment = os.environ if environment is None else environment
     if environment.get("HALO_MAC_BUILD"):
         return Path(environment["HALO_MAC_BUILD"]) / ROOT.name / "app/Release-maccatalyst/HaloCE.app"
@@ -669,7 +669,7 @@ ERE_SPECIAL = re.compile(r"([.^$*+?()\[\]{}|\\])")
 
 def native_data_folder(bundle_id, environment=None, home=None):
     """the native runner's data folder (one per host, kept between runs): $HALO_NATIVE_DATA (a remote
-    host's, remote-job-run.sh), else ~/Library/Application Support/BUNDLE_ID/runner-data"""
+    host's, set by its job runner), else ~/Library/Application Support/BUNDLE_ID/runner-data"""
     environment = os.environ if environment is None else environment
     if environment.get("HALO_NATIVE_DATA"):
         return Path(environment["HALO_NATIVE_DATA"])
@@ -684,8 +684,8 @@ def native_command(app, data, out, environment):
     for name, value in variables.items():
         command += ["--env", f"{name}={value}"]
     # open's own stdout and stderr go to files in the data folder, not to out: launchd opens them, and
-    # macOS's TCC denies its helper (xpcproxy) access to removable volumes, so a path on one (g-force's
-    # baselines symlink points at /Volumes/Tank) fails the launch with -10810 before the app starts. The
+    # macOS's TCC denies its helper (xpcproxy) access to removable volumes, so a path on one (a
+    # baselines symlink to an external drive) fails the launch with -10810 before the app starts. The
     # data folder is on the internal disk on every host; launch_native copies the logs into out afterward
     return command + ["--stdout", str(data / "open-stdout.log"), "--stderr", str(data / "open-stderr.log"),
                       str(app)]
@@ -778,7 +778,7 @@ def seeding_run(args, data, label, out, init, exit_after, unseed=True):
 def seed_native_data(args, data):
     """seed a data folder that has no `seeded` marker: play two throwaway runs, then write the marker.
     The a10 run comes first: a host's first a10 GL run in a newly seeded folder has fallen behind on
-    g-force and the mini (REMOTE.md). The menu run comes second: the first menu run in a new folder
+    two of the build hosts. The menu run comes second: the first menu run in a new folder
     writes last_language.dat and savegame.bin and precaches the ui map once more, so it differs from
     every later menu run, and the iPad runner's container is always past that state. A folder without
     maps is cloned from --maps first (into maps.partial, renamed when complete, so an interrupted

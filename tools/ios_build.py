@@ -169,7 +169,7 @@ def opengles_framework(folder):
 
 def mac_build_folder(environment=None):
     """where the Catalyst build goes: build/mac/app in the checkout, or, on a host that runs developer-built
-    apps only from one folder (the MacBook's Santa: HALO_MAC_BUILD, set by remote-job-run.sh), a folder per
+    apps only from one folder (HALO_MAC_BUILD, set by that host's job runner), a folder per
     checkout there"""
     environment = os.environ if environment is None else environment
     if environment.get('HALO_MAC_BUILD'):
