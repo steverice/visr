@@ -545,6 +545,16 @@ static const struct config_setting config_settings[] =
 	{ "debug.screen_lean", _config_real, "0.0", "HALO_SCREEN_LEAN", _environment_value, _platform_ios,
 		"With debug.side_by_side_screen: a fixed lean of the head, in meters to the\n"
 		"right (up to 0.25), as if you leaned in front of the screen." },
+	{ "debug.head_yaw_log", _config_boolean, "false", "HALO_HEAD_YAW_LOG", _environment_set_is_true, _platform_ios,
+		"HEAD mode: log a line each frame while the head turns (\"stereo: head\n"
+		"yaw\"): the head's yaw from the frame's predicted pose, the yaw the eye\n"
+		"cameras used, and how far the world moved against the head since the\n"
+		"last line, to see whether the world stays put while the head turns." },
+	{ "debug.head_sweep", _config_string, "\"\"", "HALO_HEAD_SWEEP", _environment_value, _platform_ios,
+		"HEAD mode: turn the head by itself, left and right in a sine, as\n"
+		"\"amplitude_degrees,period_seconds\" (\"30,4\"), in place of the yaw\n"
+		"ARKit gives, to check the view's tracking in the simulator; empty for\n"
+		"none." },
 	{ "debug.foveation_eye_passes", _config_boolean, "true", "HALO_FOVEATION_EYE_PASSES", _environment_value,
 		_platform_ios,
 		"With display.foveation: false renders the game's eyes unfoveated at the\n"

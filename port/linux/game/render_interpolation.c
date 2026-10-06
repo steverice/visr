@@ -136,6 +136,11 @@ struct interpolated_camera
 	/* its player's unit (or what it rides) corrected: as an object's */
 	real_vector3d correction;
 	real_vector3d correction_pending;
+	/* HEAD mode: the head yaw each holds (halo_stereo_head_yaw_taken when it
+	was kept: the first-person camera is posed each frame from the facing,
+	which has the head's yaw the look had taken by then) */
+	real previous_head_yaw;
+	real latest_head_yaw;
 };
 
 struct interpolated_first_person
@@ -744,6 +749,22 @@ static void trace_camera(struct interpolated_camera const *camera, struct observ
 
 static struct observer_result direct_cameras[MAXIMUM_LOCAL_PLAYERS];
 
+/* how this frame's camera was made, for stereo (halo_stereo_camera_head_yaw):
+the head yaw it holds, the blend and the way; source NULL until one is */
+static struct
+{
+	real head_yaw;
+	real fraction;
+	char const *source;
+} camera_note;
+
+static void camera_noted(real head_yaw, char const *source)
+{
+	camera_note.head_yaw = head_yaw;
+	camera_note.fraction = render_interpolation_fraction();
+	camera_note.source = source;
+}
+
 static struct observer_result const *render_interpolation_blended_camera(
 	short local_player_index,
 	struct observer_result const *observer);
@@ -788,6 +809,7 @@ static struct observer_result const *render_interpolation_direct_camera(
 	*direct = *observer;
 	player_control_get_facing_direction(local_player_index, &direct->forward);
 	observer_up_from_forward(&direct->forward, &direct->up);
+	camera_noted(halo_stereo_head_yaw_taken(), "direct");
 	return direct;
 #endif
 }
@@ -796,10 +818,17 @@ struct observer_result const *render_interpolation_camera(
 	short local_player_index,
 	struct observer_result const *observer)
 {
+	struct observer_result const *result;
+
 	if (local_player_index < 0 || local_player_index >= MAXIMUM_LOCAL_PLAYERS)
 		return observer;
-	return render_interpolation_direct_camera(local_player_index,
+	camera_note.source = NULL;
+	result = render_interpolation_direct_camera(local_player_index,
 		render_interpolation_blended_camera(local_player_index, observer));
+	/* (stereo is player one's) */
+	if (local_player_index == 0 && result && camera_note.source)
+		halo_stereo_camera_head_yaw(camera_note.head_yaw, camera_note.fraction, camera_note.source);
+	return result;
 }
 
 static struct observer_result const *render_interpolation_blended_camera(
@@ -811,6 +840,8 @@ static struct observer_result const *render_interpolation_blended_camera(
 
 	if (!interpolation_rendering || !observer)
 	{
+		/* the observer as posed this frame */
+		camera_noted(halo_stereo_head_yaw_taken(), "live");
 		return observer;
 	}
 	camera = &interpolated_cameras[local_player_index];
@@ -827,6 +858,8 @@ static struct observer_result const *render_interpolation_blended_camera(
 		camera->has_previous = camera->valid;
 		camera->previous = camera->latest;
 		camera->latest = *observer;
+		camera->previous_head_yaw = camera->latest_head_yaw;
+		camera->latest_head_yaw = halo_stereo_head_yaw_taken();
 		camera->tick = interpolation_tick;
 		camera->valid = TRUE;
 	}
@@ -840,6 +873,7 @@ static struct observer_result const *render_interpolation_blended_camera(
 	{
 		if (local_player_index == 0 && halo_frame_trace_enabled())
 			trace_camera(camera, observer, camera->has_previous ? "cut" : "first");
+		camera_noted(halo_stereo_head_yaw_taken(), "cut");
 		return observer;
 	}
 
@@ -879,6 +913,9 @@ static struct observer_result const *render_interpolation_blended_camera(
 		}
 	}
 	camera->blended.field_of_view = lerp(camera->previous.field_of_view, camera->latest.field_of_view, t);
+	/* (about what the blend holds: the two's head yaws by the blend) */
+	camera_noted(camera->previous_head_yaw +
+		(real)remainder(camera->latest_head_yaw - camera->previous_head_yaw, 2.0 * 3.14159265358979) * t, "blended");
 	if (local_player_index == 0 && halo_frame_trace_enabled())
 		trace_camera(camera, &camera->blended, "blended");
 	return &camera->blended;

@@ -28,6 +28,7 @@ Elsewhere host_stereo_frame leaves the frame mono. */
 #include "host_config.h"
 #include "host.h"
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 #if TARGET_OS_VISION
@@ -611,6 +612,56 @@ static void head_turn(struct halo_stereo_frame *frame, simd_float4x4 origin_from
 	host_stereo_head_turn(&head, right, up, back, frame);
 }
 
+/* debug.head_sweep, read once (head_sweep): the synthetic head's amplitude
+(radians; 0 without the setting, negative until read) and period (seconds),
+and the presentation time its sine starts from */
+static float sweep_amplitude = -1.0f, sweep_period;
+static double sweep_start;
+
+/* debug.head_sweep: the head turns by itself, left and right in a sine of the
+frame's predicted presentation time, level, in place of ARKit's pose, so the
+view's tracking can be checked in the simulator (which has no device anchor)
+with debug.head_yaw_log. Returns 0 without the setting */
+static int head_sweep(struct halo_stereo_frame *frame)
+{
+	double now = host_theater_presentation_time();
+	float yaw;
+
+	if (sweep_amplitude < 0.0f)
+	{
+		char value[64];
+		float amplitude, period;
+
+		sweep_amplitude = 0.0f;
+		host_config_string("debug.head_sweep", "", value, sizeof(value));
+		if (value[0] && sscanf(value, "%f,%f", &amplitude, &period) == 2 && amplitude > 0.0f && amplitude <= 90.0f &&
+			period >= 0.5f)
+		{
+			sweep_amplitude = amplitude * (float)M_PI / 180.0f;
+			sweep_period = period;
+			host_logf(HOST_LOG_INFO, "stereo: debug.head_sweep: the head turns %.1f degrees each way every %.2f s, "
+				"in place of ARKit's pose", amplitude, period);
+		}
+		else if (value[0])
+			host_logf(HOST_LOG_WARN, "stereo: debug.head_sweep \"%s\" isn't \"amplitude_degrees,period_seconds\" "
+				"(up to 90 degrees, at least 0.5 s); no sweep", value);
+	}
+	if (sweep_amplitude == 0.0f || now <= 0.0)
+		return 0;
+	if (sweep_start == 0.0)
+		sweep_start = now;
+	yaw = sweep_amplitude * sinf(2.0f * (float)M_PI * (float)fmod((now - sweep_start) / sweep_period, 1.0));
+	{
+		/* ARKit's axes: x right, y up, z back; yaw left positive */
+		float right[3] = { cosf(yaw), 0.0f, -sinf(yaw) };
+		float up[3] = { 0.0f, 1.0f, 0.0f };
+		float back[3] = { sinf(yaw), 0.0f, cosf(yaw) };
+
+		host_stereo_head_turn(&head, right, up, back, frame);
+	}
+	return 1;
+}
+
 /* Stereo on the screen: the viewer's eyes against the screen, in the
 screen's frame (its center the origin, x right, y up, z toward the viewer).
 
@@ -866,12 +917,15 @@ static void stereo_frame(struct halo_stereo_frame *frame) API_AVAILABLE(visionos
 		picture_width = frame->eye_width;
 		picture_height = frame->eye_height;
 	}
-	/* without ARKit's pose (the simulator, or a lost anchor) the head holds
-	its last pose: no turn */
-	if (anchored)
-		head_turn(frame, origin_from_device);
-	else
-		host_stereo_head_hold(&head, frame);
+	/* debug.head_sweep's head, else ARKit's pose; without either (the
+	simulator, or a lost anchor) the head holds its last pose: no turn */
+	if (!head_sweep(frame))
+	{
+		if (anchored)
+			head_turn(frame, origin_from_device);
+		else
+			host_stereo_head_hold(&head, frame);
+	}
 	frame->eye_count = 2;
 	if (stereo_frames++ == 0)
 		host_logf(HOST_LOG_INFO, "stereo: the head drives the view; %zu view%s of %dx%d, %s", views,

@@ -175,6 +175,27 @@ before the next */
 #define PITCH_LIMIT (85.5f * 3.14159265f / 180.0f)
 /* the smallest change of pitch the head hands the look: 0.03 degrees */
 #define HEAD_PITCH_DEADBAND 0.0005f
+#define TWO_PI (2.0f * 3.14159265f)
+#define RADIANS_TO_DEGREES (180.0f / 3.14159265f)
+
+/* HEAD mode's head yaw, all told (radians, wrapped): the head's turns summed
+over the head-tracked frames (head_yaw_now), and the part of them the look has
+taken (head_yaw_taken, halo_stereo_head_look) */
+static float head_yaw_now, head_yaw_taken;
+/* what render_interpolation.c said of this frame's camera
+(halo_stereo_camera_head_yaw): the head yaw it holds, its blend and how it was
+made; camera_noted is 0 until it says */
+static float camera_head_yaw, camera_fraction;
+static const char *camera_source;
+static int camera_noted;
+/* debug.head_yaw_log (mapping_settings): a line each frame the head turns;
+the frames counted, the eye cameras' yaw less the head's on the last line
+logged (radians; head_log_last_known 0 before one), and whether this frame
+logged yet (halo_stereo_head_orient runs for each camera) */
+static int head_yaw_log;
+static unsigned long head_log_frame;
+static float head_log_last_offset;
+static int head_log_last_known, head_log_done;
 
 static float z_near_world, z_far_world;
 
@@ -366,6 +387,7 @@ static void mapping_settings(void)
 		}
 	}
 	stereo_stats = config_boolean("debug.gpu_stats") != 0;
+	head_yaw_log = config_boolean("debug.head_yaw_log") != 0;
 	lod_scale_setting = clamped_setting("display.lod_scale", (float)config_real("display.lod_scale"),
 		LOD_SCALE_MIN, LOD_SCALE_MAX, "times the Xbox's pixel scale");
 }
@@ -649,6 +671,9 @@ void halo_stereo_frame_begin(void)
 	memset(&stereo_frame, 0, sizeof(stereo_frame));
 	stereo_frame.mode = stereo_mode;
 	stereo_layer = HALO_STEREO_LAYER_MONO;
+	camera_noted = 0;
+	head_log_done = 0;
+	head_log_frame++;
 	ui_span = 0;
 	inset_frame = 0;
 	inset_pass = 0;
@@ -744,6 +769,10 @@ void halo_stereo_frame_begin(void)
 		}
 		third_person_begin();
 		head_look_frame = stereo_frame.mode == HALO_STEREO_HEAD && stereo_frame.eye_count == 2 && !third_person_head;
+		if (stereo_frame.mode == HALO_STEREO_HEAD && stereo_frame.eye_count == 2)
+			head_yaw_now = remainderf(head_yaw_now + stereo_frame.head_yaw, TWO_PI);
+		else
+			head_log_last_known = 0;
 		/* HEAD mode: the look takes this frame's yaw in next frame
 		(player_control runs before the render), and a turn it never took is
 		dropped; the look's pitch follows the head's. SCREEN mode, the film
@@ -1129,6 +1158,7 @@ int halo_stereo_head_look(short gamepad_index, float current_pitch, float *yaw, 
 		return 0;
 	}
 	*yaw = head_pending_yaw + snap_pending + smooth_yaw;
+	head_yaw_taken = remainderf(head_yaw_taken + head_pending_yaw, TWO_PI);
 	/* the look's pitch is the head's, whatever moved it meanwhile (the game
 	levels it as the player walks, a script sets it) */
 	/* changes under a few hundredths of a degree are noise: they would set
@@ -1173,13 +1203,56 @@ static void normalize(float v[3])
 	}
 }
 
+float halo_stereo_head_yaw_taken(void)
+{
+	return head_yaw_taken;
+}
+
+void halo_stereo_camera_head_yaw(float head_yaw, float fraction, const char *source)
+{
+	camera_head_yaw = head_yaw;
+	camera_fraction = fraction;
+	camera_source = source;
+	camera_noted = 1;
+}
+
+/* debug.head_yaw_log: on the frame's first orientation, while the head
+turns (or the world moved against it), a line with the head's yaw all told
+(the frame's predicted pose), the yaw the eye cameras use (their forward's,
+the game camera's turned) and the second less the first: the body's yaw,
+which a still body keeps, so its change from the last line (step) is how far
+the world moved in the room. With the game camera's yaw before the turn, the
+head yaw it holds and how render_interpolation.c made it, and the head yaw
+the look hasn't taken (pending), in degrees */
+static void head_yaw_log_frame(float camera_yaw, float eye_yaw)
+{
+	float offset = remainderf(eye_yaw - head_yaw_now, TWO_PI);
+	float step = head_log_last_known ? remainderf(offset - head_log_last_offset, TWO_PI) : 0.0f;
+
+	if (!head_yaw_log || head_log_done)
+		return;
+	head_log_done = 1;
+	if (stereo_frame.head_yaw == 0.0f && fabsf(step) < 1e-6f && head_log_last_known)
+		return;
+	platform_log("stereo: head yaw: frame %lu head %.3f eye %.3f body %.3f step %+.4f; camera %.3f holds %.3f "
+		"(taken %.3f, pending %.3f), %s t %.3f%s", head_log_frame, head_yaw_now * RADIANS_TO_DEGREES,
+		eye_yaw * RADIANS_TO_DEGREES, offset * RADIANS_TO_DEGREES, step * RADIANS_TO_DEGREES,
+		camera_yaw * RADIANS_TO_DEGREES, (camera_noted ? camera_head_yaw : head_yaw_taken) * RADIANS_TO_DEGREES,
+		head_yaw_taken * RADIANS_TO_DEGREES, head_pending_yaw * RADIANS_TO_DEGREES,
+		camera_noted && camera_source ? camera_source : "unnoted", camera_noted ? camera_fraction : 1.0f,
+		third_person_head ? ", third person" : "");
+	head_log_last_offset = offset;
+	head_log_last_known = 1;
+}
+
 void halo_stereo_head_orient(float forward[3], float up[3])
 {
-	float yaw, pitch;
+	float yaw, pitch, camera_yaw;
 	float aim[3] = { forward[0], forward[1], forward[2] };
 
 	if (stereo_frame.mode != HALO_STEREO_HEAD || stereo_frame.eye_count != 2)
 		return;
+	camera_yaw = atan2f(forward[1], forward[0]);
 	if (third_person_head) {
 		/* the game's third-person camera turned by the head since it began:
 		its yaw about the world's up, and its pitch by the head's change of
@@ -1210,6 +1283,7 @@ void halo_stereo_head_orient(float forward[3], float up[3])
 	rotate(up, forward, -stereo_frame.head_roll);
 	normalize(forward);
 	normalize(up);
+	head_yaw_log_frame(camera_yaw, yaw);
 	/* a seat's gun aims along the game's camera, which only the stick turns:
 	the crosshair goes where that points in the picture the head turned
 	(halo_stereo_reticle). On foot the game's look is the head's, and the

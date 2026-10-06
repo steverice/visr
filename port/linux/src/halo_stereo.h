@@ -287,6 +287,15 @@ third-person camera (unless display.stereo_vehicle_screen puts it on the
 screen) it turns the game's camera by the head's yaw and change of pitch
 since that camera began, and gives it the head's roll: the picture only */
 void halo_stereo_head_orient(float forward[3], float up[3]);
+/* HEAD mode's head yaw in the game's camera (render_interpolation.c). The head
+yaw the look has taken so far, all told (radians, left positive, wrapped to
+-pi..pi): the game's camera holds it as of the frame the camera was posed.
+And, as render_interpolation.c hands main.c player one's camera each frame,
+the head yaw that camera holds (as that sum read when it was posed), the
+blend between ticks it drew (0 to 1), and how it made the camera ("blended",
+"direct", "cut", "live"), for debug.head_yaw_log */
+float halo_stereo_head_yaw_taken(void);
+void halo_stereo_camera_head_yaw(float head_yaw, float fraction, const char *source);
 /* The first-person body (port/linux/game/first_person_body.c): nonzero
 while object_index is the local player's unit, drawn as legs below the view
 in first person: HEAD mode or the side-by-side view, an eye layer, not the
