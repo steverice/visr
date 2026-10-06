@@ -129,7 +129,7 @@ static void combiner_input(struct xgpu_text *text, unsigned long input, BOOL alp
 
 /* final combiner inputs only have the unsigned identity and invert mappings;
 the identity is max(x, 0.0), unbounded above, as xemu's psh.c has it: the
-V1R0 sum, the E*F product and a PASSTHRU texture register can exceed 1 */
+V1R0 sum and the E*F product can exceed 1 */
 static void final_input(struct xgpu_text *text, unsigned long input, BOOL alpha_portion)
 {
 	unsigned long reg = input & 0x0f;
@@ -390,8 +390,10 @@ static void texture_stage(struct xgpu_text *text, const struct nv2a_dialect *dia
 		xgpu_text_append(text, ";\n");
 		break;
 	case _mode_passthru:
-		/* unclamped, as xemu's psh.c */
-		xgpu_text_append(text, "\tt%d = xT%d;\n", stage, stage);
+		/* clamped to [0, 1], as the hardware does (NV_texture_shader; nxdk
+		Pixel_shader/PassthruClamping, xemu PR #3085; xemu's psh.c at
+		478b4f4 still leaves it unclamped) */
+		xgpu_text_append(text, "\tt%d = clamp(xT%d, 0.0, 1.0);\n", stage, stage);
 		break;
 	case _mode_clipplane:
 	{
