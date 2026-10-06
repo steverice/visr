@@ -457,6 +457,19 @@ static const struct config_setting config_settings[] =
 	{ "debug.metal_state_cache", _config_boolean, "true", "HALO_METAL_STATE_CACHE", _environment_value, _platform_ios,
 		"With the Metal renderer, skip the encoder calls that set what the\n"
 		"encoder already holds; false makes every call, to compare." },
+	{ "debug.shader_list_warm", _config_boolean, "true", "HALO_SHADER_LIST_WARM", _environment_value, _platform_ios,
+		"Compile the shaders and pipelines in a map's shader list while it loads;\n"
+		"false compiles each when a frame first draws with it, to compare." },
+	{ "debug.shader_list_record", _config_string, "\"shader-lists-missed\"", "HALO_SHADER_LIST_RECORD", _environment_value, _platform_ios,
+		"With the Metal renderer, a folder (in the data folder unless a full path)\n"
+		"where the shaders and pipelines made while drawing, those a map's shader\n"
+		"list missed, are appended to MAP.txt, each line once; \"\" for none.\n"
+		"tools/shader_lists.py merges them into port/shader-lists." },
+	{ "debug.metal_pipeline_archive", _config_boolean, "false", "HALO_METAL_PIPELINE_ARCHIVE", _environment_value, _platform_ios,
+		"With the Metal renderer, keep the compiled pipelines in an archive in the\n"
+		"app's caches between launches. Off until writing it works: in the Mac app\n"
+		"it fails with \"cannot create temporary file\" (Metal's own shader cache\n"
+		"still keeps compiled shaders between launches)." },
 	{ "debug.metal_specialize", _config_boolean, "true", "HALO_METAL_SPECIALIZE", _environment_value, _platform_ios,
 		"With the Metal renderer, specialize each pipeline's vertex shader for its\n"
 		"attribute formats; false uses the unspecialized shaders, which read the\n"

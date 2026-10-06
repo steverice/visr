@@ -1447,6 +1447,8 @@ static void main_new_map(
 		error(_error_immediate, "main_new_map() failed.");
 	}
 	game_initial_pulse();
+	/* port: compile the map's shaders and pipelines before its first frame */
+	halo_shader_list_warm(options->map_name);
 
 	main_globals.reset_map = FALSE;
 	main_globals.defer_map_change = FALSE;
