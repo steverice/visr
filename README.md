@@ -143,6 +143,9 @@ This is built on a lot of other people's work:
 - [cybersecurity/halo-ce-universal](https://github.com/cybersecurity/halo-ce-universal),
   the native ports this one is based on, including the ARM64 runtime,
   renderer, and audio code
+- [pfista/halo-og](https://github.com/pfista/halo-og), Michael Pfister's port
+  with a native Metal renderer for macOS: exact texture border colors, pixel
+  shader combiner fixes, and the pre-HUD spot for post-processing
 
 The XISO importer builds on [extract-xiso](https://github.com/XboxDev/extract-xiso).
 This product includes software developed by in <in@fishtank.com>.
