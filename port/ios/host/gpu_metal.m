@@ -1318,6 +1318,14 @@ struct pipeline_key
 	uint8_t attribute_kinds[GPU_ATTRIBUTE_COUNT];
 };
 
+/* debug.gl_debug's count of pipeline changes (gpu_metal_draw), logged every
+600 frames, and the last draw's shaders */
+static struct
+{
+	unsigned long changes, same_shaders;
+	gpu_shader vertex_shader, pixel_shader;
+} pipeline_changes;
+
 /* a direct-mapped cache in front of pipelines, depth_states and samplers:
 nearly every draw repeats a recent key, which then costs a hash and a
 compare of its bytes rather than an NSData and a dictionary lookup. The
@@ -2071,7 +2079,21 @@ static uint32_t gpu_metal_draw(const struct gpu_draw *draw, const struct gpu_con
 			metal_state_always(&state_cache);
 		}
 		if (metal_state_object(&state_cache, METAL_STATE_PIPELINE, (__bridge void *)pipeline, 0))
+		{
 			[encoder setRenderPipelineState:pipeline];
+			/* debug.gl_debug: how often the pipeline changes between draws of
+			one pass, and how often the shaders stay the same (only blending,
+			the write mask or the vertex specialization changed) */
+			if (metal_debug)
+			{
+				pipeline_changes.changes++;
+				if (pipeline_changes.vertex_shader == draw->vertex_shader &&
+					pipeline_changes.pixel_shader == draw->pixel_shader)
+					pipeline_changes.same_shaders++;
+			}
+		}
+		pipeline_changes.vertex_shader = draw->vertex_shader;
+		pipeline_changes.pixel_shader = draw->pixel_shader;
 		{
 			__unsafe_unretained id<MTLDepthStencilState> depth_stencil = depth_state(&draw->depth_stencil);
 			uint32_t reference = draw->depth_stencil.stencil_reference & 0xff;
@@ -2637,6 +2659,10 @@ static uint32_t gpu_metal_present(gpu_texture back_buffer)
 			platform_log("Metal: %.1f draws a frame make %.1f encoder calls each and skip %.1f (state cache %s)",
 				(double)state_cache.draws / 600.0, (double)state_cache.issued / state_cache.draws,
 				(double)state_cache.skipped / state_cache.draws, state_cache.enabled ? "on" : "off");
+			if (metal_debug)
+				platform_log("Metal: %.1f pipeline changes a frame, %.1f of them with the same shaders",
+					(double)pipeline_changes.changes / 600.0, (double)pipeline_changes.same_shaders / 600.0);
+			pipeline_changes.changes = pipeline_changes.same_shaders = 0;
 			metal_state_take_counts(&state_cache);
 		}
 		if (frames % 600 == 0)
