@@ -821,7 +821,7 @@ void halo_stereo_frame_begin(void)
 		film_hold--;
 		film_reason = film_reason_logged;
 	}
-	if (film_reason == 0 && !cutscene)
+	if (!cutscene && film_reason != 1 && film_reason != 2)
 		cutscene_third_person = 0;
 	film = film_reason != 0;
 	/* the cutscene window expands from the film's rectangle out to the full
@@ -1482,9 +1482,11 @@ void halo_stereo_set_title_bars(float bars)
 
 float halo_stereo_title_bars_ease(float bars, float limit, float fade, float seconds)
 {
-	if (fade > 0.0f || !(limit > 0.0f))
+	if (!(limit > 0.0f))
 		return 0.0f;
-	bars = fminf(bars + fmaxf(0.0f, seconds) * TITLE_BARS_RATE, 1.0f);
+	/* (they never rise while the fade shows; they fall with the title) */
+	if (!(fade > 0.0f))
+		bars = fminf(bars + fmaxf(0.0f, seconds) * TITLE_BARS_RATE, 1.0f);
 	return fminf(bars, limit);
 }
 

@@ -1576,6 +1576,41 @@ static void expansion_memory(void)
 	check(fresh[6], "after a frame without one: afresh");
 }
 
+/* small rulings: a fade-out under a title takes its bars down with the
+title, not at once; a vehicle's film ends a cutscene's latch */
+static void cutscene_rulings(void)
+{
+	float bars;
+	int frame;
+
+	printf("the bars under a fade, and the latch after a vehicle's film:\n");
+	bars = halo_stereo_title_bars_ease(1.0f, 0.7f, 0.5f, 1.0f / 30.0f);
+	check(fabsf(bars - 0.7f) < 1e-6f, "a fade over a title fading out: the bars follow the title down");
+	bars = halo_stereo_title_bars_ease(0.3f, 1.0f, 0.5f, 1.0f / 30.0f);
+	check(fabsf(bars - 0.3f) < 1e-6f, "and never rise while the fade shows");
+	restart("snap", 30.0, 120.0, 0);
+	game_first_person = 0;
+	game_letterbox = 1;
+	cutscene_frame();
+	game_letterbox = 0;
+	vehicle_screen = 1;
+	game_third_person = 1;
+	for (frame = 0; frame < 40; frame++)
+		cutscene_frame();
+	game_third_person = 0;
+	game_letterbox = 1;
+	game_first_person = 1;
+	/* (past the vehicle film's own hold) */
+	for (frame = 0; frame <= FILM_HOLD_FRAMES; frame++)
+		cutscene_frame();
+	check(immersive(), "a first-person cutscene right after a vehicle's film is immersive: the latch ended");
+	game_letterbox = 0;
+	game_first_person = 0;
+	vehicle_screen = 0;
+	for (frame = 0; frame < 8 * FILM_HOLD_FRAMES; frame++)
+		cutscene_frame();
+}
+
 int main(void)
 {
 	pole_crossing();
@@ -1603,6 +1638,7 @@ int main(void)
 	title_bars();
 	expansion_window();
 	expansion_memory();
+	cutscene_rulings();
 	if (failures)
 	{
 		printf("stereo head probe: %d failed\n", failures);
