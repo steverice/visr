@@ -825,6 +825,12 @@ void platform_scoreboard_scroll(int open, long *notches, long *pages)
 	pthread_mutex_unlock(&input_lock);
 }
 
+/* events are polled at most this often: a frame polls at its Present and
+again when the next one reads the controller (XInputGetState), well under a
+millisecond later, and on Apple platforms each poll runs the main run loop
+once (on the Mac runner about 0.2 ms, a tenth of the game thread) */
+#define PUMP_INTERVAL_MS 2
+
 void platform_pump_events(void)
 {
 	/* debug.exit_after (seconds) ends the game that long after the window
@@ -835,6 +841,8 @@ void platform_pump_events(void)
 	SDL_Event event;
 	static BOOL looked_at_clipboard;
 	BOOL look_at_clipboard = !looked_at_clipboard;
+	static Uint64 last_pump_ms;
+	Uint64 now_ms;
 
 	if (!platform_window || SDL_GetCurrentThreadID() != platform_event_thread)
 		return;
@@ -857,6 +865,10 @@ void platform_pump_events(void)
 #if !defined(HALO_ANDROID) && !defined(HALO_ILP32)
 	updater_poll(platform_window);
 #endif
+	now_ms = SDL_GetTicks();
+	if (last_pump_ms && now_ms - last_pump_ms < PUMP_INTERVAL_MS)
+		return;
+	last_pump_ms = now_ms;
 	pthread_mutex_lock(&input_lock);
 	while (SDL_PollEvent(&event))
 	{
