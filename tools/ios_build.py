@@ -118,11 +118,11 @@ def main():
         import time
         command.append(f'-DHALO_BUILD_NUMBER={time.strftime("%Y%m%d.%H%M%S")}')
     run(*command)
-    command=['cmake','--build',build,'--config','Release','--target','HaloCE','--','-quiet']
+    command=['cmake','--build',build,'--config','Release','--target','VISR','--','-quiet']
     if args.simulator or args.unsigned:command.append('CODE_SIGNING_ALLOWED=NO')
     else:command.append('-allowProvisioningUpdates')
     run(*command)
-    app = build/f'Release-{sdk}/HaloCE.app'
+    app = build/f'Release-{sdk}/VISR.app'
     print(f'App: {app}')
     if args.ipa:
         command = [sys.executable, 'tools/ios_package.py', app, args.ipa.resolve()]
@@ -186,10 +186,10 @@ def build_mac(args):
         '-DCMAKE_OSX_ARCHITECTURES=arm64','-DCMAKE_OSX_DEPLOYMENT_TARGET=16.0',f'-DHALO_BUNDLE_IDENTIFIER={args.bundle_id}',
         '-DHALO_DEVELOPMENT_TEAM=','-DHALO_MAC=ON',f'-DHALO_GLES_FRAMEWORKS={frameworks}',
         f'-DHALO_BUILD_NUMBER={time.strftime("%Y%m%d.%H%M%S")}')
-    run('cmake','--build',build,'--config','Release','--target','HaloCE','--','-quiet',
+    run('cmake','--build',build,'--config','Release','--target','VISR','--','-quiet',
         '-sdk','macosx','SDK_VARIANT=iosmac','SUPPORTS_MACCATALYST=YES','DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER=NO',
         'CODE_SIGN_STYLE=Manual','CODE_SIGN_IDENTITY=-','DEVELOPMENT_TEAM=')
-    print(f'App: {build}/Release-maccatalyst/HaloCE.app')
+    print(f'App: {build}/Release-maccatalyst/VISR.app')
 
 
 if __name__=='__main__':main()
