@@ -30,6 +30,14 @@ final class TheaterSceneDelegate: UIResponder, UIHostingSceneDelegate {
         // display.theater_environment: the room around the screen, or the dark
         .immersionStyle(selection: .constant(Self.environment), in: .mixed, .full)
     }
+
+    /* a join link opened while the space is the active scene: the game's, as
+       SDL's window scene passes them on (host_join_link.c) */
+    func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
+        for context in URLContexts {
+            context.url.absoluteString.withCString { host_join_link_open($0) }
+        }
+    }
 }
 
 /* opens the space; host_theater.m calls it once SDL's window is up */
