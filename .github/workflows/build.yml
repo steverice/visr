@@ -134,3 +134,16 @@ jobs:
           name: halo-windows-release
           path: dist/halo-windows-release
           retention-days: 3
+
+      # the PDBs, for crash reports' backtraces (tools/ci_build.py)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: halo-windows-debug-symbols
+          path: dist/halo-windows-debug-symbols
+          retention-days: 3
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: halo-windows-release-symbols
+          path: dist/halo-windows-release-symbols
+          retention-days: 3
