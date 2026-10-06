@@ -990,20 +990,25 @@ static void camera_keep(struct ticked_camera *camera, float facing_yaw)
 	camera_keep_posed(camera, facing_yaw, 1);
 }
 
-/* the blend's yaw, the earlier camera turned only when both were posed from
-the facing, and what it holds reported as render_interpolation.c does */
+/* the blend's yaw as render_interpolation.c makes it: each camera posed from
+the facing turned by the head yaw the look took since it was kept, so it
+holds the head yaw as of now (a glide stays as it is), and what it holds
+reported as the look's now */
 static float camera_blended_yaw(const struct ticked_camera *camera, float t)
 {
-	float previous[3], blended[3];
-	int i, both = camera->previous_posed && camera->latest_posed;
+	float previous[3], latest[3], blended[3];
+	float taken = halo_stereo_head_yaw_taken();
+	int i;
 
 	memcpy(previous, camera->previous, sizeof(previous));
-	if (both)
-		rotate_axis(previous, 2, remainderf(camera->latest_head - camera->previous_head, TWO_PI));
+	memcpy(latest, camera->latest, sizeof(latest));
+	if (camera->previous_posed)
+		rotate_axis(previous, 2, remainderf(taken - camera->previous_head, TWO_PI));
+	if (camera->latest_posed)
+		rotate_axis(latest, 2, remainderf(taken - camera->latest_head, TWO_PI));
 	for (i = 0; i < 3; i++)
-		blended[i] = previous[i] + (camera->latest[i] - previous[i]) * t;
-	halo_stereo_camera_head_yaw(both ? camera->latest_head : halo_stereo_head_yaw_taken(), t,
-		both ? "blended" : "unposed");
+		blended[i] = previous[i] + (latest[i] - previous[i]) * t;
+	halo_stereo_camera_head_yaw(taken, t, camera->previous_posed && camera->latest_posed ? "blended" : "edge");
 	return atan2f(blended[1], blended[0]);
 }
 
@@ -1052,18 +1057,21 @@ static void blended_turn(const char *name, float head_degrees_per_frame, float s
 	check(worst < 0.02f, name);
 }
 
-/* leaving a seat: the director's glide from the boom to the eyes, a camera
-not posed from the facing, over ticks at 3 frames a tick, between first-person
-cameras posed from it. During the glide the eye cameras are the glide's
-blend turned by only the head yaw the look hasn't taken (its turn since the
-last frame): no step at a tick from head yaw the glide never had. With the
-head still, the view doesn't jump going into the glide or out of it: each
-frame's turn is the camera's own */
+/* leaving a seat: the director's glide toward the eyes, a camera not posed
+from the facing, over 6 ticks at 3 frames a tick, between first-person
+cameras posed from it; the glide starts at the facing's pose then and
+closes on the facing's pose as it moves (as the observer chases its
+command), reaching it on its last tick. During the glide the eye cameras are
+the glide's blend turned by only the head yaw the look hasn't taken (its
+turn since the last frame): no step at a tick from head yaw the glide never
+had. And at its edges, with the head turning or still, the body's yaw (the
+view's less the head's) moves without a step: no frame turns it by more
+than a frame of the head's turn plus a frame of the glide's own */
 static void glide(void)
 {
-	struct ticked_camera camera = { { 0 }, { 0 }, 0.0f, 0.0f, 0, 0, 0 };
-	float facing_yaw = 0.0f, facing_pitch = 0.0f, look_yaw, look_pitch, head_yaw = 0.0f;
-	float boom = 40.0f * DEGREES, worst_glide = 0.0f, worst_jump = 0.0f, last_view = 0.0f, last_camera = 0.0f;
+	struct ticked_camera camera;
+	float facing_yaw, facing_pitch = 0.0f, look_yaw, look_pitch, head_yaw, glide_from = 0.0f;
+	float worst_glide = 0.0f, worst_step[2] = { 0.0f, 0.0f }, last_body = 0.0f;
 	int frame, still;
 
 	printf("a glide between cameras (the director's, leaving a seat), the game's camera blended between ticks:\n");
@@ -1074,21 +1082,20 @@ static void glide(void)
 		memset(&camera, 0, sizeof(camera));
 		facing_yaw = head_yaw = 0.0f;
 		camera_keep(&camera, facing_yaw);
-		/* 6 ticks posed, 6 gliding from the boom's yaw to the facing's, 6
-		posed again */
+		/* 6 ticks posed, 6 gliding, 6 posed again */
 		for (frame = 1; frame <= 54; frame++) {
-			int tick = frame % 3 == 0, tick_index = frame / 3, gliding;
-			float t = (float)(frame % 3) / 3.0f, camera_yaw, view, view_pitch, pending;
+			int tick = frame % 3 == 0, tick_index = frame / 3;
+			float t = (float)(frame % 3) / 3.0f, camera_yaw, view, view_pitch, pending, body;
 
 			if (halo_stereo_head_look(0, facing_pitch, &look_yaw, &look_pitch))
 				facing_yaw += look_yaw;
-			gliding = tick_index >= 6 && tick_index < 12;
 			if (tick) {
-				if (gliding) {
-					float share = (float)(tick_index - 6) / 6.0f;
-
-					camera_keep_posed(&camera, boom + (facing_yaw - boom) * share, 0);
-				} else
+				if (tick_index == 6)
+					glide_from = facing_yaw;
+				if (tick_index >= 6 && tick_index < 12)
+					camera_keep_posed(&camera, glide_from + (facing_yaw - glide_from) * (float)(tick_index - 5) / 6.0f,
+						0);
+				else
 					camera_keep(&camera, facing_yaw);
 			}
 			head_yaw += head_step;
@@ -1097,23 +1104,26 @@ static void glide(void)
 			pending = head_pending_yaw;
 			camera_yaw = camera_blended_yaw(&camera, t);
 			oriented(camera_yaw, 0.0f, &view, &view_pitch);
-			/* a blend that touches the glide: the camera's own yaw plus the
-			turn not yet taken, nothing more */
-			if (!(camera.previous_posed && camera.latest_posed))
+			/* both cameras the glide's: its own yaw plus the turn not yet
+			taken, nothing more */
+			if (!camera.previous_posed && !camera.latest_posed)
 				worst_glide = fmaxf(worst_glide, degrees_apart(view, (camera_yaw + pending) / DEGREES));
-			if (still && frame > 1)
-				worst_jump = fmaxf(worst_jump, fabsf(remainderf(view - last_view - (camera_yaw / DEGREES - last_camera),
-					360.0f)));
-			last_view = view;
-			last_camera = camera_yaw / DEGREES;
+			/* the body's yaw from frame to frame, past the start */
+			body = view - head_yaw / DEGREES;
+			if (frame > 1)
+				worst_step[still] = fmaxf(worst_step[still], fabsf(remainderf(body - last_body, 360.0f)));
+			last_body = body;
 		}
 	}
 	printf("  gliding with the head turning: the eye cameras %.4f deg at worst from the glide's yaw plus the turn "
 		"not yet taken\n", worst_glide);
 	check(worst_glide < 0.01f, "a glide gets no head yaw it never had: no step at its ticks");
-	printf("  the head still, into the glide and out of it: the view turns %.4f deg at worst more than the camera\n",
-		worst_jump);
-	check(worst_jump < 0.01f, "into a glide and out of it, no jump");
+	/* a frame's turn of the head (1 degree) and of the glide's own (its 6
+	ticks close on the facing, which the head turns 3 degrees a tick: at
+	most about 1 degree a frame) */
+	printf("  into the glide and out of it, the body's yaw steps %.4f deg at worst in a frame with the head turning "
+		"1 deg a frame, %.4f with it still\n", worst_step[0], worst_step[1]);
+	check(worst_step[0] <= 2.05f && worst_step[1] < 0.01f, "into a glide and out of it, no hitch, turning or still");
 }
 
 static void interpolated_turns(void)
