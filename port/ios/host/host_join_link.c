@@ -34,6 +34,8 @@ void host_join_link_install(const char *data_root)
 	the player just opened */
 	if (remove(link_path) == 0)
 		host_logf(HOST_LOG_INFO, "join link: removed one a previous run did not take");
+	/* (and half a write, should a run have ended in the middle of one) */
+	remove(temporary_path);
 	/* SDL drops a URL that arrives before its event queue is up, and the XISO
 	import screen spins the run loop before SDL_Init */
 	if (!SDL_InitSubSystem(SDL_INIT_EVENTS) || !SDL_AddEventWatch(join_link_event, NULL))
