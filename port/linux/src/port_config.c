@@ -554,7 +554,8 @@ static const struct config_setting config_settings[] =
 		"HEAD mode: turn the head by itself, left and right in a sine, as\n"
 		"\"amplitude_degrees,period_seconds\" (\"30,4\"), in place of the yaw\n"
 		"ARKit gives, to check the view's tracking in the simulator; empty for\n"
-		"none." },
+		"none. It overrides the device's head yaw too, so leave it empty on a\n"
+		"headset." },
 	{ "debug.foveation_eye_passes", _config_boolean, "true", "HALO_FOVEATION_EYE_PASSES", _environment_value,
 		_platform_ios,
 		"With display.foveation: false renders the game's eyes unfoveated at the\n"

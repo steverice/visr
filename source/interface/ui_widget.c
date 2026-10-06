@@ -6152,7 +6152,7 @@ static void widget_instance_render_recursive(
 		quad it would be a dark rectangle */
 		if (definition->bounds.x0 <= 0 && definition->bounds.y0 <= 0 &&
 			definition->bounds.x1 >= 640 && definition->bounds.y1 >= 480 &&
-			bitmap->width <= 16 && halo_stereo_ui_dim_active())
+			bitmap->width <= 16 && bitmap->height <= 16 && halo_stereo_ui_dim_active())
 		{
 			halo_stereo_ui_dim_add(_texture_cache_bitmap_get_hardware_format(bitmap, FALSE, TRUE), alpha);
 		}

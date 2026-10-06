@@ -564,7 +564,7 @@ static void third_person_begin(void)
 			head_pitch_known ? head_pitch_now : stereo_frame.head_pitch));
 		platform_log("stereo: a third-person camera, head-tracked: the head turns the picture, the sticks drive");
 	} else if (third_person) {
-		third_person_yaw = remainderf(third_person_yaw + stereo_frame.head_yaw, 2.0f * 3.14159265f);
+		third_person_yaw = remainderf(third_person_yaw + stereo_frame.head_yaw, TWO_PI);
 	}
 	third_person_handover = 0.0f;
 	if (!third_person && third_person_head) {
@@ -1236,11 +1236,12 @@ head yaw it holds and how render_interpolation.c made it, and the head yaw
 the look hasn't taken (pending), in degrees */
 static void head_yaw_log_frame(float camera_yaw, float eye_yaw)
 {
-	float offset = remainderf(eye_yaw - head_yaw_now, TWO_PI);
-	float step = head_log_last_known ? remainderf(offset - head_log_last_offset, TWO_PI) : 0.0f;
+	float offset, step;
 
 	if (!head_yaw_log || head_log_done)
 		return;
+	offset = remainderf(eye_yaw - head_yaw_now, TWO_PI);
+	step = head_log_last_known ? remainderf(offset - head_log_last_offset, TWO_PI) : 0.0f;
 	head_log_done = 1;
 	if (stereo_frame.head_yaw == 0.0f && fabsf(step) < 1e-6f && head_log_last_known)
 		return;
