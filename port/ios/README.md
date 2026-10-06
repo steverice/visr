@@ -191,6 +191,17 @@ letterbox the landscape app when a full-screen orientation lock is unavailable.
 Internet invite hosting and clipboard joining default to off on iOS. Local/network multiplayer is
 not yet validated. Bink intro videos remain unsupported by the upstream port.
 
+With internet play on (`network.online = true` in `config.toml`), opening a
+`halo://join/...` invite link (tapped where it shows as a link, or pasted into
+Safari's address bar; chat apps such as Discord may not make it tappable; on the
+Mac, `open 'halo://join/...'` in Terminal) opens the app and joins the invite,
+as pasting it into Join Game > Direct Link does. The app registers the `halo` URL scheme on iPhone, iPad, Apple Vision Pro, Apple TV and
+the Mac. The link is taken in any state of the game: internet play reaches the
+invite's host in the background, and the host's game then appears in Direct
+Link's list. A link that opens the app cold waits until internet play starts.
+Only a join link's 64 hex digits are used; any other `halo:` link is ignored
+with a line in `ios-runtime.log`, as is a link while internet play is off.
+
 ## How the port works
 
 The game relies on 32-bit pointers in its data structures. Apple's current

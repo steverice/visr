@@ -4,8 +4,12 @@
 #include "ios_host.h"
 #include "guest_image.h"
 #include "host_display_pin.h"
+#include "host_join_link.h"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
+#if TARGET_OS_MACCATALYST
+#include <objc/message.h>
+#endif
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -35,6 +39,30 @@ int host_errno(void) {return host_linux_errno(errno);}
 void host_debug_thread_started(void) {}
 void host_debug_thread_exited(void) {}
 void host_debug_start_sampler(const char *setting) {(void)setting;}
+
+#if TARGET_OS_MACCATALYST
+/* AppKit hands a Mac app its Apple Events (among them GetURL: a halo:// link
+   opened while the app runs) only when NSApplication looks at its event queue,
+   and nothing here ever does: the game, SDL and the import screen pump the run
+   loop with CFRunLoopRunInMode, so such a link was never opened. Looking with an empty mask dispatches the waiting Apple Events and
+   takes nothing else off the queue. (A link the app is launched with comes
+   another way, through the scene's connection options.) */
+static void apple_events_timer(CFRunLoopTimerRef timer,void *info) {
+    (void)timer;(void)info;
+    static id application,distant_past;
+    if(!application){
+        application=((id(*)(id,SEL))objc_msgSend)((id)NSClassFromString(@"NSApplication"),sel_registerName("sharedApplication"));
+        distant_past=NSDate.distantPast;
+    }
+    if(application)((id(*)(id,SEL,unsigned long long,id,id,BOOL))objc_msgSend)(application,
+        sel_registerName("nextEventMatchingMask:untilDate:inMode:dequeue:"),0,distant_past,NSDefaultRunLoopMode,NO);
+}
+static void install_apple_events_timer(void) {
+    CFRunLoopTimerRef timer=CFRunLoopTimerCreate(NULL,CFAbsoluteTimeGetCurrent()+0.25,0.25,0,0,apple_events_timer,NULL);
+    CFRunLoopAddTimer(CFRunLoopGetMain(),timer,kCFRunLoopCommonModes);
+    CFRelease(timer);
+}
+#endif
 
 static uint32_t copy_string(const char *text) {
     char *p=host_low_map(strlen(text)+1,PROT_READ|PROT_WRITE);
@@ -75,6 +103,12 @@ int main(int argc,char **argv) {
         host_logf(HOST_LOG_INFO,"Halo iOS native guest starting");
         /* names the exact game image a result folder came from (tools/mac_run.py compare-inputs) */
         host_logf(HOST_LOG_INFO,"guest image sha256 %s",HALO_GUEST_SHA256);
+        /* halo://join links (host_join_link.c): before the import screen can spin the run loop,
+           which is when SDL's scene delegate passes on the link the app was launched with */
+        host_join_link_install(data_root);
+#if TARGET_OS_MACCATALYST
+        install_apple_events_timer();
+#endif
 #if TARGET_OS_VISION
         /* Closing the window is how a visionOS app is left, and an app reopened
            into a new scene would have no game window: quit (the game saves at
