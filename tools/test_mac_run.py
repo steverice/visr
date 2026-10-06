@@ -1057,3 +1057,66 @@ def test_build_wrapper_regenerates_when_the_stamp_does_not_match(tmp_path, wrapp
     wrapper.clear()
     mac_run.build_wrapper(_wrapper_args(tmp_path))
     assert "xcodegen" in wrapper
+
+
+def _failing_osascript(stderr, calls=None):
+    """run_command where every osascript call fails with stderr"""
+    def run_command(*args, **options):
+        if calls is not None:
+            calls.append(args[0])
+        if args[0] == "osascript":
+            raise _osascript_error(stderr)
+        return mac_run.subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+    return run_command
+
+
+@pytest.fixture
+def xcode_open(monkeypatch):
+    monkeypatch.setattr(mac_run, "xcode_app", lambda: "/Applications/Xcode.app")
+    monkeypatch.setattr(mac_run, "xcode_running", lambda xcode: True)
+
+
+def test_closing_projects_in_a_held_xcode_names_the_alert(xcode_open, monkeypatch):
+    monkeypatch.setattr(mac_run, "run_command", _failing_osascript("AppleEvent timed out. (-1712)"))
+    monkeypatch.setattr(mac_run, "xcode_alert", lambda xcode: "a project file that changed on disk")
+    with pytest.raises(SystemExit, match="closing its HaloRunner projects: it is held by a modal alert about a project"):
+        mac_run.close_runner_projects()
+
+
+def test_closing_projects_without_automation_permission_says_so(xcode_open, monkeypatch):
+    monkeypatch.setattr(mac_run, "run_command", _failing_osascript("Not authorized to send Apple events to Xcode. (-1743)"))
+    monkeypatch.setattr(mac_run, "xcode_alert", lambda xcode: None)
+    with pytest.raises(SystemExit, match="Automation"):
+        mac_run.close_runner_projects()
+
+
+def test_a_failed_launch_script_exits_with_the_reason_not_a_traceback(xcode_open, monkeypatch):
+    """an M4 build host's LAUNCH failed with "Build operations are disabled" inside a CalledProcessError traceback"""
+    monkeypatch.setattr(mac_run, "xcode_alert", lambda xcode: None)
+
+    def run_command(*args, **options):
+        # CLOSE_OTHERS goes through run_command too: only LAUNCH fails
+        if args[0] == "osascript" and "run doc" in options.get("input", ""):
+            raise _osascript_error("run failed after 3 attempts: Build operations are disabled: "
+                                   "'project.xcworkspace' has changed and is reloading. (-2700)")
+        return mac_run.subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+    monkeypatch.setattr(mac_run, "run_command", run_command)
+    with pytest.raises(SystemExit, match="while running HaloRunner: run failed after 3 attempts: Build operations"):
+        mac_run.launch()
+
+
+def test_xcode_alert_samples_xcode_s_main_thread(monkeypatch):
+    monkeypatch.setattr(mac_run, "xcode_pid", lambda xcode: 2748)
+
+    def sample(command, **options):
+        assert command[:3] == ["sample", "2748", "1"]
+        Path(command[command.index("-file") + 1]).write_text(HELD_SAMPLE)
+        return mac_run.subprocess.CompletedProcess(command, 0)
+    monkeypatch.setattr(mac_run.subprocess, "run", sample)
+    assert mac_run.xcode_alert("/Applications/Xcode.app") == "a project file that changed on disk"
+
+
+def test_xcode_alert_is_none_when_sample_writes_nothing(monkeypatch):
+    monkeypatch.setattr(mac_run, "xcode_pid", lambda xcode: 2748)
+    monkeypatch.setattr(mac_run.subprocess, "run", lambda command, **options: mac_run.subprocess.CompletedProcess(command, 1))
+    assert mac_run.xcode_alert("/Applications/Xcode.app") is None
