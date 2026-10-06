@@ -2,10 +2,10 @@ name: iOS
 
 on:
   push:
-    branches: [ios-port]
+    branches: [main]
     paths-ignore: ['**.md', 'docs/**', 'research/**']
   pull_request:
-    branches: [ios-port]
+    branches: [main]
     paths-ignore: ['**.md', 'docs/**', 'research/**']
   workflow_dispatch:
 
