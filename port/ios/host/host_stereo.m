@@ -841,13 +841,16 @@ static void stereo_frame(struct halo_stereo_frame *frame) API_AVAILABLE(visionos
 		id<MTLRasterizationRateMap> rate_map = host_theater_view_rate_map(drawable, texture_map);
 
 		/* even, as the picture size the game renders at (host_stereo_picture_size).
-		Foveated (display.foveation), the map's screen size: the presenter
-		writes the view through the map, and the game's eye passes render
-		through it too, or unfoveated at that size (foveated_eyes) */
+		Foveated (display.foveation), the map's screen size, not rounded: the
+		presenter writes the view through the map, and the game's eye passes
+		render through it too, or unfoveated at that size (foveated_eyes).
+		Their viewports and scissors then cover the map's whole screen, since
+		Metal warns that a partial one under a rate map "may not behave as
+		expected" (a 5008-pixel scissor on a 5009-pixel screen was one) */
 		if (rate_map)
 		{
-			frame->eye_width = (int32_t)rate_map.screenSize.width & ~1;
-			frame->eye_height = (int32_t)rate_map.screenSize.height & ~1;
+			frame->eye_width = (int32_t)rate_map.screenSize.width;
+			frame->eye_height = (int32_t)rate_map.screenSize.height;
 			frame->foveated = 1;
 			if (stereo_frames == 0)
 				host_logf(HOST_LOG_INFO, "stereo: foveated: the eyes' screen size is the rate map's, %dx%d (the "
