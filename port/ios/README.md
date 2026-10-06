@@ -47,9 +47,9 @@ disable the game's assertions. PGO and LTO are disabled for this initial port.
 
 Outputs:
 
-- `build/ios/app-device/Release-iphoneos/HaloCE.app`
-- `build/ios/app-simulator/Release-iphonesimulator/HaloCE.app`
-- `build/ios/app-unsigned/Release-iphoneos/HaloCE.app`
+- `build/ios/app-device/Release-iphoneos/VISR.app`
+- `build/ios/app-simulator/Release-iphonesimulator/VISR.app`
+- `build/ios/app-unsigned/Release-iphoneos/VISR.app`
 - `dist/Halo-CE-iOS-unsigned.ipa` and its `.sha256` checksum when requested
 
 The default bundle identifier is `org.haloce.ios`. Set `--bundle-id` to one
@@ -102,7 +102,7 @@ your device and the ID used for signing.
 
 ```sh
 xcrun devicectl device install app --device DEVICE_UDID \
-  build/ios/app-device/Release-iphoneos/HaloCE.app
+  build/ios/app-device/Release-iphoneos/VISR.app
 xcrun devicectl device process launch --device DEVICE_UDID com.yourname.haloce
 ```
 
@@ -259,7 +259,7 @@ Build with `--simulator`, then select and boot an ARM64 iPhone or iPad simulator
 in Xcode. With exactly one simulator booted:
 
 ```sh
-xcrun simctl install booted build/ios/app-simulator/Release-iphonesimulator/HaloCE.app
+xcrun simctl install booted build/ios/app-simulator/Release-iphonesimulator/VISR.app
 HALO_SIM_DATA=$(xcrun simctl get_app_container booted org.haloce.ios data)
 cp -R assets/maps "$HALO_SIM_DATA/Documents/maps"
 xcrun simctl launch booted org.haloce.ios
