@@ -445,7 +445,9 @@ static void first_person_eye(void)
 	halo_stereo_layer(0);
 	check(halo_stereo_film() && !halo_stereo_first_person_eye(&none), "HEAD mode's film has none");
 	game_letterbox = 0;
-	frames(3 * FILM_HOLD_FRAMES);
+	/* (HEAD mode's film holds, then eases a second into a window onto the
+	world before the full view) */
+	frames(3 * FILM_HOLD_FRAMES + 30);
 	halo_stereo_layer(0);
 	check(!halo_stereo_first_person_eye(&none) && !halo_stereo_screen_gameplay() && !halo_stereo_screen_framing(),
 		"HEAD mode has none, and keeps its framing");

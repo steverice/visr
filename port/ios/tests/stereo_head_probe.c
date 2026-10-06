@@ -103,10 +103,10 @@ int halo_cinematic_screen(void) { return game_letterbox; }
 int halo_scripted_camera(void) { return game_scripted_camera; }
 int halo_scripted_director_camera(void) { return 0; }
 int platform_fixed_timestep(void) { return 1; }
-/* the frame clock (debug.fixed_timestep: 1/30 s a frame), which only the
-cutscene checks move */
+/* the frame clock (debug.fixed_timestep: 1/30 s a frame), a frame each
+time stereo.c reads it (once a frame) */
 static unsigned long probe_clock;
-unsigned long platform_clock_frames(void) { return probe_clock; }
+unsigned long platform_clock_frames(void) { return ++probe_clock; }
 double halo_frame_trace_milliseconds(void) { return 0.0; }
 int halo_third_person_camera(void) { return game_third_person; }
 int halo_cutscene_camera_first_person(void) { return game_first_person; }
@@ -124,7 +124,15 @@ void halo_screen_commit_stereo_scale(void) {}
 
 #include "../../linux/game/stereo.c"
 
+/* the frames the film shows after a cutscene once the camera is at the
+eyes, in HEAD mode: its ease into a window onto the world, 30 thirtieths of
+a second, then the frame showing the window whole */
+#define PORTAL_FRAMES 31
+
 #define DEGREES (3.14159265f / 180.0f)
+
+/* the head's yaw off the screen's axis, which turns the mock's SCREEN eyes */
+static float probe_screen_yaw;
 
 /* the device's pose this frame, columns right, up, back (ARKit's axes) */
 static float pose[3][3];
@@ -150,7 +158,10 @@ void host_stereo_frame(struct halo_stereo_frame *frame)
 
 		for (eye = 0; eye < 2; eye++) {
 			struct halo_stereo_eye *e = &frame->eyes[eye];
-			float x = (eye == 0 ? -0.032f : 0.032f) / 3.048f, distance = 4.0f / 3.048f, half = 2.309f / 3.048f;
+			/* (the eyes turned with the head by probe_screen_yaw, left positive,
+			about their midpoint) */
+			float side = (eye == 0 ? -0.032f : 0.032f) / 3.048f, half = 2.309f / 3.048f;
+			float x = side * cosf(probe_screen_yaw), distance = 4.0f / 3.048f - side * sinf(probe_screen_yaw);
 
 			e->offset[0] = x;
 			e->offset[1] = 0.0f;
@@ -613,7 +624,7 @@ static int frames_held(float fade_intensity, int *covered)
 
 	*covered = 1;
 	game_letterbox = 0;
-	for (frame = 0; frame < 3 * FILM_HOLD_FRAMES; frame++) {
+	for (frame = 0; frame < 3 * PORTAL_FRAMES; frame++) {
 		halo_stereo_frame_begin();
 		halo_stereo_set_fade(fade);
 		if (!halo_stereo_film_letterbox())
@@ -636,7 +647,7 @@ static void film_hold_reason(void)
 	check(!halo_stereo_cut_covered(), "no script fade: a cut isn't covered");
 	held = frames_held(0.0f, &covered);
 	printf("  held %d frames after the letterbox went\n", held);
-	check(held == FILM_HOLD_FRAMES, "the cutscene's framing holds through the hold");
+	check(held == PORTAL_FRAMES, "the cutscene's framing holds through the hold and the film's ease into a window");
 	check(!halo_stereo_film() && halo_stereo_frame()->mode == HALO_STEREO_HEAD, "then the full view, head-tracked");
 	check(!halo_stereo_cut_covered(), "a fade at zero covers no cut");
 
@@ -654,7 +665,7 @@ static void film_hold_reason(void)
 
 	/* a colored fade-in still under way when the hold ends: no black inside it */
 	held = frames_held(0.3f, &covered);
-	check(held == FILM_HOLD_FRAMES && covered && halo_stereo_cut_covered(),
+	check(held == PORTAL_FRAMES && covered && halo_stereo_cut_covered(),
 		"a fade over the picture holds the film as long, and covers the cut");
 
 	/* a scripted camera is the film, without the cutscene's framing */
@@ -662,7 +673,7 @@ static void film_hold_reason(void)
 	halo_stereo_frame_begin();
 	check(halo_stereo_film() && !halo_stereo_film_letterbox(), "a scripted camera's film has no letterbox reason");
 	game_scripted_camera = 0;
-	for (held = 0; held < 2 * FILM_HOLD_FRAMES; held++)
+	for (held = 0; held < 2 * PORTAL_FRAMES; held++)
 		halo_stereo_frame_begin();
 }
 
@@ -881,7 +892,7 @@ static void third_person_entries(void)
 		loop(&facing_yaw, &facing_pitch, 2.5f * frame, -1.0f * frame, 0.0f);
 	game_letterbox = 0;
 	game_third_person = 1;
-	for (frame = 0; frame < FILM_HOLD_FRAMES; frame++)
+	for (frame = 0; frame < PORTAL_FRAMES; frame++)
 		loop(&facing_yaw, &facing_pitch, 50.0f, -20.0f, 0.0f);
 	f = loop(&facing_yaw, &facing_pitch, 51.0f, -20.0f, 0.0f);
 	printf("  the seat after the film: the view %.4f, %.4f deg from the chase camera's\n",
@@ -964,7 +975,7 @@ static void paused(void)
 	game_letterbox = 1;
 	halo_stereo_frame_begin();
 	game_letterbox = 0;
-	for (frame = 0; frame < FILM_HOLD_FRAMES + 1; frame++)
+	for (frame = 0; frame < PORTAL_FRAMES + 1; frame++)
 		halo_stereo_frame_begin();
 	check(halo_stereo_head_look(0, facing_pitch, &look_yaw, &look_pitch) == 0 && look_yaw == 0.0f,
 		"a film in between drops the paused turn");
@@ -1160,7 +1171,6 @@ static void interpolated_turns(void)
 /* one frame of a cutscene check: the clock moves a thirtieth of a second */
 static void cutscene_frame(void)
 {
-	probe_clock++;
 	halo_stereo_frame_begin();
 }
 
@@ -1262,7 +1272,7 @@ static void first_person_cutscenes(void)
 	game_letterbox = 0;
 	frame = frames_to_full_view(4 * FILM_HOLD_FRAMES);
 	/* (the frame that ends it counted) */
-	check(frame == FILM_HOLD_FRAMES + 1, "the cutscene's end: the film through its hold, then the full view");
+	check(frame == PORTAL_FRAMES + 1, "the cutscene's end: the film through its hold and its ease, then the full view");
 	for (frame = 0; frame < 40; frame++)
 		cutscene_frame();
 	/* the next cutscene starts afresh */
@@ -1341,8 +1351,8 @@ static void cutscene_end(void)
 	check(held == 40 && on_film() && halo_stereo_film_letterbox(),
 		"the film holds while the camera hasn't reached the eyes, past the 10-frame hold");
 	game_settled = 1;
-	cutscene_frame();
-	check(immersive(), "then the full view, once it has");
+	held = frames_to_full_view(100);
+	check(held == PORTAL_FRAMES + 1 && immersive(), "once it has: the film's ease into a window, then the full view");
 	for (frame = 0; frame < 40; frame++)
 		cutscene_frame();
 
@@ -1381,7 +1391,10 @@ static void cutscene_expansion(void)
 		halo_stereo_set_title_bars(0.4f);
 	}
 	game_settled = 1;
-	cutscene_frame();
+	while (halo_stereo_film()) {
+		cutscene_frame();
+		halo_stereo_set_title_bars(0.4f);
+	}
 	expanding = halo_stereo_expansion(&progress, &bars);
 	printf("  the first full-view frame: expanding %d, progress %.4f, bars %.4f\n", expanding, progress, bars);
 	check(immersive() && expanding && progress == 0.0f && fabsf(bars - 0.4f) < 1e-6f,
@@ -1549,6 +1562,118 @@ static void expansion_window(void)
 	restart("snap", 30.0, 120.0, 0);
 }
 
+/* where a point in the camera's frame (x right, y up, z ahead, world units)
+appears to a viewer's eye, as the tangents of its direction from that eye in
+the screen's frame: through the film on the screen (the eye's own film eye,
+the screen's half extents, the viewer's eye against the screen), or in the
+full view (the same eye at its real place in the head, midpoint at the
+camera) */
+static void seen_on_film(const struct halo_stereo_eye *film_eye, const float point[3], const float viewer[3],
+	float half_width, float half_height, float seen[2])
+{
+	float tx = (point[0] - film_eye->offset[0]) / (point[2] + film_eye->offset[2]);
+	float ty = (point[1] - film_eye->offset[1]) / (point[2] + film_eye->offset[2]);
+	float sx = -half_width + 2.0f * half_width * (tx + film_eye->left) / (film_eye->left + film_eye->right);
+	float sy = -half_height + 2.0f * half_height * (ty + film_eye->down) / (film_eye->up + film_eye->down);
+
+	seen[0] = (sx - viewer[0]) / viewer[2];
+	seen[1] = (sy - viewer[1]) / viewer[2];
+}
+
+/* the worst difference, over both eyes and points near and far, between
+where the film puts the world and where the full view will (tangents) */
+static float film_window_misfit(void)
+{
+	const float half_width = 2.309f / 3.048f, half_height = 0.75f * half_width, distance = 4.0f / 3.048f;
+	const float points[5][3] = { { 0.1f, -0.05f, 0.3f }, { -0.2f, 0.1f, 1.0f }, { 0.5f, 0.3f, 3.0f },
+		{ -2.0f, -1.0f, 10.0f }, { 30.0f, 10.0f, 100.0f } };
+	float worst = 0.0f;
+	int eye, k;
+
+	for (eye = 0; eye < 2; eye++) {
+		const float viewer[3] = { (eye == 0 ? -0.032f : 0.032f) / 3.048f, 0.0f, distance };
+
+		for (k = 0; k < 5; k++) {
+			float film[2], full[2];
+
+			seen_on_film(&halo_stereo_frame()->eyes[eye], points[k], viewer, half_width, half_height, film);
+			full[0] = (points[k][0] - viewer[0]) / points[k][2];
+			full[1] = (points[k][1] - viewer[1]) / points[k][2];
+			worst = fmaxf(worst, fmaxf(fabsf(film[0] - full[0]), fabsf(film[1] - full[1])));
+		}
+	}
+	return worst;
+}
+
+/* the film eases into a window onto the world before the cutscene window
+expands, so the expansion's first frame shows the world where the film
+did: no step in magnification or disparity */
+static void film_to_window(void)
+{
+	float first = -1.0f, last = 0.0f, yaw, pitch, last_pitch = 0.0f;
+	int frames = 0;
+
+	printf("the film easing into a window onto the world:\n");
+	restart("snap", 30.0, 120.0, 0);
+	game_first_person = 0;
+	game_settled = 1;
+	game_letterbox = 1;
+	cutscene_frame();
+	halo_stereo_screen_frusta(0.335f);
+	first = film_window_misfit();
+	oriented(0.0f, 10.0f * DEGREES, &yaw, &pitch);
+	printf("  the cutscene's film: the world %.4f (tangent) from where the full view puts it, the camera's pitch %.2f deg\n",
+		first, pitch);
+	game_letterbox = 0;
+	while (halo_stereo_film() && frames < 100) {
+		last = film_window_misfit();
+		oriented(0.0f, 10.0f * DEGREES, &yaw, &last_pitch);
+		cutscene_frame();
+		halo_stereo_screen_frusta(0.335f);
+		frames++;
+	}
+	printf("  its last frame, %d frames on: %.2e from the full view, the camera's pitch %.4f deg\n", frames, last,
+		last_pitch);
+	check(first > 0.01f, "the cutscene's own film puts the world elsewhere (the step the ease removes)");
+	check(last < 1e-4f, "the film's last frame shows the world where the full view will: no step in size or depth");
+	check(fabsf(last_pitch) < 1e-3f, "and its camera is level, as the full view puts the room's level on the world's");
+	check(immersive(), "then the full view");
+}
+
+/* with the head turned off the screen's axis, the full view's first frame
+keeps the world through the screen where it was: the look takes the turn */
+static void film_handover_yaw(void)
+{
+	float facing_yaw = 0.0f, facing_pitch = 0.0f, entry_yaw;
+	struct loop_frame f;
+	int frame;
+
+	printf("the head turned off the screen at a cutscene's end:\n");
+	restart("snap", 30.0, 120.0, 0);
+	game_first_person = 0;
+	game_settled = 1;
+	game_letterbox = 1;
+	probe_screen_yaw = 20.0f * DEGREES;
+	loop(&facing_yaw, &facing_pitch, 20.0f, 0.0f, 0.0f);
+	game_letterbox = 0;
+	entry_yaw = facing_yaw;
+	for (frame = 0; frame < 100 && halo_stereo_film(); frame++)
+		loop(&facing_yaw, &facing_pitch, 20.0f, 0.0f, 0.0f);
+	f = loop(&facing_yaw, &facing_pitch, 20.0f, 0.0f, 0.0f);
+	printf("  the full view's first frames: the head's direction shows the world at %.4f deg (the facing %.4f)\n",
+		f.view_yaw, facing_yaw / DEGREES);
+	check(!halo_stereo_film() && degrees_apart(f.view_yaw, entry_yaw / DEGREES + 20.0f) < 0.01f,
+		"the world the screen showed stays put: the head, 20 deg off it, sees the world 20 deg off the facing");
+	f = loop(&facing_yaw, &facing_pitch, 20.0f, 0.0f, 0.0f);
+	check(degrees_apart(facing_yaw / DEGREES, entry_yaw / DEGREES + 20.0f) < 0.01f &&
+		degrees_apart(f.view_yaw, entry_yaw / DEGREES + 20.0f) < 0.01f,
+		"the look takes the 20 degrees once, the view holding");
+	probe_screen_yaw = 0.0f;
+	set_pose(0.0f, 0.0f, 0.0f);
+	for (frame = 0; frame < 40; frame++)
+		cutscene_frame();
+}
+
 /* the presenter's memory of an expansion (halo_stereo_window.h), across an
 interruption it never sees */
 static void expansion_memory(void)
@@ -1637,6 +1762,8 @@ int main(void)
 	cutscene_expansion();
 	title_bars();
 	expansion_window();
+	film_to_window();
+	film_handover_yaw();
 	expansion_memory();
 	cutscene_rulings();
 	if (failures)

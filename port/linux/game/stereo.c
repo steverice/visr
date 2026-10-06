@@ -29,7 +29,9 @@ stays immersive until its first such camera, then on the film until it ends
 (the stereo spec's session 4 "Cutscenes"). A first-person camera without
 the look (halo_look_disabled_first_person) turns its picture by the head, as
 a third-person one does. At a cutscene's end the film holds until the camera
-reaches the player's eyes, then its rectangle expands out to the full view
+reaches the player's eyes, eases a second into a window onto the world (the
+viewer's own eyes through the screen, portal_eyes), so it shows the world
+where the full view will, then its rectangle expands out to the full view
 (halo_stereo_window.h). HEAD mode asks the host for SCREEN
 eyes meanwhile, so the frame is SCREEN for everyone downstream: the host
 draws it on the screen, and the head's turn stays out of the look and the
@@ -309,6 +311,25 @@ the expansion) */
 #define FILM_SETTLE_SECONDS 2.5f
 static float settle_elapsed;
 static int settle_gave_up;
+/* HEAD mode's film becomes a window onto the world before the cutscene
+window expands: once the camera has reached the eyes, the film's mapping
+eases over PORTAL_SECONDS (the bars' rate) to the eyes the viewer has
+against the screen, at their real separation, with frusta through the
+screen's edges (portal_eyes), and the camera levels, so the screen at its
+end shows exactly what the full view will show through the same rectangle
+(halo_stereo_window.h). The seconds eased (counted from the first settled
+frame of the hold; 0 while it hasn't begun), whether it has begun, its share
+now, the eyes it eases to this frame, and the head's yaw off the screen's
+axis (radians, left positive), which the look takes once on the first
+full-view frame (film_handover), so the world through the screen stays put */
+#define PORTAL_SECONDS 1.0f
+/* the theater's default screen's distance, for the side-by-side view's
+window and model: 60 degrees across at 4 m (host_theater.m's
+display.theater_* defaults), in meters */
+#define SIDE_BY_SIDE_SCREEN_DISTANCE 4.0f
+static float portal_elapsed, portal_share, portal_yaw, film_handover;
+static int portal_begun, portal_full_shown;
+static struct halo_stereo_eye portal_eyes[2];
 /* the cutscene window's expansion (halo_stereo_window.h): running, its
 seconds so far, and the bars it began with */
 static int expansion_on;
@@ -546,6 +567,51 @@ static void screen_frusta(float vertical_tangent)
 	screen_vertical_tangent = vertical_tangent;
 	screen_mapping_eyes(&mapping_easing.now, vertical_tangent, screen_viewer_separation, screen_half_width,
 		screen_head_offset, stereo_frame.eyes);
+	/* the film easing into a window onto the world (portal_eyes): each
+	eye's offset and frustum, linearly */
+	if (film_frame && portal_share > 0.0f) {
+		float t = portal_share;
+		int eye, axis;
+
+		for (eye = 0; eye < 2; eye++) {
+			struct halo_stereo_eye *e = &stereo_frame.eyes[eye];
+			const struct halo_stereo_eye *to = &portal_eyes[eye];
+
+			for (axis = 0; axis < 3; axis++)
+				e->offset[axis] += (to->offset[axis] - e->offset[axis]) * t;
+			e->left += (to->left - e->left) * t;
+			e->right += (to->right - e->right) * t;
+			e->up += (to->up - e->up) * t;
+			e->down += (to->down - e->down) * t;
+		}
+	}
+}
+
+/* the eyes a window onto the world takes (portal_eyes), from the viewer's
+eyes against the screen (the screen's frame: x right, y up, z toward the
+viewer, its center the origin, world units) and the screen's half extents:
+each eye offset from the eyes' midpoint, where the camera is, with a
+frustum through the screen's edges; and the head's yaw off the screen's
+axis, from the line between the eyes */
+static void portal_eyes_from(const float positions[2][3], float half_width, float half_height)
+{
+	float middle[3];
+	int eye, axis;
+
+	for (axis = 0; axis < 3; axis++)
+		middle[axis] = 0.5f * (positions[0][axis] + positions[1][axis]);
+	for (eye = 0; eye < 2; eye++) {
+		struct halo_stereo_eye *e = &portal_eyes[eye];
+		float distance = fmaxf(positions[eye][2], 1e-3f);
+
+		for (axis = 0; axis < 3; axis++)
+			e->offset[axis] = positions[eye][axis] - middle[axis];
+		e->left = (half_width + positions[eye][0]) / distance;
+		e->right = (half_width - positions[eye][0]) / distance;
+		e->up = (half_height - positions[eye][1]) / distance;
+		e->down = (half_height + positions[eye][1]) / distance;
+	}
+	portal_yaw = atan2f(-(positions[1][2] - positions[0][2]), positions[1][0] - positions[0][0]);
 }
 
 /* the screen's eyes for this frame, the film's or SCREEN gameplay's, from
@@ -796,26 +862,36 @@ void halo_stereo_frame_begin(void)
 	if (film_frame)
 		title_bars_film = title_bars_now;
 	title_bars_now = 0.0f;
+	film_handover = 0.0f;
 	if (film_reason != 0) {
 		film_hold = FILM_HOLD_FRAMES;
 		settle_elapsed = 0.0f;
 		settle_gave_up = 0;
-	} else if (film_frame && !screen && (film_reason_logged == 1 || film_reason_logged == 2) &&
-		(film_hold > 0 || !halo_cutscene_camera_settled())) {
+		portal_elapsed = 0.0f;
+		portal_begun = portal_full_shown = 0;
+	} else if (film_frame && !screen && (film_reason_logged == 1 || film_reason_logged == 2)) {
 		/* a cutscene's film holds its hold, then until the camera reaches
-		the eyes: otherwise the full view would begin on a camera still
-		gliding from the cutscene's (the jump at a cutscene's end) */
+		the eyes (otherwise the full view would begin on a camera still
+		gliding from the cutscene's: the jump at a cutscene's end), then
+		while it eases into a window onto the world (portal_eyes) */
+		int settled = halo_cutscene_camera_settled();
+
 		settle_elapsed += time_delta;
+		if (settled && portal_begun)
+			portal_elapsed += time_delta;
+		portal_begun |= settled;
 		/* (frame times summed in floats fall a hair short of the whole) */
-		if (settle_elapsed < FILM_SETTLE_SECONDS - 1e-4f) {
+		if (!settled && settle_elapsed >= FILM_SETTLE_SECONDS - 1e-4f) {
+			film_hold = 0;
+			settle_gave_up = 1;
+			portal_elapsed = 0.0f;
+			portal_begun = portal_full_shown = 0;
+			platform_log("stereo: the camera didn't reach the player's eyes within %.1f s of the cutscene; the film "
+				"ends through black", FILM_SETTLE_SECONDS);
+		} else if (film_hold > 0 || !settled || !portal_full_shown) {
 			if (film_hold > 0)
 				film_hold--;
 			film_reason = film_reason_logged;
-		} else {
-			film_hold = 0;
-			settle_gave_up = 1;
-			platform_log("stereo: the camera didn't reach the player's eyes within %.1f s of the cutscene; the film "
-				"ends through black", FILM_SETTLE_SECONDS);
 		}
 	} else if (film_hold > 0) {
 		film_hold--;
@@ -823,6 +899,11 @@ void halo_stereo_frame_begin(void)
 	}
 	if (!cutscene && film_reason != 1 && film_reason != 2)
 		cutscene_third_person = 0;
+	/* the film ends the frame after one shows the window whole */
+	portal_share = film_reason != 0 && portal_begun ? fminf(1.0f, portal_elapsed / PORTAL_SECONDS) : 0.0f;
+	if (portal_share >= 1.0f - 1e-4f)
+		portal_share = 1.0f;
+	portal_full_shown = portal_share >= 1.0f;
 	film = film_reason != 0;
 	/* the cutscene window expands from the film's rectangle out to the full
 	view once a cutscene's film has held until the camera reached the eyes,
@@ -835,6 +916,10 @@ void halo_stereo_frame_begin(void)
 		expansion_on = 1;
 		expansion_elapsed = 0.0f;
 		expansion_bars = title_bars_film;
+		/* the world through the screen stays put: the full view puts the
+		facing straight ahead of the head, so the look takes the head's yaw
+		off the screen's axis once */
+		film_handover = portal_yaw;
 		memset(side_by_side_last_window, 0, sizeof(side_by_side_last_window));
 		platform_log("stereo: the cutscene's film expands out to the full view over %.1f s, its bars at %.2f",
 			HALO_STEREO_EXPANSION_SECONDS, expansion_bars);
@@ -879,6 +964,15 @@ void halo_stereo_frame_begin(void)
 		/* the default screen and typical eyes; debug.screen_lean leans */
 		if (film || screen) {
 			const float lean[2] = { side_by_side_lean, 0.0f };
+			/* the viewer's eyes against the theater's default screen, for a
+			window onto the world (portal_eyes) */
+			float positions[2][3] = {
+				{ -SIDE_BY_SIDE_OFFSET, 0.0f, SIDE_BY_SIDE_SCREEN_DISTANCE / METERS_PER_UNIT },
+				{ SIDE_BY_SIDE_OFFSET, 0.0f, SIDE_BY_SIDE_SCREEN_DISTANCE / METERS_PER_UNIT },
+			};
+
+			portal_eyes_from(positions, FILM_DEFAULT_HALF_WIDTH / METERS_PER_UNIT,
+				FILM_DEFAULT_HALF_WIDTH / FILM_ASPECT / METERS_PER_UNIT);
 
 			screen_begin(!film, FILM_DEFAULT_SEPARATION, FILM_DEFAULT_HALF_WIDTH, lean, time_delta);
 		}
@@ -906,7 +1000,14 @@ void halo_stereo_frame_begin(void)
 				0.5f * (eyes[0].offset[0] + eyes[1].offset[0]) * METERS_PER_UNIT,
 				0.5f * (eyes[0].offset[1] + eyes[1].offset[1]) * METERS_PER_UNIT,
 			};
+			/* (and a window onto the world through the same screen, portal_eyes) */
+			float positions[2][3] = {
+				{ eyes[0].offset[0], eyes[0].offset[1], eyes[0].offset[2] },
+				{ eyes[1].offset[0], eyes[1].offset[1], eyes[1].offset[2] },
+			};
 
+			portal_eyes_from(positions, eyes[0].offset[2] * (eyes[0].left + eyes[0].right) * 0.5f,
+				eyes[0].offset[2] * (eyes[0].up + eyes[0].down) * 0.5f);
 			screen_begin(!film, sqrtf(dx * dx + dy * dy + dz * dz) * METERS_PER_UNIT,
 				eyes[0].offset[2] * (eyes[0].left + eyes[0].right) * 0.5f * METERS_PER_UNIT, head_offset, time_delta);
 		}
@@ -924,7 +1025,8 @@ void halo_stereo_frame_begin(void)
 		mode's third person have neither: a turn the look never took there is
 		dropped */
 		head_pending_yaw = head_look_frame ?
-			remainderf(head_pending_yaw + stereo_frame.head_yaw + third_person_handover, TWO_PI) : 0.0f;
+			remainderf(head_pending_yaw + stereo_frame.head_yaw + third_person_handover + film_handover, TWO_PI) :
+			0.0f;
 		head_pitch_known = head_look_frame;
 		head_pitch_now = stereo_frame.head_pitch;
 	} else
@@ -1401,6 +1503,22 @@ void halo_stereo_head_orient(float forward[3], float up[3])
 	float yaw, pitch, camera_yaw;
 	float aim[3] = { forward[0], forward[1], forward[2] };
 
+	/* HEAD mode's film easing into a window onto the world (portal_eyes):
+	the camera levels, as the screen is, since the full view after it puts
+	the room's level on the world's (the look's pitch is the head's) */
+	if (stereo_mode == HALO_STEREO_HEAD && stereo_frame.mode == HALO_STEREO_SCREEN && film_frame &&
+		portal_share > 0.0f) {
+		yaw = atan2f(forward[1], forward[0]);
+		pitch = asinf(fmaxf(-1.0f, fminf(1.0f, forward[2]))) * (1.0f - portal_share);
+		forward[0] = cosf(pitch) * cosf(yaw);
+		forward[1] = cosf(pitch) * sinf(yaw);
+		forward[2] = sinf(pitch);
+		up[0] = -sinf(pitch) * cosf(yaw);
+		up[1] = -sinf(pitch) * sinf(yaw);
+		up[2] = cosf(pitch);
+		return;
+	}
+
 	if (stereo_frame.mode != HALO_STEREO_HEAD || stereo_frame.eye_count != 2)
 		return;
 	camera_yaw = atan2f(forward[1], forward[0]);
@@ -1500,11 +1618,6 @@ int halo_stereo_expansion(float *progress, float *bars)
 	*bars = halo_stereo_expansion_bars(expansion_bars, expansion_elapsed);
 	return 1;
 }
-
-/* the theater's default screen, for the side-by-side view's model: 60
-degrees across at 4 m (host_theater.m's display.theater_* defaults), in
-meters */
-#define SIDE_BY_SIDE_SCREEN_DISTANCE 4.0f
 
 int halo_stereo_side_by_side_window(int eye, struct halo_stereo_window_model *model)
 {

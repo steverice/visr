@@ -3,7 +3,10 @@ it; the presenter, port/ios/host/host_stereo.m, draws it). When a cutscene's
 film hands over to the full view, the film's rectangle grows out to the
 whole view over HALO_STEREO_EXPANSION_SECONDS, at the letterbox bars' own
 rate (cinematics.c: one letterbox amount a second, linear), with the
-picture inside it already the head-tracked view at the player's eyes.
+picture inside it already the head-tracked view at the player's eyes. The
+film has already eased into a window onto the world through the screen
+(stereo.c's portal_eyes), so the first frame shows the world where the film
+did.
 
 The window is a rectangle of angles in the screen's frame (x right, y up, z
 toward the viewer), about one eye: a direction d is inside when
