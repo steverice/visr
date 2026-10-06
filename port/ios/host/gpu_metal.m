@@ -1799,6 +1799,16 @@ static void bind_attributes(const struct gpu_draw *draw)
 	metal_state_always(&state_cache);
 }
 
+/* each stage's last sampler state and its sampler: consecutive draws mostly
+sample the same way, and comparing 24 bytes costs less than sampler_state's
+hash of its key (4 stages a draw). The samplers dictionary keeps every
+sampler for good, so these needn't retain them. */
+static struct
+{
+	struct gpu_sampler_state state;
+	__unsafe_unretained id<MTLSamplerState> sampler;
+} stage_samplers[GPU_STAGE_COUNT];
+
 static void bind_stages(const struct gpu_draw *draw, unsigned exact)
 {
 	int stage;
@@ -1817,7 +1827,17 @@ static void bind_stages(const struct gpu_draw *draw, unsigned exact)
 		use_texture(record);
 		if (metal_state_object(&state_cache, METAL_STATE_TEXTURE + stage, (__bridge void *)texture, 0))
 			[encoder setFragmentTexture:texture atIndex:stage];
-		sampler = packet->type ? sampler_state(&packet->sampler, NO) : empty_sampler;
+		if (!packet->type)
+			sampler = empty_sampler;
+		else if (stage_samplers[stage].sampler &&
+			!memcmp(&stage_samplers[stage].state, &packet->sampler, sizeof(packet->sampler)))
+			sampler = stage_samplers[stage].sampler;
+		else
+		{
+			sampler = sampler_state(&packet->sampler, NO);
+			stage_samplers[stage].state = packet->sampler;
+			stage_samplers[stage].sampler = sampler;
+		}
 		if (metal_state_object(&state_cache, METAL_STATE_SAMPLER + stage, (__bridge void *)sampler, 0))
 			[encoder setFragmentSamplerState:sampler atIndex:stage];
 	}
