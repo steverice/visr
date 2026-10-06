@@ -682,7 +682,11 @@ def native_command(app, data, out, environment):
     command = ["open", "--new", "--wait-apps"]
     for name, value in variables.items():
         command += ["--env", f"{name}={value}"]
-    return command + ["--stdout", str(out / "open-stdout.log"), "--stderr", str(out / "open-stderr.log"),
+    # open's own stdout and stderr go to files in the data folder, not to out: launchd opens them, and
+    # macOS's TCC denies its helper (xpcproxy) access to removable volumes, so a path on one (g-force's
+    # baselines symlink points at /Volumes/Tank) fails the launch with -10810 before the app starts. The
+    # data folder is on the internal disk on every host; launch_native copies the logs into out afterward
+    return command + ["--stdout", str(data / "open-stdout.log"), "--stderr", str(data / "open-stderr.log"),
                       str(app)]
 
 
@@ -706,10 +710,25 @@ def game_exit(log):
     return None
 
 
+OPEN_LOGS = ("open-stdout.log", "open-stderr.log")
+
+
 def launch_native(app, data, out, environment, limit):
     """start the native app with open and wait for it to quit: True when it did within limit
     seconds, False when it was still running and was killed"""
     out.mkdir(parents=True, exist_ok=True)
+    data.mkdir(parents=True, exist_ok=True)
+    for name in OPEN_LOGS:
+        (data / name).unlink(missing_ok=True)
+    try:
+        return _launch_native(app, data, out, environment, limit)
+    finally:
+        for name in OPEN_LOGS:
+            if (data / name).is_file():
+                shutil.copy2(data / name, out / name)
+
+
+def _launch_native(app, data, out, environment, limit):
     command = native_command(app, data, out, environment)
     print("+", " ".join(command), flush=True)
     opener = subprocess.Popen(command)

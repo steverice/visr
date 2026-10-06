@@ -447,8 +447,47 @@ def test_native_command_pins_the_display_and_passes_the_data_folder(tmp_path):
     assert "HALO_HOST_DISPLAY=1366x1024@2" in variables
     assert "HALO_RUNNER=1" in variables
     assert "MTL_DEBUG_LAYER=1" in variables
-    assert command[command.index("--stderr") + 1] == str(tmp_path / "out/open-stderr.log")
+    # the logs go to the data folder (internal disk), not --out, which may be on a removable volume
+    assert command[command.index("--stdout") + 1] == str(data / "open-stdout.log")
+    assert command[command.index("--stderr") + 1] == str(data / "open-stderr.log")
     assert command[-1] == "/b/HaloCE.app"
+
+
+def fake_open(monkeypatch, stdout, stderr, status=0):
+    """subprocess.Popen standing in for open: writes the log files its command names, as launchd would"""
+    class Opener:
+        def __init__(self, command):
+            Path(command[command.index("--stdout") + 1]).write_text(stdout)
+            Path(command[command.index("--stderr") + 1]).write_text(stderr)
+
+        def wait(self, timeout=None):
+            return status
+
+    monkeypatch.setattr(mac_run.subprocess, "Popen", Opener)
+
+
+def test_launch_native_copies_the_open_logs_into_out_and_replaces_the_old_ones(tmp_path, monkeypatch):
+    data, out = tmp_path / "data", tmp_path / "out"
+    data.mkdir()
+    (data / "open-stdout.log").write_text("stale stdout\n")
+    (data / "open-stderr.log").write_text("stale stderr\n")
+    fake_open(monkeypatch, "fresh stdout\n", "fresh stderr\n")
+    assert mac_run.launch_native(Path("/b/HaloCE.app"), data, out, {}, 10)
+    assert (out / "open-stdout.log").read_text() == "fresh stdout\n"
+    assert (out / "open-stderr.log").read_text() == "fresh stderr\n"
+    # the data folder's copies hold this launch's content, not the stale files or an append
+    assert (data / "open-stdout.log").read_text() == "fresh stdout\n"
+    assert (data / "open-stderr.log").read_text() == "fresh stderr\n"
+
+
+def test_launch_native_copies_the_open_logs_when_open_fails(tmp_path, monkeypatch):
+    data, out = tmp_path / "data", tmp_path / "out"
+    data.mkdir()
+    fake_open(monkeypatch, "", "open: -10810\n", status=1)
+    with pytest.raises(SystemExit):
+        mac_run.launch_native(Path("/b/HaloCE.app"), data, out, {}, 10)
+    assert (out / "open-stderr.log").read_text() == "open: -10810\n"
+    assert (data / "open-stderr.log").read_text() == "open: -10810\n"
 
 
 def test_native_pattern_escapes_the_app_path():
