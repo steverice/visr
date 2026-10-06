@@ -1544,10 +1544,20 @@ static void check_uniform_layout(MTLRenderPipelineReflection *reflection)
 }
 
 /* the pipeline for a draw, or nil if it can't be made (cached either way) */
-/* each attribute's kind, as the vertex shaders' function constants take it
-(nv2a_msl.c): 0 for a constant (or a stream with no buffer, which
-bind_attributes binds as one), else its GPU_ATTRIBUTE_* format */
-static void attribute_kinds(const struct gpu_draw *draw, uint8_t kinds[GPU_ATTRIBUTE_COUNT])
+/* a draw's attributes, decided once (gpu_metal_draw) for both the pipeline
+(the vertex function's specialization) and the bindings (bind_attributes), so
+the two can't disagree: each streamed attribute's buffer record, nil for a
+constant (GPU_STREAM_NONE never arrives: the front end makes every unused
+attribute a constant; a stream with no buffer is one too), and its kind, as
+the vertex shaders' function constants take it (nv2a_msl.c): 0 for a
+constant, else its GPU_ATTRIBUTE_* format */
+struct draw_attributes
+{
+	__unsafe_unretained MetalBuffer *records[GPU_ATTRIBUTE_COUNT];
+	uint8_t kinds[GPU_ATTRIBUTE_COUNT];
+};
+
+static void draw_attributes_decide(const struct gpu_draw *draw, struct draw_attributes *attributes)
 {
 	int index;
 
@@ -1555,8 +1565,9 @@ static void attribute_kinds(const struct gpu_draw *draw, uint8_t kinds[GPU_ATTRI
 	{
 		const struct gpu_vertex_attribute *attribute = &draw->attributes[index];
 
-		kinds[index] = attribute->stream < GPU_STREAM_CONSTANT && buffer_record(draw->streams[attribute->stream].buffer) ?
-			attribute->format : 0;
+		attributes->records[index] = attribute->stream < GPU_STREAM_CONSTANT ?
+			buffer_record(draw->streams[attribute->stream].buffer) : nil;
+		attributes->kinds[index] = attributes->records[index] ? attribute->format : 0;
 	}
 }
 
@@ -1605,8 +1616,8 @@ static id<MTLFunction> vertex_function(MetalShader *vertex, const uint8_t kinds[
 	return function;
 }
 
-static id<MTLRenderPipelineState> draw_pipeline(const struct gpu_draw *draw, MetalShader *vertex, MetalShader *pixel,
-	unsigned exact, MTLPixelFormat color, MTLPixelFormat depth)
+static id<MTLRenderPipelineState> draw_pipeline(const struct gpu_draw *draw, const struct draw_attributes *attributes,
+	MetalShader *vertex, MetalShader *pixel, unsigned exact, MTLPixelFormat color, MTLPixelFormat depth)
 {
 	struct pipeline_key key;
 	NSData *name;
@@ -1627,7 +1638,7 @@ static id<MTLRenderPipelineState> draw_pipeline(const struct gpu_draw *draw, Met
 	key.exact_borders = (uint8_t)exact;
 	key.color_format = (uint32_t)color;
 	key.depth_format = (uint32_t)depth;
-	attribute_kinds(draw, key.attribute_kinds);
+	memcpy(key.attribute_kinds, attributes->kinds, sizeof(key.attribute_kinds));
 	_Static_assert(sizeof(key) <= FRONT_CACHE_KEY, "pipeline_key fits the front cache");
 	if ((pipeline = front_cache_get(&pipeline_cache, &key, sizeof(key))))
 		return pipeline == [NSNull null] ? nil : pipeline;
@@ -1891,7 +1902,7 @@ static void bind_constants(const struct gpu_constant_store *constants, const str
 		[encoder setFragmentBuffer:record->buffer offset:snapshot.offset + sizeof(constants->c) atIndex:0];
 }
 
-static void bind_attributes(const struct gpu_draw *draw)
+static void bind_attributes(const struct gpu_draw *draw, const struct draw_attributes *attributes)
 {
 	struct metal_attribute_table table;
 	int index;
@@ -1901,14 +1912,12 @@ static void bind_attributes(const struct gpu_draw *draw)
 	{
 		const struct gpu_vertex_attribute *attribute = &draw->attributes[index];
 		struct metal_attribute *entry = &table.entries[index];
-		__unsafe_unretained MetalBuffer *record = attribute->stream < GPU_STREAM_CONSTANT ?
-			buffer_record(draw->streams[attribute->stream].buffer) : nil;
+		__unsafe_unretained MetalBuffer *record = attributes->records[index];
 
 		entry->format = attribute->format;
 		if (!record)
 		{
-			/* a constant (GPU_STREAM_NONE never arrives: the front end makes
-			every unused attribute a constant) */
+			/* a constant (draw_attributes) */
 			entry->stream = GPU_STREAM_CONSTANT;
 			memcpy(table.constants[index], draw->constant_values[index], sizeof(table.constants[index]));
 			if (metal_state_object(&state_cache, METAL_STATE_ATTRIBUTE_BUFFER + index, (__bridge void *)empty_buffer, 0))
@@ -2074,11 +2083,13 @@ static uint32_t gpu_metal_draw(const struct gpu_draw *draw, const struct gpu_con
 		MTLScissorRect scissor;
 		MTLPrimitiveType type;
 		unsigned exact = exact_borders(draw);
+		struct draw_attributes attributes;
 
 		/* as GL's program_get: no program, no draw */
 		if (!vertex || !pixel)
 			return 0;
-		pipeline = draw_pipeline(draw, vertex, pixel, exact, MTLPixelFormatBGRA8Unorm,
+		draw_attributes_decide(draw, &attributes);
+		pipeline = draw_pipeline(draw, &attributes, vertex, pixel, exact, MTLPixelFormatBGRA8Unorm,
 			depth && depth->texture ? depth->texture.pixelFormat : MTLPixelFormatInvalid);
 		if (!pipeline)
 			return 0;
@@ -2168,7 +2179,7 @@ static uint32_t gpu_metal_draw(const struct gpu_draw *draw, const struct gpu_con
 		}
 		bind_stages(draw, exact);
 		bind_constants(constants, uniforms);
-		bind_attributes(draw);
+		bind_attributes(draw, &attributes);
 		pass_commands++;
 		/* the draw call itself, made below unless a conversion leaves nothing */
 		metal_state_always(&state_cache);
