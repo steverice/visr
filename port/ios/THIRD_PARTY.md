@@ -18,7 +18,7 @@ Other vendored components retain their original notices in the source tree.
 
 Halo, Master Chief, game artwork, and original game assets belong to their
 respective rights holders. The project license does not grant rights to those
-materials. The VISR icon is original vector art made for this project and
-uses no Microsoft art; see [ICON.md](ICON.md). No game maps, disc images, Microsoft signing material, or
+materials. The VISR icon is vector art whose helmet and visor outlines are
+traced from the game's Master Chief helmet; see [ICON.md](ICON.md). No game maps, disc images, Microsoft signing material, or
 Xbox SDK are distributed in the app. This is an unofficial community port,
 unaffiliated with Microsoft, Bungie, or Halo Studios.

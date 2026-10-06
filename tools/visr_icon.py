@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Draw the VISR app icon as SVG and render it into the asset catalogs.
 
-The icon is original vector art: a dark backdrop with a faint grid, and a HUD
-mark on top in two layers (middle and front), so visionOS and tvOS can float
-the layers apart. Several concepts are drawn; `--concept` picks the one that
-goes into the catalogs.
+The icon is vector art: a dark backdrop with a faint grid, and a mark on top in
+two layers (middle and front), so visionOS and tvOS can float the layers apart.
+Several concepts are drawn; `--concept` picks the one that goes into the
+catalogs. The default, `visor-helmet-gold`, is traced from the game's Master
+Chief helmet (see `port/ios/ICON.md`); the others are original.
 
     python3 tools/visr_icon.py --catalogs                   # render the default concept into port/ios/Assets*.xcassets
     python3 tools/visr_icon.py --concept reticle --catalogs # render another concept

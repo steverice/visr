@@ -64,7 +64,8 @@ or Bungie.
 
 The repository does not contain the game's maps, sounds, textures or videos.
 The HUD, menu and title pictures in `port/assets/` are high-resolution redraws
-made for OpenCE, not files from the game. The menu layouts and strings in
-`port/assets/menus/` are generated from the game's tags. None of the licenses
-above, CC0 included, grants any rights to Microsoft's game, its assets or its
-trademarks.
+made for OpenCE, not files from the game. The app icon's helmet, visor and brow
+outlines are traced from a frame of the game (see `port/ios/ICON.md`). The menu
+layouts and strings in `port/assets/menus/` are generated from the game's tags.
+None of the licenses above, CC0 included, grants any rights to Microsoft's
+game, its assets or its trademarks.

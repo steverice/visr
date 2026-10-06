@@ -1,4 +1,4 @@
-<img src="port/ios/Assets.xcassets/AppIcon.appiconset/AppIcon-180.png" width="96" alt="The VISR app icon: a cyan HUD reticle on a dark teal grid">
+<img src="port/ios/Assets.xcassets/AppIcon.appiconset/AppIcon-180.png" width="96" alt="The VISR app icon: the Master Chief's helmet with a gold visor on a dark teal grid">
 
 # VISR
 
