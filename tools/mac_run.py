@@ -574,6 +574,23 @@ def xcode_alert(xcode):
         return modal_alert(report.read_text(errors="replace")) if report.exists() else None
 
 
+def osascript_failure(xcode, doing, error):
+    """why an osascript call to Xcode failed, from its error number: a denied Automation permission,
+    an Xcode that stopped answering (held by an alert, or busy), or the script's own error"""
+    message = (error.stderr or "").strip()
+    if "(-1743)" in message:
+        return (f"this Mac does not let the process running mac_run.py (Terminal, or sshd-keygen-wrapper over ssh) "
+                f"control Xcode, so it failed while {doing}: allow it under System Settings > Privacy & Security > "
+                f"Automation on this Mac's screen ({message})")
+    if "(-1712)" in message:
+        alert = xcode_alert(xcode)
+        if alert:
+            return (f"Xcode ({xcode}) did not answer while {doing}: it is held by a modal alert about {alert} "
+                    "on this Mac's screen; answer the alert (or quit Xcode), then run again")
+        return f"Xcode ({xcode}) did not answer in time while {doing}, with no alert open: it may be busy ({message})"
+    return f"osascript failed while {doing}: {message or f'exit status {error.returncode}'}"
+
+
 def exit_if_xcode_alert(xcode):
     alert = xcode_alert(xcode)
     if alert:
@@ -589,9 +606,8 @@ def close_runner_projects():
     try:
         closed = run_command("osascript", input=CLOSE_RUNNER_PROJECTS.format(xcode=xcode, target=TARGET), text=True,
                              capture_output=True)
-    except subprocess.CalledProcessError:
-        sys.exit(f"Xcode ({xcode}) did not close its {TARGET} projects within 30 seconds: "
-                 "a dialog is probably open in it on this Mac's screen; answer it, then run again")
+    except subprocess.CalledProcessError as error:
+        sys.exit(osascript_failure(xcode, f"closing its {TARGET} projects", error))
     still_open = closed.stdout.strip()
     if still_open != "0":
         sys.exit(f"Xcode ({xcode}) still has {still_open or 'an unknown number of'} {TARGET} projects open after "
@@ -639,7 +655,11 @@ def launch(documents=None):
     run_command("osascript", input=CLOSE_OTHERS.format(xcode=xcode, target=TARGET, project=project), text=True)
     run_command("open", "-a", xcode, project)
     exit_if_xcode_alert(xcode)
-    run_command("osascript", input=LAUNCH.format(xcode=xcode, target=TARGET, project=project), text=True)
+    try:
+        run_command("osascript", input=LAUNCH.format(xcode=xcode, target=TARGET, project=project), text=True,
+                    stderr=subprocess.PIPE)
+    except subprocess.CalledProcessError as error:
+        sys.exit(osascript_failure(xcode, f"running {TARGET}", error))
     if not wait_for_start(lambda: started(documents, running), lambda: exit_if_xcode_alert(xcode), 300):
         sys.exit(f"{TARGET} did not start within 300 seconds; see Xcode's report navigator")
 

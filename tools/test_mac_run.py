@@ -974,3 +974,36 @@ def test_close_script_reports_the_runner_projects_left_open():
     close = mac_run.CLOSE_RUNNER_PROJECTS.format(xcode="/Applications/Xcode.app", target="HaloRunner")
     assert close.index('return count of (every workspace document whose path contains "/HaloRunner.xcodeproj")') > \
         close.index("close runner saving no")
+
+
+def _osascript_error(stderr):
+    return mac_run.subprocess.CalledProcessError(1, ["osascript"], output="", stderr=stderr)
+
+
+def test_osascript_failure_names_a_denied_automation_permission(monkeypatch):
+    monkeypatch.setattr(mac_run, "xcode_alert", lambda xcode: pytest.fail("sampled Xcode for a permission error"))
+    error = _osascript_error("execution error: Not authorized to send Apple events to Xcode-beta. (-1743)")
+    message = mac_run.osascript_failure("/Applications/Xcode.app", "closing its HaloRunner projects", error)
+    assert "Automation" in message
+    assert "alert" not in message
+
+
+def test_osascript_failure_names_the_alert_that_holds_xcode(monkeypatch):
+    monkeypatch.setattr(mac_run, "xcode_alert", lambda xcode: "a project file that changed on disk")
+    error = _osascript_error("execution error: Xcode-beta got an error: AppleEvent timed out. (-1712)")
+    message = mac_run.osascript_failure("/Applications/Xcode.app", "closing its HaloRunner projects", error)
+    assert "held by a modal alert about a project file that changed on disk" in message
+
+
+def test_osascript_failure_does_not_blame_an_alert_xcode_does_not_have(monkeypatch):
+    monkeypatch.setattr(mac_run, "xcode_alert", lambda xcode: None)
+    error = _osascript_error("execution error: Xcode-beta got an error: AppleEvent timed out. (-1712)")
+    message = mac_run.osascript_failure("/Applications/Xcode.app", "closing its HaloRunner projects", error)
+    assert "no alert open" in message
+
+
+def test_osascript_failure_passes_on_any_other_error(monkeypatch):
+    monkeypatch.setattr(mac_run, "xcode_alert", lambda xcode: pytest.fail("sampled Xcode for a script error"))
+    error = _osascript_error("execution error: run failed after 3 attempts: Build operations are disabled (-2700)")
+    message = mac_run.osascript_failure("/Applications/Xcode.app", "running HaloRunner", error)
+    assert "Build operations are disabled" in message
