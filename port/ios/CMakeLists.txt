@@ -127,6 +127,10 @@ else()
     set_source_files_properties(Assets.xcassets PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
 endif()
 set_target_properties(HaloCE PROPERTIES XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_APPICON_NAME "AppIcon")
+# internet play's MQTT brokers (network.brokers_file): host_main.m writes them
+# beside config.toml at each start, as upstream's Android app does
+target_sources(HaloCE PRIVATE "${ROOT}/port/assets/network/brokers.txt")
+set_source_files_properties("${ROOT}/port/assets/network/brokers.txt" PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
 file(GLOB HALO_LICENSES "${ROOT}/build/ios/licenses/*.txt")
 target_sources(HaloCE PRIVATE ${HALO_LICENSES})
 set_source_files_properties(${HALO_LICENSES} PROPERTIES MACOSX_PACKAGE_LOCATION Resources/Licenses)

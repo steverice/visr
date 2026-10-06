@@ -61,6 +61,14 @@ int main(int argc,char **argv) {
         snprintf(save_root,sizeof(save_root),"%s/save",data_root);mkdir(save_root,0755);
         chdir(data_root);
         log_file=fopen("ios-runtime.log","w");setvbuf(stderr,NULL,_IONBF,0);
+        /* internet play's MQTT brokers (network.brokers_file, p2p_signal.c): the app's
+           list, written beside config.toml at each start, as upstream's Android app does */
+        {
+            NSString *brokers=[NSBundle.mainBundle pathForResource:@"brokers" ofType:@"txt"];
+            NSData *list=brokers?[NSData dataWithContentsOfFile:brokers]:nil;
+            if(!list||![list writeToFile:@"brokers.txt" atomically:YES])
+                host_logf(HOST_LOG_ERROR,"cannot write brokers.txt from the app bundle");
+        }
         /* Tools (tools/mac_run.py) create stderr.log to keep the guest's own log, platform_log
            and debug.gpu_stats among it, which otherwise only a debugger's console shows. */
         if(access("stderr.log",F_OK)==0){int fd=open("stderr.log",O_WRONLY|O_APPEND);if(fd>=0){dup2(fd,2);close(fd);}}
