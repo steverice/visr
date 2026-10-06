@@ -1047,6 +1047,7 @@ static gpu_texture texture_entry_result(struct texture_entry *entry, uint32_t *t
 			*type = GPU_TEXTURE_2D;
 			description->hires = TRUE;
 			description->hires_coverage = hud_hires_override_coverage(entry->override);
+			description->hires_point_threshold = hud_hires_override_point_threshold(entry->override);
 			return texture;
 		}
 	}

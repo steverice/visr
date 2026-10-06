@@ -394,6 +394,26 @@ static void texture_stage(struct xgpu_text *text, const struct nv2a_dialect *dia
 		xgpu_text_append(text, "\tt%d = ", stage);
 		sample(text, dialect, key, stage, coordinates);
 		xgpu_text_append(text, ";\n");
+		if (stage == 0 && (key->coverage_alpha & XGPU_COVERAGE_POINT_THRESHOLD) &&
+			key->sampler_type[stage] == _xgpu_sampler_2d)
+		{
+			/* IDs must not be averaged with another segment or corrupted by
+			low-alpha artwork. Zero marks the atlas's continuous meters. */
+			if (dialect->msl)
+				xgpu_text_append(text,
+					"\t{\n\t\tvec2 uv = (%s).xy * texture_scale[0].xy;\n"
+					"\t\tint2 size = int2(tex0.get_width(0), tex0.get_height(0));\n"
+					"\t\tint2 pixel = clamp(int2(floor(uv * vec2(size))), int2(0), size - 1);\n"
+					"\t\tfloat threshold = tex0.read(uint2(pixel), 0).r;\n"
+					"\t\tif (threshold > 0.0) t0.rb = vec2(threshold);\n\t}\n", coordinates);
+			else
+				xgpu_text_append(text,
+					"\t{\n\t\tvec2 uv = (%s).xy * texture_scale[0].xy;\n"
+					"\t\tivec2 size = textureSize(tex0, 0);\n"
+					"\t\tivec2 pixel = clamp(ivec2(floor(uv * vec2(size))), ivec2(0), size - 1);\n"
+					"\t\tfloat threshold = texelFetch(tex0, pixel, 0).r;\n"
+					"\t\tif (threshold > 0.0) t0.rb = vec2(threshold);\n\t}\n", coordinates);
+		}
 		break;
 	case _mode_cubemap:
 		snprintf(coordinates, sizeof(coordinates), "xT%d", stage);

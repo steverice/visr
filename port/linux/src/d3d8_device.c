@@ -2892,7 +2892,8 @@ static void stages_fill(struct nv2a_pixel_shader_key *key, float texture_scale[4
 			packet_stage->type = (uint8_t)type;
 			sampler_state_fill(stage, description.levels > 1, description.hires, &packet_stage->sampler);
 			if (stage == 0)
-				key->coverage_alpha = description.hires_coverage != FALSE;
+				key->coverage_alpha = (description.hires_coverage ? XGPU_COVERAGE_ALPHA : 0) |
+					(description.hires_point_threshold ? XGPU_COVERAGE_POINT_THRESHOLD : 0);
 			key->sampler_type[stage] = type == GPU_TEXTURE_CUBE ? _xgpu_sampler_cube :
 				type == GPU_TEXTURE_3D ? _xgpu_sampler_3d : _xgpu_sampler_2d;
 			/* a foveated eye's screen-sized target: its texels are in the
@@ -3189,9 +3190,12 @@ static BOOL prepare_draw(struct gpu_draw *draw, BOOL immediate)
 		key.color_sign[stage] = (unsigned char)((D3D__TextureState[stage][D3DTSS_COLORSIGN] >> 28) & 0xf);
 	}
 	/* (only with the meter's blend: hud_hires.h, nv2a_pixel_shader_key) */
-	key.coverage_alpha = key.coverage_alpha && D3D__RenderState[D3DRS_ALPHABLENDENABLE] &&
+	if (!((key.coverage_alpha & XGPU_COVERAGE_ALPHA) && D3D__RenderState[D3DRS_ALPHABLENDENABLE] &&
 		D3D__RenderState[D3DRS_SRCBLEND] == D3DBLEND_CONSTANTCOLOR &&
-		D3D__RenderState[D3DRS_DESTBLEND] == D3DBLEND_SRCALPHA;
+		D3D__RenderState[D3DRS_DESTBLEND] == D3DBLEND_SRCALPHA))
+	{
+		key.coverage_alpha = 0;
+	}
 	key.alpha_test_function = D3D__RenderState[D3DRS_ALPHATESTENABLE] ? D3D__RenderState[D3DRS_ALPHAFUNC] : 0;
 	key.fog_enable = D3D__RenderState[D3DRS_FOGENABLE] != 0;
 	key.fog_table_mode = (unsigned char)D3D__RenderState[D3DRS_FOGTABLEMODE];
