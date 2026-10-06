@@ -1,0 +1,71 @@
+name: Bug report
+description: Something in VISR does not work as it should
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Please do not attach game files, disc images, or screenshots of copyrighted game content beyond what shows the bug. Security problems go through SECURITY.md, not here.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Start the campaign on a10
+        2. ...
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - iPhone
+        - iPad
+        - Apple Vision Pro
+        - Apple TV
+        - Mac
+        - Simulator
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Device and OS version
+      placeholder: iPhone 17 Pro, iOS 27.0
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: VISR version or commit
+      placeholder: The commit you built from
+    validations:
+      required: true
+  - type: dropdown
+    id: region
+    attributes:
+      label: Disc region
+      options:
+        - NTSC-US (01.10.12.2276)
+        - PAL (01.01.14.2342)
+  - type: dropdown
+    id: renderer
+    attributes:
+      label: Renderer
+      description: "`display.renderer` in `config.toml`"
+      options:
+        - OpenGL ES (default on iPhone and iPad)
+        - Metal
+        - Not sure
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Paste or attach `ios-runtime.log` and `debug.txt` from the VISR folder in Files. Check them for anything personal first.
+      render: text
