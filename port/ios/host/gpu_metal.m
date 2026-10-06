@@ -369,7 +369,12 @@ static id<MTLCommandBuffer> command_buffer(void)
 	{
 		MTLCommandBufferDescriptor *descriptor = [MTLCommandBufferDescriptor new];
 
-		descriptor.errorOptions = MTLCommandBufferErrorOptionEncoderExecutionStatus;
+		/* each encoder's execution status in a failed buffer's error, only
+		with debug.gl_debug: a debugging aid, for which the driver keeps
+		track of every encoder of every frame. A failure is logged either
+		way (commit). */
+		if (metal_debug)
+			descriptor.errorOptions = MTLCommandBufferErrorOptionEncoderExecutionStatus;
 		commands = [queue commandBufferWithDescriptor:descriptor];
 		if (metal_debug)
 			commands.label = [NSString stringWithFormat:@"frame %lu", frames];
