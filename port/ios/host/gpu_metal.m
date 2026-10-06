@@ -3431,6 +3431,8 @@ struct foveation_sizes_uniform
 
 static id<MTLRenderPipelineState> resolve_color_pipeline, resolve_depth_pipeline;
 static id<MTLSamplerState> resolve_nearest;
+/* foveation_resolve's outputs, by kind, size and eye */
+static NSMutableDictionary<NSString *, id<MTLTexture>> *resolve_outputs;
 
 /* a foveated target drawn unfoveated at width x height, at its screen
 shape, into a new texture: BGRA8 for a color target, R32Float for a depth
@@ -3474,11 +3476,28 @@ static id<MTLTexture> foveation_resolve(MetalTexture *record, NSUInteger width, 
 		}
 		resolve_nearest = [device newSamplerStateWithDescriptor:nearest];
 	}
-	descriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:depth ? MTLPixelFormatR32Float :
-		MTLPixelFormatBGRA8Unorm width:width height:height mipmapped:NO];
-	descriptor.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
-	descriptor.storageMode = MTLStorageModePrivate;
-	output = [device newTextureWithDescriptor:descriptor];
+	/* one output per kind, size and eye, kept: the HEAD-mode menu over the
+	film resolves an eye every frame, about 13 MB at quality 0.6. The two
+	eyes of one frame get their own; a later frame's resolve is queued after
+	the command buffers that read this one's */
+	{
+		NSString *key = [NSString stringWithFormat:@"%d %lux%lu %u", depth, (unsigned long)width,
+			(unsigned long)height, record->description.foveated_eye];
+
+		output = resolve_outputs[key];
+		if (!output)
+		{
+			descriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:depth ? MTLPixelFormatR32Float :
+				MTLPixelFormatBGRA8Unorm width:width height:height mipmapped:NO];
+			descriptor.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+			descriptor.storageMode = MTLStorageModePrivate;
+			output = [device newTextureWithDescriptor:descriptor];
+			/* (the sizes move while the render quality eases: a few at most) */
+			if (!resolve_outputs || resolve_outputs.count >= 8)
+				resolve_outputs = [NSMutableDictionary dictionary];
+			resolve_outputs[key] = output;
+		}
+	}
 	sizes = (struct foveation_sizes_uniform){ { (float)screen.width, (float)screen.height },
 		{ (float)physical.width, (float)physical.height },
 		{ (float)record->texture.width, (float)record->texture.height } };
