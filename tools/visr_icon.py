@@ -165,309 +165,6 @@ def wordmark_front():
     return f'<g filter="url(#glow)">{wordmark()}</g>'
 
 
-# The Halo: CE visor and helmet, traced from a frame of the game's c40 cutscene rendered from the user's own disc
-# (`c40-02820`, the Chief facing the camera). `tools/visr_trace.py` segments the gold visor, the helmet and the lit
-# rims of the brow pads, levels the head's slight roll, mirrors each mask about the visor's center line (the model
-# is symmetric), and fits these paths. Units are the 1024-unit mark: the helmet is 900 wide, the visor 710.
-VISOR_PATH = "M-75 -76C-94 -76 -114 -72 -133 -70C-153 -68 -172 -65 -192 -63C-211 -61 -231 -59 -250 -56C-269 -53 -292 -55 -308 -46C-323 -37 -335 -19 -342 -2C-350 15 -352 36 -354 55C-356 75 -357 95 -356 114C-354 133 -353 154 -346 172C-339 189 -325 205 -313 220C-302 236 -291 255 -275 265C-259 274 -238 276 -219 278C-200 281 -180 279 -160 279C-141 279 -121 279 -101 279C-82 279 -62 279 -43 279C-23 279 -3 279 16 279C36 279 55 279 75 279C94 279 114 279 134 279C153 279 173 279 192 279C212 278 234 282 251 275C269 269 284 255 297 242C311 228 323 211 332 194C342 178 350 159 354 141C358 122 356 101 355 82C355 62 354 42 349 24C345 5 341 -19 329 -31C317 -44 295 -48 276 -53C258 -57 237 -58 218 -60C198 -62 179 -65 160 -67C140 -69 121 -73 101 -74C82 -75 62 -75 43 -75C23 -75 3 -73 -16 -73C-36 -73 -55 -77 -75 -76Z"
-HELMET_PATH = "M-340 -266L-415 -146L-418 -135L-411 -113L-442 -67L-406 31L-406 155L-372 205L-438 240L-450 343L450 343L438 240L372 205L406 155L406 31L442 -67L411 -113L418 -135L415 -146L338 -267L269 -272L247 -303L82 -344L15 -338L-82 -344L-247 -303L-269 -272L-329 -271Z"
-BROW_RIMS = "M129 -271L128 -258L123 -250L124 -209L119 -163L123 -144L134 -139L138 -119L150 -118L155 -122L152 -145L162 -209L180 -223L195 -225L257 -216L305 -203L320 -190L331 -172L349 -153L386 -123L390 -110L397 -105L397 -96L420 -90L422 -100L411 -114L418 -141L338 -267L329 -271L143 -279Z M-129 -271L-143 -279L-329 -271L-338 -267L-418 -141L-411 -114L-422 -100L-420 -90L-397 -96L-397 -105L-390 -110L-386 -123L-349 -153L-331 -172L-320 -190L-305 -203L-257 -216L-195 -225L-180 -223L-162 -209L-152 -145L-155 -122L-150 -118L-138 -119L-134 -139L-123 -144L-119 -163L-124 -209L-123 -250L-128 -258Z"
-HELMET_CLIP_Y = 344
-
-
-GLASS_TINTS = {
-    "cyan": (("#8af0ff", 0.55), ("#1aa6c9", 0.30), ("#05394a", 0.20)),
-    "gold": (("#fff0b0", 0.95), ("#e0a53a", 0.92), ("#5a3a0c", 0.95)),
-}
-
-
-def visor_defs(view, visor, tint="cyan"):
-    """gradients and clips shared by the traced variants"""
-    (c0, o0), (c1, o1), (c2, o2) = GLASS_TINTS[tint]
-    rim = ("#fff6d8", "#f2c35a") if tint == "gold" else (ICE, CYAN)
-    return (f'<defs><clipPath id="visorclip-{view}"><path d="{visor}"/></clipPath>'
-            f'<radialGradient id="glass-{view}" cx="0.42" cy="0.78" r="0.75" fx="0.38" fy="0.85">'
-            f'<stop offset="0" stop-color="{c0}" stop-opacity="{o0}"/><stop offset="0.5" stop-color="{c1}" stop-opacity="{o1}"/>'
-            f'<stop offset="1" stop-color="{c2}" stop-opacity="{o2}"/></radialGradient>'
-            f'<linearGradient id="edge-{view}" x1="0" y1="0" x2="1" y2="1">'
-            f'<stop offset="0" stop-color="{rim[0]}"/><stop offset="0.45" stop-color="{rim[1]}"/>'
-            f'<stop offset="1" stop-color="{rim[1]}" stop-opacity="0.35"/></linearGradient></defs>')
-
-
-def specular(view, visor, strength=1.0):
-    """curved highlights, as on a convex glass: a wide arc under the top edge and a short bright one on the
-    upper left, clipped to the glass"""
-    return (f'<defs><linearGradient id="spec-{view}" x1="0" y1="0" x2="1" y2="0">'
-            f'<stop offset="0" stop-color="#ffffff" stop-opacity="{0.15 * strength:.2f}"/>'
-            f'<stop offset="0.3" stop-color="#ffffff" stop-opacity="{0.8 * strength:.2f}"/>'
-            f'<stop offset="0.7" stop-color="#ffffff" stop-opacity="{0.35 * strength:.2f}"/>'
-            f'<stop offset="1" stop-color="#ffffff" stop-opacity="0"/></linearGradient></defs>'
-            f'<g clip-path="url(#visorclip-{view})" fill="none" stroke="url(#spec-{view})" stroke-linecap="round">'
-            f'<ellipse cx="0" cy="330" rx="560" ry="372" stroke-width="22"/>'
-            f'<path d="M-300 70Q-250 -10 -150 -22" stroke="#ffffff" stroke-opacity="{0.85 * strength:.2f}" stroke-width="20"/></g>')
-
-
-def visor_glass(view, visor, tint="cyan"):
-    return visor_defs(view, visor, tint) + f'<path d="{visor}" fill="url(#glass-{view})"/>'
-
-
-def visor_edge(view, visor, width=26):
-    """the visor's rim: bright where it catches the light at the upper left, fading to the lower right"""
-    return (f'<g filter="url(#glow)"><path d="{visor}" fill="none" stroke="url(#edge-{view})" stroke-width="{width}" '
-            f'stroke-linejoin="round"/></g>')
-
-
-def helmet_shell(view, helmet, clip_y):
-    """the helmet as a dark shape barely lighter than the backdrop, with a cyan rim light along its upper left edge"""
-    return (f'<defs><linearGradient id="shell-{view}" x1="0" y1="0" x2="0" y2="1">'
-            f'<stop offset="0" stop-color="#16343f"/><stop offset="1" stop-color="#081820"/></linearGradient>'
-            f'<linearGradient id="fade-{view}" x1="0" y1="-500" x2="0" y2="{clip_y}" gradientUnits="userSpaceOnUse">'
-            f'<stop offset="0.75" stop-color="#fff"/><stop offset="1" stop-color="#000"/></linearGradient>'
-            f'<mask id="shellmask-{view}" maskUnits="userSpaceOnUse" x="-512" y="-512" width="1024" height="1024">'
-            f'<rect x="-512" y="-512" width="1024" height="1024" fill="url(#fade-{view})"/></mask>'
-            f'<linearGradient id="rim-{view}" x1="0" y1="0" x2="1" y2="1">'
-            f'<stop offset="0" stop-color="{CYAN}" stop-opacity="0.9"/><stop offset="0.6" stop-color="{CYAN}" stop-opacity="0.15"/>'
-            f'<stop offset="1" stop-color="{CYAN}" stop-opacity="0"/></linearGradient></defs>'
-            f'<g mask="url(#shellmask-{view})"><path d="{helmet}" fill="url(#shell-{view})"/>'
-            f'<g filter="url(#glow)"><path d="{helmet}" fill="none" stroke="url(#rim-{view})" stroke-width="12" stroke-linejoin="round"/></g></g>')
-
-
-def hud_reflection(cx=0, cy=0, r=60, opacity=0.6):
-    ring = "".join(f'<path d="{arc(r, q + 20, q + 70)}" transform="translate({cx} {cy})"/>' for q in (0, 90, 180, 270))
-    hairs = (f"M{cx} {cy - r * 1.6}V{cy - r * 1.25} M{cx} {cy + r * 1.25}V{cy + r * 1.6} "
-             f"M{cx - r * 1.6} {cy}H{cx - r * 1.25} M{cx + r * 1.25} {cy}H{cx + r * 1.6}")
-    return (f'<g filter="url(#glow)" fill="none" stroke="{CYAN}" stroke-opacity="{opacity}" stroke-width="{r / 5:.1f}">'
-            f'{ring}<path d="{hairs}"/></g><circle cx="{cx}" cy="{cy}" r="{r / 3.5:.1f}" fill="{AMBER}"/>')
-
-
-def brow_rims(opacity=0.85):
-    """the lit lower rims of the two brow pads above the visor"""
-    return f'<g filter="url(#glow)"><path d="{BROW_RIMS}" fill="{CYAN}" fill-opacity="{opacity}"/></g>'
-
-
-# visor-traced: the visor alone, enlarged and centered
-TRACED_ALONE = 'transform="scale(1.2) translate(0 -103)"'
-
-
-def visor_traced_middle():
-    return f'<g {TRACED_ALONE}>{visor_glass("f", VISOR_PATH)}</g>'
-
-
-def visor_traced_front():
-    return (f'<g {TRACED_ALONE}>{visor_defs("f2", VISOR_PATH)}{specular("f2", VISOR_PATH)}'
-            f'{visor_edge("f2", VISOR_PATH, 22)}</g>')
-
-
-# visor-helmet: the visor set in the helmet: a dark shell with a rim light, and the brow pads' lit edges
-HELMET_VIEW = 'transform="scale(0.94)"'
-
-
-def visor_helmet_middle():
-    return f'<g {HELMET_VIEW}>{helmet_shell("h", HELMET_PATH, HELMET_CLIP_Y)}{brow_rims()}{visor_glass("h", VISOR_PATH)}</g>'
-
-
-def visor_helmet_front():
-    return (f'<g {HELMET_VIEW}>{visor_defs("h2", VISOR_PATH)}{specular("h2", VISOR_PATH)}'
-            f'{visor_edge("h2", VISOR_PATH, 16)}</g>')
-
-
-def visor_helmet_gold_middle():
-    return f'<g {HELMET_VIEW}>{helmet_shell("g", HELMET_PATH, HELMET_CLIP_Y)}{brow_rims()}{visor_glass("g", VISOR_PATH, "gold")}</g>'
-
-
-def visor_helmet_gold_front():
-    return (f'<g {HELMET_VIEW}>{visor_defs("g2", VISOR_PATH, "gold")}{specular("g2", VISOR_PATH)}'
-            f'{visor_edge("g2", VISOR_PATH, 12)}</g>')
-
-
-# visor-closeup: a close crop of the helmet, so the gold glass fills the icon, with the brow pads at the top and
-# a cyan HUD reticle reflected in the glass
-CLOSE = 'transform="scale(1.3) translate(0 -70)"'
-
-
-def visor_closeup_middle():
-    return f'<g {CLOSE}>{helmet_shell("c", HELMET_PATH, HELMET_CLIP_Y)}{brow_rims()}{visor_glass("c", VISOR_PATH, "gold")}</g>'
-
-
-def visor_closeup_front():
-    return (f'<g {CLOSE}>{visor_defs("c2", VISOR_PATH, "gold")}{specular("c2", VISOR_PATH)}'
-            f'<g clip-path="url(#visorclip-c2)">{hud_reflection(110, 120, 40, 0.9)}</g>{visor_edge("c2", VISOR_PATH, 10)}</g>')
-
-
-# The inside view. Halo: CE draws no visor frame in first person (its HUD bitmaps are reticles, meters and the motion
-# tracker, nothing around the view), so the frame here is derived from the traced visor itself: `inside_projection`
-# puts the traced outline on a glass that wraps around the eye (curving back toward the face at the sides and below)
-# and projects it from an eye just behind the upper half of the glass. The outline is symmetric, so mirroring it for
-# the view from behind changes nothing. Under that perspective the top edge rises toward the corners, which leaves a
-# dip at the top center where the brow comes down, and the bottom edge rises at the center, where the chin sits.
-# APERTURE_HALF is that projected outline simplified to straight runs with chamfered corners, with the brow notch and
-# the chin piece squared off; units have the aperture 1000 wide, and `aperture_path` scales it into the mark.
-EYE_DISTANCE, WRAP_RADIUS, TUCK_RADIUS, EYE_HEIGHT = 300, 500, 600, 100
-
-
-def bezier_points(path, steps=16):
-    """sample an absolute M/C/Z path into points"""
-    import re
-    tokens = re.findall(r"[MCZ]|-?\d+(?:\.\d+)?", path)
-    points, i, current = [], 0, (0.0, 0.0)
-    while i < len(tokens):
-        if tokens[i] == "M":
-            current = (float(tokens[i + 1]), float(tokens[i + 2]))
-            points.append(current)
-            i += 3
-        elif tokens[i] == "C":
-            (x1, y1, x2, y2, x3, y3) = (float(t) for t in tokens[i + 1:i + 7])
-            x0, y0 = current
-            for k in range(1, steps + 1):
-                s = k / steps
-                a, b, c, d = (1 - s) ** 3, 3 * (1 - s) ** 2 * s, 3 * (1 - s) * s * s, s ** 3
-                points.append((a * x0 + b * x1 + c * x2 + d * x3, a * y0 + b * y1 + c * y2 + d * y3))
-            current = (x3, y3)
-            i += 7
-        else:
-            i += 1
-    return points
-
-
-def inside_projection():
-    """the traced visor outline as the eye inside sees it, scaled to 1000 wide and centered"""
-    projected = []
-    for x, y in bezier_points(VISOR_PATH):
-        depth = EYE_DISTANCE - x * x / (2 * WRAP_RADIUS) - (y - EYE_HEIGHT) ** 2 / (2 * TUCK_RADIUS)
-        projected.append((x / depth, (y - EYE_HEIGHT) / depth))
-    xs, ys = [p[0] for p in projected], [p[1] for p in projected]
-    scale = 1000 / (max(xs) - min(xs))
-    cx, cy = (max(xs) + min(xs)) / 2, (max(ys) + min(ys)) / 2
-    return [((x - cx) * scale, (y - cy) * scale) for x, y in projected]
-
-
-# right half, from the top center clockwise to the bottom center. The chin piece rises less than the projection
-# says (42 units, not 58), so the silhouette does not pinch into a bow tie at small sizes.
-APERTURE_HALF = ((0, -150), (62, -150), (98, -178), (430, -194), (482, -146), (500, 22), (452, 110), (322, 192),
-                 (156, 180), (112, 150), (0, 150))
-
-
-def aperture_path(sx=0.87, sy=1.29):
-    """the aperture in mark units: 870 wide, so the shell shows on every side, inside the visionOS circle too"""
-    right = [(x * sx, y * sy) for x, y in APERTURE_HALF]
-    left = [(-x, y) for x, y in reversed(right[1:-1])]
-    return "M" + "L".join(f"{x:.1f} {y:.1f}" for x, y in right + left) + "Z"
-
-
-APERTURE = aperture_path()
-SHELL = f"M-4000 -4000H4000V4000H-4000Z {APERTURE}"
-
-
-def inside_view_back(width, height, scale, dusk=False):
-    """the world seen through the visor, bright against the dark shell: a sky over a soft horizon band, with the
-    ring arcing through it drawn in the middle layer; `dusk` warms the horizon"""
-    horizon = 0.58
-    glow = "#ffd9a0" if dusk else "#cfeeff"
-    return (f'<defs><linearGradient id="world" x1="0" y1="0" x2="0" y2="{height}" gradientUnits="userSpaceOnUse">'
-            f'<stop offset="0" stop-color="#9fd6ff"/><stop offset="{horizon - 0.06}" stop-color="#2a7fa8"/>'
-            f'<stop offset="{horizon}" stop-color="{glow}" stop-opacity="0.9"/><stop offset="{horizon + 0.07}" stop-color="#1f5b78"/>'
-            f'<stop offset="1" stop-color="#0b2a3a"/></linearGradient></defs>'
-            f'<rect width="{width}" height="{height}" fill="url(#world)"/>')
-
-
-def ring_arc(opacity=0.55, width=5):
-    """the ring: a thin arc rising out of the horizon at both sides, its apex at 30% of the height"""
-    return (f'<path d="M-560 78A600 300 0 0 1 560 78" fill="none" stroke="#ffffff" stroke-opacity="{opacity}" '
-            f'stroke-width="{width}" transform="rotate(-6)"/>')
-
-
-def helmet_interior(rim=CYAN):
-    """the helmet's inner shell as a dark mass around the aperture, and a lit lip at the aperture's edge whose glow
-    falls only on the shell, with a fine bright line on its inner edge"""
-    return (f'<defs><linearGradient id="shellfill" x1="0" y1="-512" x2="0" y2="512" gradientUnits="userSpaceOnUse">'
-            f'<stop offset="0" stop-color="#0e1a22"/><stop offset="1" stop-color="#050a0d"/></linearGradient>'
-            f'<clipPath id="shellclip"><path d="{SHELL}" clip-rule="evenodd"/></clipPath>'
-            f'<clipPath id="apclip"><path d="{APERTURE}"/></clipPath>'
-            f'<filter id="lipglow" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="12"/></filter></defs>'
-            f'<path d="{SHELL}" fill="url(#shellfill)" fill-rule="evenodd"/>'
-            # seams where the brow and chin pieces meet the shell
-            f'<path d="M-54 -237L-80 -272H80L54 -237 M-97 231L-118 268H118L97 231" fill="none" stroke="#1d3540" stroke-width="6"/>'
-            f'<g clip-path="url(#shellclip)"><path d="{APERTURE}" fill="none" stroke="{rim}" stroke-opacity="0.7" '
-            f'stroke-width="30" filter="url(#lipglow)"/></g>'
-            # a hairline 9 wide inside the glass, then the 14-wide lip over all but its inner 2
-            f'<g clip-path="url(#apclip)"><path d="{APERTURE}" fill="none" stroke="{ICE}" stroke-opacity="0.7" '
-            f'stroke-width="18" stroke-linejoin="miter"/></g>'
-            f'<path d="{APERTURE}" fill="none" stroke="{rim}" stroke-width="14" stroke-linejoin="miter"/>')
-
-
-def hud_guides(ladders=False, opacity=0.55, color="#cfeeff"):
-    """thin guide lines inside the aperture: brackets that follow its top and bottom edges, a tick pair at the top
-    and bottom center, and optionally short scale ladders at the sides"""
-    top = "M-350 -214L-108 -201L-78 -168H78L108 -201L350 -214"
-    bottom = "M-260 206L-145 214L-108 160H108L145 214L260 206"
-    ticks = "M-48 -138H48 M-24 -118H24 M-48 132H48 M-24 112H24"
-    d = [top, bottom, ticks]
-    if ladders:
-        for sx in (-1, 1):
-            x = sx * 330
-            d += [f"M{x} {y}H{x - sx * (24 if i % 2 else 44)}" for i, y in enumerate(range(-90, 91, 30))]
-    return (f'<path d="{" ".join(d)}" fill="none" stroke="{color}" stroke-opacity="{opacity}" stroke-width="6" '
-            f'stroke-linejoin="miter"/>')
-
-
-def inside_frame_middle():
-    return ring_arc()
-
-
-def inside_frame_front():
-    return helmet_interior()
-
-
-def inside_hud_middle():
-    return ring_arc() + hud_guides()
-
-
-def inside_ladders_middle():
-    return ring_arc() + hud_guides(ladders=True)
-
-
-def inside_contact_middle():
-    """the guides, and one amber contact low at the left, as on the motion tracker"""
-    return ring_arc() + hud_guides() + f'<circle cx="-300" cy="150" r="16" fill="{AMBER}"/>'
-
-
-def inside_dusk_middle():
-    return ring_arc(0.8, 8)
-
-
-INSIDE_BACKS = {
-    "inside-frame": lambda w, h, s: inside_view_back(w, h, s),
-    "inside-hud": lambda w, h, s: inside_view_back(w, h, s),
-    "inside-ladders": lambda w, h, s: inside_view_back(w, h, s),
-    "inside-contact": lambda w, h, s: inside_view_back(w, h, s),
-    "inside-dusk": lambda w, h, s: inside_view_back(w, h, s, dusk=True),
-}
-# the detailed concepts fall back to the bare frame at 60 px and below, where their guide lines would be fuzz
-SMALL = {"inside-hud": "inside-frame", "inside-ladders": "inside-frame", "inside-contact": "inside-frame"}
-SMALL_MAX = 60
-
-
-def inside_derivation(out):
-    """a diagram: the traced front view of the visor beside its projection from inside, and the simplified aperture"""
-    front = bezier_points(VISOR_PATH)
-    fx = [p[0] for p in front]
-    fy = [p[1] for p in front]
-    k = 600 / (max(fx) - min(fx))
-    fcx, fcy = (max(fx) + min(fx)) / 2, (max(fy) + min(fy)) / 2
-    front_d = "M" + "L".join(f"{(x - fcx) * k:.1f} {(y - fcy) * k:.1f}" for x, y in front) + "Z"
-    proj_d = "M" + "L".join(f"{x * 0.6:.1f} {y * 0.6:.1f}" for x, y in inside_projection()) + "Z"
-    ap = "M" + "L".join(f"{x * 0.6:.1f} {y * 0.6:.1f}" for x, y in
-                        [*APERTURE_HALF, *[(-x, y) for x, y in reversed(APERTURE_HALF[1:-1])]]) + "Z"
-    label = 'fill="#c8d4da" font-family="Menlo" font-size="22"'
-    body = (f'<rect width="1460" height="360" fill="#0b1216"/>'
-            f'<g transform="translate(360 170)"><path d="{front_d}" fill="none" stroke="{CYAN}" stroke-width="4"/></g>'
-            f'<text x="40" y="340" {label}>traced, from outside</text>'
-            f'<g transform="translate(1080 170)"><path d="{proj_d}" fill="none" stroke="{CYAN}" stroke-opacity="0.5" stroke-width="4"/>'
-            f'<path d="{ap}" fill="none" stroke="{ICE}" stroke-width="3"/></g>'
-            f'<text x="760" y="340" {label}>from inside (cyan) and simplified (white)</text>')
-    render(f'<svg xmlns="http://www.w3.org/2000/svg" width="1460" height="360">{body}</svg>', out, 1460, 360)
-
-
 CONCEPTS = {
     "reticle": ("A broken reticle ring with tick marks, crosshairs and a chevron; amber center pip.",
                 reticle_middle, reticle_front),
@@ -475,22 +172,6 @@ CONCEPTS = {
               visor_middle, visor_front),
     "wordmark": ("The letters VISR in chamfered strokes inside HUD corner brackets.",
                  wordmark_middle, wordmark_front),
-    "visor-traced": ("The Halo: CE visor traced front-on from the game, as cyan glass with a lit rim and a specular streak.",
-                     visor_traced_middle, visor_traced_front),
-    "visor-helmet": ("The traced visor in cyan glass, set in a dark helmet shell with a cyan rim light.",
-                     visor_helmet_middle, visor_helmet_front),
-    "visor-helmet-gold": ("The traced visor in gold glass, set in the dark helmet shell with a cyan rim light.",
-                          visor_helmet_gold_middle, visor_helmet_gold_front),
-    "visor-closeup": ("A close crop of the traced helmet: gold visor glass filling the icon, a cyan HUD reticle reflected in it.",
-                      visor_closeup_middle, visor_closeup_front),
-    "inside-frame": ("From inside the helmet: the CE visor's aperture, a lit lip in the dark inner shell, a bright sky "
-                     "and the ring's thin arc beyond it.", inside_frame_middle, inside_frame_front),
-    "inside-hud": ("inside-frame with thin HUD guides: brackets along the top and bottom edges and center tick pairs; "
-                   "the bare frame at 60 px and below.", inside_hud_middle, inside_frame_front),
-    "inside-ladders": ("inside-hud with short scale ladders at the sides.", inside_ladders_middle, inside_frame_front),
-    "inside-contact": ("inside-hud with one amber motion-tracker contact low at the left.", inside_contact_middle,
-                       inside_frame_front),
-    "inside-dusk": ("inside-frame at dusk: a warm horizon and a brighter ring.", inside_dusk_middle, inside_frame_front),
 }
 
 
@@ -499,8 +180,7 @@ def layer_svgs(concept, width, height, mark_scale, x=None, y=None, with_wordmark
     _, middle, front = CONCEPTS[concept]
     t = place(width, height, mark_scale, x, y)
     blur = 10
-    back_body = INSIDE_BACKS[concept](width, height, mark_scale) if concept in INSIDE_BACKS else backdrop(width, height, mark_scale)
-    back = svg(width, height, back_body, blur)
+    back = svg(width, height, backdrop(width, height, mark_scale), blur)
     mid = svg(width, height, f'<g transform="{t}">{middle()}</g>', blur)
     extra = ""
     if with_wordmark:
@@ -542,8 +222,7 @@ IOS_SIZES = (20, 29, 40, 58, 60, 76, 80, 87, 120, 152, 167, 180, 1024)
 def ios_catalog(concept):
     folder = IOS / "Assets.xcassets/AppIcon.appiconset"
     for size in IOS_SIZES:
-        source = SMALL.get(concept, concept) if size <= SMALL_MAX else concept
-        render(flat_svg(source, 1024, 1024, 1.0), folder / f"AppIcon-{size}.png", size, size, opaque=True)
+        render(flat_svg(concept, 1024, 1024, 1.0), folder / f"AppIcon-{size}.png", size, size, opaque=True)
 
 
 def stack_layers(folder, concept, names, sizes, ext, idiom, mark_fraction):
@@ -587,12 +266,6 @@ LABEL_FONT = "/System/Library/Fonts/Menlo.ttc"  # ImageMagick has no default fon
 SHEETS = {
     # the first three concepts, each as iOS, visionOS, and 120 and 60 px Home Screen sizes
     "concepts.png": (("reticle", "visor", "wordmark"), (("ios", 360), ("visionos", 360), ("ios", 120), ("ios", 60)), False),
-    # the visor outlines beside the reticle, down to the 40 and 29 px Settings and Spotlight sizes
-    "concepts-visor-2.png": (("reticle", "visor-traced", "visor-helmet", "visor-helmet-gold", "visor-closeup"),
-                           (("ios", 360), ("visionos", 360), ("ios", 180), ("ios", 40), ("ios", 29)), True),
-    # the view from inside the helmet, out through the visor's aperture, down to the 60, 40 and 29 px sizes
-    "concepts-visor-3.png": (("inside-frame", "inside-hud", "inside-ladders", "inside-contact", "inside-dusk"),
-                           (("ios", 360), ("visionos", 360), ("ios", 180), ("ios", 60), ("ios", 40), ("ios", 29)), True),
 }
 
 
@@ -615,21 +288,12 @@ def previews(out):
         (out / f"{concept}.txt").write_text(description + "\n")
     for sheet, (concepts, cells, labeled) in SHEETS.items():
         rows = []
-        if sheet == "concepts-visor-3.png":
-            # first, where the aperture comes from
-            diagram = out / "inside-derivation.png"
-            inside_derivation(diagram)
-            row = out / "derivation-row.png"
-            subprocess.run(["magick", "-background", "#202428", "(", "-font", LABEL_FONT, "-fill", "#c8d4da", "-pointsize", "26",
-                            "label:derivation", "-gravity", "west", "-extent", "300x", ")", str(diagram),
-                            "-bordercolor", "#202428", "-border", "12", "-gravity", "center", "+append", str(row)], check=True)
-            rows.append(str(row))
         for concept in concepts:
             row = out / f"{concept}-row.png"
             label = ["(", "-font", LABEL_FONT, "-fill", "#c8d4da", "-pointsize", "26", f"label:{concept}",
                      "-gravity", "west", "-extent", "300x", ")"] if labeled else []
             images = [arg for kind, size in cells
-                      for arg in ("(", str(out / f"{SMALL.get(concept, concept) if size <= SMALL_MAX else concept}-{kind}.png"),
+                      for arg in ("(", str(out / f"{concept}-{kind}.png"),
                                   "-resize", f"{size}x{size}", ")")]
             subprocess.run(["magick", "-background", "#202428", *label, *images,
                             "-bordercolor", "#202428", "-border", "12", "-gravity", "center", "+append", str(row)], check=True)
