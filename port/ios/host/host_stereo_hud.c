@@ -269,25 +269,6 @@ int host_stereo_hud_layout(float layout_width, int ui, const float reticle[3], c
 
 	if (!(layout_width > 0.0f))
 		layout_width = 640.0f;
-	if (ui)
-	{
-		/* everything on the UI's quad, as the game layers it: the
-		crosshairs, the groups, then the HUD layer, which holds the menu */
-		host_stereo_hud_ui(layout_width / HOST_STEREO_HUD_LINES, &quads[count]);
-		quads[count++].layer = HOST_STEREO_HUD_LAYER_RETICLE;
-		for (group = 0; group < HALO_HUD_GROUP_COUNT; group++)
-		{
-			float rectangle[4];
-
-			if (!group_rectangle(group_extent, group, layout_width, rectangle))
-				continue;
-			host_stereo_hud_ui(layout_width / HOST_STEREO_HUD_LINES, &quads[count]);
-			quads[count++].layer = HOST_STEREO_HUD_LAYER_GROUP + group;
-		}
-		host_stereo_hud_ui(layout_width / HOST_STEREO_HUD_LINES, &quads[count]);
-		quads[count++].layer = HOST_STEREO_HUD_LAYER_HUD;
-		return count;
-	}
 	if (host_stereo_hud_reticle(layout_width, NULL, reticle, &quads[count]))
 		count++;
 	scale = host_stereo_hud_band_scale(layout_width, group_extent);
@@ -342,6 +323,14 @@ int host_stereo_hud_layout(float layout_width, int ui, const float reticle[3], c
 		quad->layer = HOST_STEREO_HUD_LAYER_HUD;
 		quad->catch_all = 1;
 		count++;
+	}
+	/* a menu, a help panel, the console or a progress bar: the UI layer
+	whole on the UI's quad, over the HUD's pieces as the game draws it over
+	the HUD */
+	if (ui && count < HOST_STEREO_HUD_MAXIMUM_QUADS)
+	{
+		host_stereo_hud_ui(layout_width / HOST_STEREO_HUD_LINES, &quads[count]);
+		quads[count++].layer = HOST_STEREO_HUD_LAYER_UI;
 	}
 	return count;
 }

@@ -60,7 +60,7 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 	id<MTLTexture> left_depth, id<MTLTexture> right_depth, __unsafe_unretained id<MTLTexture> const *hud_layers,
 	const float (*hud_group_extent)[4], float hud_aspect, int hud_ui, const float reticle[3],
 	const float hud_tangents[2], id<MTLTexture> inset, float near_meters, float far_meters, float brightness,
-	float vignette);
+	float vignette, float ui_dim);
 /* HEAD mode without eyes this frame (a load: a mono picture), or with a
 menu over the film (the main menu's scripted scene, the pause menu in a
 cutscene): 1 while the Compositor's frame host_stereo_frame opened can take

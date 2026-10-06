@@ -3860,6 +3860,7 @@ static uint32_t gpu_metal_present_stereo(const struct gpu_stereo_present *presen
 			for (layer = 0; layer < HALO_HUD_GROUP_COUNT; layer++)
 				hud_records[HOST_STEREO_HUD_LAYER_GROUP + layer] = present->hud_group[layer] ?
 					texture_record(present->hud_group[layer]) : nil;
+			hud_records[HOST_STEREO_HUD_LAYER_UI] = present->ui ? texture_record(present->ui) : nil;
 			for (layer = 0; layer < HOST_STEREO_HUD_LAYER_COUNT; layer++)
 				if (hud_records[layer] && hud_records[layer]->texture)
 				{
@@ -3873,7 +3874,7 @@ static uint32_t gpu_metal_present_stereo(const struct gpu_stereo_present *presen
 			host_stereo_present(queue, color[0]->texture, color[1]->texture, depth[0]->texture, depth[1]->texture,
 				hud_layers, present->hud_group_extent, present->hud_aspect, present->hud_ui, present->reticle,
 				present->hud_tangents, inset ? inset->texture : nil, present->near_meters, present->far_meters,
-				stereo_cut_brightness(HOST_STEREO_VIEW_FULL, present->cut_covered), present->vignette);
+				stereo_cut_brightness(HOST_STEREO_VIEW_FULL, present->cut_covered), present->vignette, present->ui_dim);
 			frames++;
 			pacing.work_started = CACurrentMediaTime();
 			return 0;

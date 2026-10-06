@@ -593,6 +593,11 @@ int halo_stereo_ui_span(void)
 	return ui_span;
 }
 
+int halo_stereo_ui_dim_active(void)
+{
+	return ui_span && stereo_layer == HALO_STEREO_LAYER_HUD && halo_stereo_hud_split();
+}
+
 /* where the game's crosshair points in the eye cameras' frame (x right, y up,
 z back): straight ahead unless halo_stereo_head_orient turned a third-person
 camera */

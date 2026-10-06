@@ -628,6 +628,37 @@ static void upload(gpu_texture texture, uint32_t type, const struct xgpu_texture
 	texture_dump(texture, type, description);
 }
 
+int xgpu_texture_mean_alpha(const DWORD *resource, float *alpha)
+{
+	struct xgpu_texture_description description;
+	struct format_information information;
+	const unsigned char *source;
+	unsigned long *texels, count, index, sum = 0;
+
+	if (!resource || !resource[1])
+		return 0;
+	xgpu_texture_describe(resource[3], resource[4], &description);
+	information = format_information(description.format);
+	count = description.width * description.height;
+	if (description.cube_map || description.depth != 1 || count == 0 || count > 4096 ||
+		((resource[3] & D3DFORMAT_FORMAT_MASK) >> D3DFORMAT_FORMAT_SHIFT) == 0x0b)
+		return 0;
+	source = (const unsigned char *)PLATFORM_PHYSICAL_TO_VIRTUAL(resource[1]);
+	/* (whole 4x4 blocks) */
+	texels = malloc(((description.width + 3) & ~3ul) * ((description.height + 3) & ~3ul) * sizeof(unsigned long));
+	if (!texels)
+		return 0;
+	if (description.compressed)
+		dxt_decode_level(information.kind, source, description.width, description.height, 1, texels);
+	else
+		decode_level(&description, 0, source, NULL, texels);
+	for (index = 0; index < count; index++)
+		sum += texels[index] >> 24;
+	free(texels);
+	*alpha = (float)sum / (255.0f * (float)count);
+	return 1;
+}
+
 /* ---------- cache */
 
 struct texture_entry

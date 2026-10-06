@@ -20,9 +20,12 @@ presenter puts:
 - the HUD layer whole, head-locked at the HUD pass's projection, the
   catch-all: nav points and the multiplayer score where the game projected
   them;
-- while a menu, the console or a progress bar is in the layer (the guest's
-  hud_ui), or a frame has no eyes (the main menu, a load), all of them whole
-  on one level, yaw-following quad of that size instead. */
+- while a menu, a help panel, the console or a progress bar drew (the
+  guest's hud_ui), the guest's UI layer, which holds only those, whole on
+  one level, yaw-following quad over the rest (the guest leaves the widgets'
+  dim out of it, and the presenter darkens the eyes by it instead);
+- while a frame has no eyes (the main menu, a load), or a menu is over the
+  film, the HUD layer whole on that quad instead (host_stereo_present_ui). */
 #ifndef HOST_STEREO_HUD_H
 #define HOST_STEREO_HUD_H
 
@@ -63,7 +66,9 @@ enum
 	HOST_STEREO_HUD_LAYER_RETICLE,
 	/* a HUD group's target: this plus the group (enum halo_hud_group) */
 	HOST_STEREO_HUD_LAYER_GROUP,
-	HOST_STEREO_HUD_LAYER_COUNT = HOST_STEREO_HUD_LAYER_GROUP + HALO_HUD_GROUP_COUNT
+	/* the UI layer (a menu, a help panel, the console, a progress bar) */
+	HOST_STEREO_HUD_LAYER_UI = HOST_STEREO_HUD_LAYER_GROUP + HALO_HUD_GROUP_COUNT,
+	HOST_STEREO_HUD_LAYER_COUNT
 };
 
 /* what a quad's frame follows */
@@ -94,7 +99,8 @@ struct host_stereo_hud_quad
 	int opaque;
 };
 
-/* most quads a layout makes: the reticle, the groups and the catch-all */
+/* most quads a layout makes: the reticle, the groups, the catch-all and
+the UI */
 #define HOST_STEREO_HUD_MAXIMUM_QUADS (HOST_STEREO_HUD_LAYER_COUNT)
 
 /* The reticle's quad: the crosshairs' layer whole (layout_width lines by
@@ -128,14 +134,13 @@ int host_stereo_hud_inset(float layout_width, const float position[3], const flo
 /* the quads for a HEAD-mode frame's HUD laid out layout_width lines across,
 given each HUD group's rectangle (group_extent: x0, y0, x1, y1 in layout
 lines, the guest's gpu_stereo_present hud_group_extent; an empty one, or
-NULL for all, draws no quad): with ui, the reticle's layer, every group's
-target and the HUD layer, each whole, on the UI's quad, in that order;
-else the reticle's quad (reticle: its direction, as above; none when it's
-off the view) first, then one quad per group with a rectangle, in the
-bands, and last, given the HUD pass's half tangents across and up (the
-guest's halo_stereo_hud_tangents; NULL or 0: none), the catch-all: the HUD
-layer whole, head-locked at that projection. Returns the count; quads holds
-HOST_STEREO_HUD_MAXIMUM_QUADS */
+NULL for all, draws no quad): the reticle's quad (reticle: its direction,
+as above; none when it's off the view) first, then one quad per group with
+a rectangle, in the bands, then, given the HUD pass's half tangents across
+and up (the guest's halo_stereo_hud_tangents; NULL or 0: none), the
+catch-all: the HUD layer whole, head-locked at that projection; and last,
+with ui, the UI layer whole on the UI's quad, over them. Returns the count;
+quads holds HOST_STEREO_HUD_MAXIMUM_QUADS */
 int host_stereo_hud_layout(float layout_width, int ui, const float reticle[3], const float hud_tangents[2],
 	const float (*group_extent)[4], struct host_stereo_hud_quad *quads);
 

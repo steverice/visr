@@ -29,6 +29,11 @@ enum
 	/* the crosshairs (halo_stereo_reticle_overlay): the presenter's
 	head-locked reticle quad shows this layer whole */
 	HALO_STEREO_LAYER_RETICLE = 4,
+	/* render.c's UI spans (a menu, a help panel, the console, the progress
+	bar) while the HUD is split (halo_stereo_hud_split): the presenter's UI
+	quad shows this layer whole, and the HUD's own draws stay in their
+	pieces */
+	HALO_STEREO_LAYER_UI = 5,
 	/* d3d8_device.c's key for a HUD group's own target: this plus the group
 	(enum halo_hud_group). The game's layer stays HALO_STEREO_LAYER_HUD; the
 	device keys the HUD layer's color target by the current group, and the
@@ -242,6 +247,16 @@ on the UI's quad rather than splitting it into the HUD's pieces
 (d3d8_device.c notes whether anything drew under it) */
 void halo_stereo_set_ui_span(int on);
 int halo_stereo_ui_span(void);
+/* The widgets' full-screen dim (source/interface/ui_widget.c), the dark
+translucent fill behind a menu or a help panel: 1 while it goes to the
+presenter instead of being drawn (a UI span in a frame whose HUD is split,
+where the UI layer's quad would otherwise carry a dark rectangle); then
+halo_stereo_ui_dim_add takes its texture (the Xbox texture header the
+texture cache gives, or NULL) and the draw's alpha, and the presenter
+darkens the eyes by the dims' opacity, gpu_stereo_present.ui_dim
+(d3d8_device.c) */
+int halo_stereo_ui_dim_active(void);
+void halo_stereo_ui_dim_add(const void *texture, float alpha);
 /* HEAD mode: where the game's crosshair (the center of the HUD layer)
 points, as a direction in the eye cameras' frame (x right, y up, z back,
 unnormalized): straight ahead (0, 0, -1) on foot, where the game's look is

@@ -448,7 +448,10 @@ struct gpu_stereo_present
 	float hud_aspect;                  /* the HUD's width over its height as laid out */
 	float vignette;                    /* 0 to 1: how much HEAD mode darkens the eyes' edges */
 	int32_t cut_covered;               /* 1 while the script fade covers a cut (no fade through black) */
-	int32_t hud_ui;                    /* 1 while the HUD layer holds a menu, the console or a progress bar */
+	/* 1 while a menu, a help panel, the console or a progress bar drew:
+	into the UI layer (ui) in HEAD mode's full view, where the HUD is split;
+	into the HUD layer elsewhere (the film, SCREEN gameplay) */
+	int32_t hud_ui;
 	float reticle[3];                  /* where the HUD's center points in the eyes' frame (halo_stereo_reticle) */
 	float hud_tangents[2];             /* the HUD pass's half tangents across and up (halo_stereo_hud_tangents) */
 	gpu_texture inset;                 /* the zoom's inset (halo_stereo.h), laid out as the HUD; 0 if none this frame */
@@ -461,6 +464,13 @@ struct gpu_stereo_present
 	group nothing drew this frame. The catch-all is hud */
 	gpu_texture hud_group[HALO_HUD_GROUP_COUNT];
 	float hud_group_extent[HALO_HUD_GROUP_COUNT][4];
+	/* the UI layer (HALO_STEREO_LAYER_UI), laid out as the HUD; 0 if
+	nothing drew it this frame */
+	gpu_texture ui;
+	/* 0 to 1: the widgets' full-screen dim this frame, which isn't drawn in
+	the UI layer (halo_stereo_ui_dim_active): the presenter multiplies the
+	eyes' color by 1 - ui_dim */
+	float ui_dim;
 };
 
 /* presents a stereo frame as gpu_present does a mono one (and returns the

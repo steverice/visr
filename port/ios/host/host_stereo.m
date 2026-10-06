@@ -1134,9 +1134,12 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 	id<MTLTexture> left_depth, id<MTLTexture> right_depth, __unsafe_unretained id<MTLTexture> const *hud_layers,
 	const float (*hud_group_extent)[4], float hud_aspect, int hud_ui, const float reticle[3],
 	const float hud_tangents[2], id<MTLTexture> inset, float near_meters, float far_meters, float brightness,
-	float vignette)
+	float vignette, float ui_dim)
 {
 	id<MTLTexture> hud = hud_layers[HOST_STEREO_HUD_LAYER_HUD];
+	/* the HUD's pieces need its layer or the UI's (a pause can leave the
+	HUD undrawn) */
+	int hud_shown = hud || hud_layers[HOST_STEREO_HUD_LAYER_UI];
 
 #if TARGET_OS_VISION
 	if (@available(visionOS 26.0, *))
@@ -1147,8 +1150,12 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 		simd_float2 depth_range = stereo_depth_range(near_meters, far_meters, &depth_scale, &depth_floor);
 		float layout_width = (hud_aspect > 0.0f ? hud_aspect : 4.0f / 3.0f) * HOST_STEREO_HUD_LINES;
 		struct host_stereo_hud_quad quads[HOST_STEREO_HUD_MAXIMUM_QUADS];
-		int quad_count = hud ? host_stereo_hud_layout(layout_width, hud_ui, reticle, hud_tangents, hud_group_extent,
-			quads) : 0;
+		int quad_count = hud_shown ? host_stereo_hud_layout(layout_width, hud_ui, reticle, hud_tangents,
+			hud_group_extent, quads) : 0;
+		/* the widgets' dim (the guest's ui_dim) darkens the eyes as it does
+		the game's picture in mono, where it multiplies the gamma-encoded
+		color: about the 2.2 power of that in linear light */
+		float ui_keep = 1.0f - fmaxf(0.0f, fminf(1.0f, ui_dim));
 		/* the zoom's inset, under the HUD, along the reticle's direction; not
 		while a menu holds the HUD layer, whose UI quad it would cover */
 		struct host_stereo_hud_quad inset_quad;
@@ -1178,10 +1185,10 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 			inset_logged = inset_shown != 0;
 		}
 		/* each change between the HUD's pieces and the UI's quad */
-		if (hud && (hud_ui != 0) != ui_shown)
+		if (hud_shown && (hud_ui != 0) != ui_shown)
 		{
-			host_logf(HOST_LOG_INFO, "stereo: the HUD layer %s", hud_ui ? "holds a menu, the console or a progress "
-				"bar: whole, on the UI's quad" : "is the HUD: the reticle and the bands");
+			host_logf(HOST_LOG_INFO, "stereo: %s", hud_ui ? "a menu, a help panel, the console or a progress bar: "
+				"the UI layer on the UI's quad over the HUD's pieces" : "no UI: the HUD's pieces alone");
 			ui_shown = hud_ui != 0;
 		}
 
@@ -1230,7 +1237,8 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 				int eye = view_index == 0 ? 0 : 1;
 				uint32_t decode_srgb = color.pixelFormat == MTLPixelFormatBGRA8Unorm_sRGB ||
 					color.pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB;
-				struct eye_uniforms eye_uniforms = { decode_srgb, depth_scale, depth_floor, brightness,
+				struct eye_uniforms eye_uniforms = { decode_srgb, depth_scale, depth_floor,
+					brightness * (decode_srgb ? powf(ui_keep, 2.2f) : ui_keep),
 					fmaxf(0.0f, fminf(1.0f, vignette)), view_tangents(drawable, view_index),
 					HOST_STEREO_VIGNETTE_CLEAR_SHARE * vignette_outer, vignette_outer };
 
@@ -1328,6 +1336,7 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 	(void)near_meters;
 	(void)far_meters;
 	(void)brightness;
+	(void)ui_dim;
 #endif
 }
 

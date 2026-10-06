@@ -2007,6 +2007,35 @@ static uint32_t gpu_gl_present_stereo(const struct gpu_stereo_present *present)
 	glClear(GL_COLOR_BUFFER_BIT);
 	for (eye = 0; eye < 2; eye++)
 		present_half(present->eye_color[eye], eye * half_width, half_width, window_height, boxes[eye]);
+	/* the widgets' dim (halo_stereo_ui_dim_active), as HEAD mode's presenter
+	darkens the eyes by it: each eye's picture times 1 - ui_dim (the quad's
+	own color counts for nothing) */
+	if (present->ui_dim > 0.0f && overlay_prepare())
+	{
+		float keep = present->ui_dim < 1.0f ? 1.0f - present->ui_dim : 0.0f;
+
+		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, default_framebuffer());
+		glDisable(GL_DEPTH_TEST);
+		glDisable(GL_CULL_FACE);
+		glDisable(GL_STENCIL_TEST);
+		glEnable(GL_BLEND);
+		glBlendColor(keep, keep, keep, 1.0f);
+		glBlendFuncSeparate(GL_ZERO, GL_CONSTANT_COLOR, GL_ZERO, GL_ONE);
+		glUseProgram(overlay.program);
+		glUniform4f(overlay.source, 0.0f, 0.0f, 1.0f, 1.0f);
+		glBindVertexArray(overlay.vertex_array);
+		glActiveTexture(GL_TEXTURE0);
+		glBindTexture(GL_TEXTURE_2D, present->eye_color[0]);
+		glBindSampler(0, overlay.sampler);
+		for (eye = 0; eye < 2; eye++)
+		{
+			glViewport(boxes[eye][0], boxes[eye][1], boxes[eye][2], boxes[eye][3]);
+			glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+		}
+		glBindSampler(0, 0);
+		glBindVertexArray(streams.vertex_array);
+		glDisable(GL_BLEND);
+	}
 	/* the zoom's inset (halo_stereo.h): its central square, opaque, where the
 	HEAD presenter's quad would be, in each eye's fixed frustum, with the
 	parallax of its distance, under the HUD as there */
@@ -2050,7 +2079,7 @@ static uint32_t gpu_gl_present_stereo(const struct gpu_stereo_present *present)
 	whole HUD, so the debug view shows the HUD as mono lays it out; a layer
 	nothing drew this frame is 0 */
 	{
-		gpu_texture layers[HALO_HUD_GROUP_COUNT + 2];
+		gpu_texture layers[HALO_HUD_GROUP_COUNT + 3];
 		int layer_count = 0, layer;
 
 		if (present->reticle_layer)
@@ -2060,6 +2089,9 @@ static uint32_t gpu_gl_present_stereo(const struct gpu_stereo_present *present)
 				layers[layer_count++] = present->hud_group[layer];
 		if (present->hud)
 			layers[layer_count++] = present->hud;
+		/* the UI layer over everything, as the presenter's UI quad is */
+		if (present->ui)
+			layers[layer_count++] = present->ui;
 		if (layer_count > 0 && overlay_prepare())
 		{
 			glBindFramebuffer(GL_DRAW_FRAMEBUFFER, default_framebuffer());

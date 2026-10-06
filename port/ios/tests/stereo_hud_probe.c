@@ -376,17 +376,20 @@ static void ui_checks(float aspect)
 		what);
 	{
 		float extents[HALO_HUD_GROUP_COUNT][4];
-		int count, index, same = 1;
+		struct host_stereo_hud_quad pieces[HOST_STEREO_HUD_MAXIMUM_QUADS];
+		int count, piece_count;
 
 		sample_extents(aspect * 480.0f, extents);
+		piece_count = host_stereo_hud_layout(aspect * 480.0f, 0, ahead, hud_tangents, (const float (*)[4])extents,
+			pieces);
 		count = host_stereo_hud_layout(aspect * 480.0f, 1, ahead, hud_tangents, (const float (*)[4])extents, quads);
-		for (index = 0; index < count; index++)
-			same &= quads[index].frame == HOST_STEREO_HUD_LEVEL && !memcmp(quads[index].center, quad.center,
-				sizeof(quad.center)) && !memcmp(quads[index].x_axis, quad.x_axis, sizeof(quad.x_axis)) &&
-				quads[index].source[0] == 0.0f && quads[index].source[2] == 1.0f;
-		check(count == 1 + HALO_HUD_GROUP_COUNT && same && quads[0].layer == HOST_STEREO_HUD_LAYER_RETICLE &&
-			quads[count - 1].layer == HOST_STEREO_HUD_LAYER_HUD,
-			"a menu in the HUD layer puts every layer whole on the UI's quad, the HUD layer (the menu) last");
+		check(count == piece_count + 1 && count <= HOST_STEREO_HUD_MAXIMUM_QUADS &&
+			!memcmp(quads, pieces, (size_t)piece_count * sizeof(quads[0])) &&
+			quads[count - 1].layer == HOST_STEREO_HUD_LAYER_UI && quads[count - 1].frame == HOST_STEREO_HUD_LEVEL &&
+			!memcmp(quads[count - 1].center, quad.center, sizeof(quad.center)) &&
+			!memcmp(quads[count - 1].x_axis, quad.x_axis, sizeof(quad.x_axis)) &&
+			!memcmp(quads[count - 1].y_axis, quad.y_axis, sizeof(quad.y_axis)),
+			"a menu: the HUD stays in its pieces, and only the UI layer goes whole on the UI's quad, over them");
 	}
 }
 

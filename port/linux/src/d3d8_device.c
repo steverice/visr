@@ -722,7 +722,8 @@ static struct render_target_entry *render_target_get_layer(const D3DSurface *sur
 		/* the reticle's layer and the HUD groups' targets are color only:
 		their draws share the HUD layer's depth and stencil, as mono's HUD
 		shares one */
-		if (depth && (layer == HALO_STEREO_LAYER_RETICLE || layer >= HALO_STEREO_LAYER_HUD_GROUP))
+		if (depth && (layer == HALO_STEREO_LAYER_RETICLE || layer == HALO_STEREO_LAYER_UI ||
+			layer >= HALO_STEREO_LAYER_HUD_GROUP))
 			layer = HALO_STEREO_LAYER_HUD;
 		/* foveated eye passes: an eye's targets are allocated at the
 		drawable's size per view and drawn through its rate map, at the
@@ -741,7 +742,7 @@ static struct render_target_entry *render_target_get_layer(const D3DSurface *sur
 			allocated_height = (unsigned long)(height * scale[1] + 0.5f);
 		}
 		else if (layer == HALO_STEREO_LAYER_HUD || layer == HALO_STEREO_LAYER_RETICLE ||
-			layer >= HALO_STEREO_LAYER_HUD_GROUP)
+			layer == HALO_STEREO_LAYER_UI || layer >= HALO_STEREO_LAYER_HUD_GROUP)
 			screen_scale_dense(scale);
 	}
 	else
@@ -821,20 +822,24 @@ static struct render_target_entry *render_target_get(const D3DSurface *surface)
 	/* stereo's HUD layer, keyed by the current HUD group (halo_stereo.h):
 	each group draws into a target of its own, so groups that overlap on
 	the screen never share pixels; the catch-all's is the layer's own */
-	if (layer == HALO_STEREO_LAYER_HUD && halo_hud_group_current() != HALO_HUD_GROUP_NONE && halo_stereo_hud_split())
+	if (layer == HALO_STEREO_LAYER_HUD && halo_stereo_ui_span() && halo_stereo_hud_split())
+		layer = HALO_STEREO_LAYER_UI;
+	else if (layer == HALO_STEREO_LAYER_HUD && halo_hud_group_current() != HALO_HUD_GROUP_NONE &&
+		halo_stereo_hud_split())
 		layer = HALO_STEREO_LAYER_HUD_GROUP + halo_hud_group_current();
 	return render_target_get_layer(surface, layer);
 }
 
 /* a layer whose target the game never clears, so the device clears it to
-empty before its first draw each frame: the reticle's and the HUD groups' */
+empty before its first draw each frame: the reticle's, the UI's and the HUD
+groups' */
 static int layer_cleared_on_first_draw(int layer)
 {
-	return layer == HALO_STEREO_LAYER_RETICLE || layer >= HALO_STEREO_LAYER_HUD_GROUP;
+	return layer == HALO_STEREO_LAYER_RETICLE || layer == HALO_STEREO_LAYER_UI || layer >= HALO_STEREO_LAYER_HUD_GROUP;
 }
 
 /* a layer the presenter puts over the eyes as rgb + eye * alpha
-(hud_layer_blend): the HUD's, the reticle's and the HUD groups' */
+(hud_layer_blend): the HUD's, the reticle's, the UI's and the HUD groups' */
 static int layer_is_hud(int layer)
 {
 	return layer == HALO_STEREO_LAYER_HUD || layer_cleared_on_first_draw(layer);
@@ -883,6 +888,27 @@ static int32_t target_inset_columns[2];
 /* something drew into the HUD layer this frame under render.c's UI span
 (halo_stereo_set_ui_span) */
 static BOOL hud_layer_ui;
+/* the widgets' full-screen dims this frame, combined (halo_stereo_ui_dim_add):
+0 to 1, the share of the eyes' light they take */
+static float ui_dim;
+
+void halo_stereo_ui_dim_add(const void *texture, float alpha)
+{
+	float texels;
+
+	/* the fill's own alpha. A texture not loaded yet (the panel's first
+	frame) or one that can't be read darkens nothing: guessing opaque
+	blinked the eyes black for a frame */
+	if (!texture || !xgpu_texture_mean_alpha((const DWORD *)texture, &texels))
+		return;
+	alpha *= texels;
+	if (!(alpha > 0.0f))
+		return;
+	if (alpha > 1.0f)
+		alpha = 1.0f;
+	/* one dim over another lets through what each lets through */
+	ui_dim = 1.0f - (1.0f - ui_dim) * (1.0f - alpha);
+}
 
 /* the pixel edge of a coordinate in the bound targets' units */
 static int32_t target_pixel(float coordinate, int axis)
@@ -913,6 +939,7 @@ static const char *foveation_audit_layer(int layer)
 	case HALO_STEREO_LAYER_HUD: return "HUD";
 	case HALO_STEREO_LAYER_INSET: return "inset";
 	case HALO_STEREO_LAYER_RETICLE: return "reticle";
+	case HALO_STEREO_LAYER_UI: return "UI";
 	}
 	snprintf(other, sizeof(other), "HUD group %d", layer - HALO_STEREO_LAYER_HUD_GROUP);
 	return other;
@@ -4528,6 +4555,9 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 		/* the reticle's layer and each HUD group's target, if drawn this
 		frame (halo_stereo.h) */
 		struct render_target_entry *reticle = stereo_frame ? back_buffer_drawn_this_frame(HALO_STEREO_LAYER_RETICLE) : NULL;
+		/* the UI layer (a menu, a help panel, the console, a progress bar in
+		HEAD mode's full view), if drawn this frame */
+		struct render_target_entry *ui = stereo_frame ? back_buffer_drawn_this_frame(HALO_STEREO_LAYER_UI) : NULL;
 		struct render_target_entry *hud_groups[HALO_HUD_GROUP_COUNT];
 		float hud_group_rectangles[HALO_HUD_GROUP_COUNT][4];
 		int group;
@@ -4561,6 +4591,11 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 				}
 				if (inset)
 					write_screenshot(inset, "-inset");
+				if (ui)
+				{
+					write_screenshot(ui, "-ui");
+					write_screenshot_channel(ui, "-ui-alpha", 1);
+				}
 				/* the reticle's layer and each HUD group's target, cropped,
 				with their pixels checked against their rectangles */
 				if (reticle)
@@ -4672,12 +4707,29 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 			present.cut_covered = halo_stereo_cut_covered();
 			/* input.comfort_vignette, while the stick turns the look */
 			present.vignette = halo_stereo_vignette();
-			/* HEAD mode's HUD: the whole layer on the UI's quad while a menu,
-			the console or a progress bar drew into it, except over a
-			cutscene's film, where the menu stays on the screen with the
-			frozen film; where the crosshair points; and the HUD pass's
-			projection, for the catch-all quad */
-			present.hud_ui = hud && hud_layer_ui && !halo_stereo_film_letterbox();
+			/* HEAD mode's UI: in the full view, the UI layer on the UI's
+			quad, the HUD staying in its pieces, and the eyes darkened by the
+			widgets' dim, which isn't drawn there; elsewhere the whole HUD
+			layer on the UI's quad while a menu, the console or a progress
+			bar drew into it, except over a cutscene's film, where the menu
+			stays on the screen with the frozen film. Where the crosshair
+			points; and the HUD pass's projection, for the catch-all quad */
+			if (ui)
+				present.ui = ui->target.texture;
+			present.ui_dim = ui_dim;
+			/* each change of the dim, to the hundredth */
+			{
+				static int ui_dim_logged = 0;
+				int hundredths = (int)lroundf(ui_dim * 100.0f);
+
+				if (hundredths != ui_dim_logged)
+				{
+					platform_log("stereo: frame %lu: the widgets' dim darkens the eyes by %.2f%s", device.frame,
+						ui_dim, ui ? "; the UI layer on the UI's quad" : "");
+					ui_dim_logged = hundredths;
+				}
+			}
+			present.hud_ui = ui ? 1 : hud && hud_layer_ui && !halo_stereo_film_letterbox();
 			/* the next frame's inset waits while a menu holds the layer */
 			halo_stereo_set_ui_shown(present.hud_ui);
 			halo_stereo_reticle(present.reticle);
@@ -4687,6 +4739,7 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 		else
 			render_interpolation_next_frame_due(gpu_present(back_buffer->target.texture));
 		hud_layer_ui = FALSE;
+		ui_dim = 0.0f;
 		xgpu_texture_cache_begin_frame();
 		shader_list_take_pipelines();
 	}
