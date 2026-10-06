@@ -86,6 +86,10 @@ Handles index tables of these; 0 is none. */
 	NSString *source;
 	id<MTLFunction> exact[16];
 	uint16_t exact_tried;
+	/* a vertex shader's library, and its function specialized for each set
+	of attribute kinds it is drawn with (vertex_function) */
+	id<MTLLibrary> library;
+	NSMutableDictionary<NSData *, id<MTLFunction>> *specialized;
 }
 @end
 @implementation MetalShader
@@ -911,7 +915,12 @@ static gpu_shader gpu_metal_shader_create(uint32_t stage, const char *source)
 			return 0;
 		}
 		record = [MetalShader new];
-		record->function = [library newFunctionWithName:stage == GPU_SHADER_VERTEX ? @"vertex_main" : @"fragment_main"];
+		/* a vertex shader's attribute kinds are function constants, which the
+		unspecialized function leaves undefined: its fetches read the kinds
+		from the attribute table (nv2a_msl.c) */
+		record->function = stage == GPU_SHADER_VERTEX ?
+			[library newFunctionWithName:@"vertex_main" constantValues:[MTLFunctionConstantValues new] error:nil] :
+			[library newFunctionWithName:@"fragment_main"];
 		if (!record->function)
 		{
 			platform_log("the %s shader has no entry point", stage == GPU_SHADER_VERTEX ? "vertex" : "pixel");
@@ -919,6 +928,8 @@ static gpu_shader gpu_metal_shader_create(uint32_t stage, const char *source)
 		}
 		if (stage != GPU_SHADER_VERTEX)
 			record->source = text;
+		else
+			record->library = library;
 		return [shaders add:record];
 	}
 }
@@ -1303,6 +1314,8 @@ struct pipeline_key
 	uint8_t exact_borders;
 	uint8_t pad[2];
 	uint32_t color_format, depth_format;
+	/* the vertex function's specialization (attribute_kinds) */
+	uint8_t attribute_kinds[GPU_ATTRIBUTE_COUNT];
 };
 
 /* a direct-mapped cache in front of pipelines, depth_states and samplers:
@@ -1310,7 +1323,7 @@ nearly every draw repeats a recent key, which then costs a hash and a
 compare of its bytes rather than an NSData and a dictionary lookup. The
 dictionaries keep every object for good, so the cache needn't retain them. */
 #define FRONT_CACHE_ENTRIES 256
-#define FRONT_CACHE_KEY 32
+#define FRONT_CACHE_KEY 48
 struct front_cache
 {
 	struct
@@ -1485,6 +1498,64 @@ static void check_uniform_layout(MTLRenderPipelineReflection *reflection)
 }
 
 /* the pipeline for a draw, or nil if it can't be made (cached either way) */
+/* each attribute's kind, as the vertex shaders' function constants take it
+(nv2a_msl.c): 0 for a constant (or a stream with no buffer, which
+bind_attributes binds as one), else its GPU_ATTRIBUTE_* format */
+static void attribute_kinds(const struct gpu_draw *draw, uint8_t kinds[GPU_ATTRIBUTE_COUNT])
+{
+	int index;
+
+	for (index = 0; index < GPU_ATTRIBUTE_COUNT; index++)
+	{
+		const struct gpu_vertex_attribute *attribute = &draw->attributes[index];
+
+		kinds[index] = attribute->stream < GPU_STREAM_CONSTANT && buffer_record(draw->streams[attribute->stream].buffer) ?
+			attribute->format : 0;
+	}
+}
+
+/* a vertex shader's function specialized for these attribute kinds, which
+folds its fetches' format switches away; made with the pipeline, so once
+for each pair. The unspecialized function if it can't be made (logged
+once): it reads the same kinds from the attribute table. */
+static id<MTLFunction> vertex_function(MetalShader *vertex, const uint8_t kinds[GPU_ATTRIBUTE_COUNT])
+{
+	NSData *name = [NSData dataWithBytes:kinds length:GPU_ATTRIBUTE_COUNT];
+	id<MTLFunction> function;
+
+	if (!vertex->library)
+		return vertex->function;
+	if (!vertex->specialized)
+		vertex->specialized = [NSMutableDictionary dictionary];
+	function = vertex->specialized[name];
+	if (!function)
+	{
+		MTLFunctionConstantValues *values = [MTLFunctionConstantValues new];
+		NSError *error = nil;
+		NSUInteger index;
+
+		for (index = 0; index < GPU_ATTRIBUTE_COUNT; index++)
+		{
+			uint32_t kind = kinds[index];
+
+			[values setConstantValue:&kind type:MTLDataTypeUInt atIndex:index];
+		}
+		function = [vertex->library newFunctionWithName:@"vertex_main" constantValues:values error:&error];
+		if (!function)
+		{
+			static int logged;
+
+			if (!logged)
+				platform_log("Metal: cannot specialize a vertex shader for its attributes: %s",
+					error.localizedDescription.UTF8String);
+			logged = 1;
+			function = vertex->function;
+		}
+		vertex->specialized[name] = function;
+	}
+	return function;
+}
+
 static id<MTLRenderPipelineState> draw_pipeline(const struct gpu_draw *draw, MetalShader *vertex, MetalShader *pixel,
 	unsigned exact, MTLPixelFormat color, MTLPixelFormat depth)
 {
@@ -1507,6 +1578,7 @@ static id<MTLRenderPipelineState> draw_pipeline(const struct gpu_draw *draw, Met
 	key.exact_borders = (uint8_t)exact;
 	key.color_format = (uint32_t)color;
 	key.depth_format = (uint32_t)depth;
+	attribute_kinds(draw, key.attribute_kinds);
 	_Static_assert(sizeof(key) <= FRONT_CACHE_KEY, "pipeline_key fits the front cache");
 	if ((pipeline = front_cache_get(&pipeline_cache, &key, sizeof(key))))
 		return pipeline == [NSNull null] ? nil : pipeline;
@@ -1519,7 +1591,7 @@ static id<MTLRenderPipelineState> draw_pipeline(const struct gpu_draw *draw, Met
 		MTLRenderPipelineReflection *reflection = nil;
 		NSError *error = nil;
 
-		descriptor.vertexFunction = vertex->function;
+		descriptor.vertexFunction = vertex_function(vertex, key.attribute_kinds);
 		descriptor.fragmentFunction = pixel_function(pixel, exact) ?: pixel->function;
 		attachment.pixelFormat = color;
 		attachment.writeMask = write_mask(key.write_mask);
