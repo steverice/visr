@@ -137,7 +137,7 @@ DEFAULTS = {
     "display.hud_messages_up": "12.0",
     "display.hud_scale": "1.0",
     "display.hud_resolution": "1.0",
-    "display.foveation": "false",
+    "display.foveation": "true",
     "display.render_quality": "0.6",
     "display.first_person_body": "true",
     "display.first_person_body_offset": "0.08",

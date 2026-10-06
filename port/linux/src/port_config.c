@@ -154,11 +154,11 @@ static const struct config_setting config_settings[] =
 		"display refreshes each frame stays up, 0 to 3: 0 draws a frame every\n"
 		"refresh (90 a second), 1 every other (45 a second) for when 90 costs too\n"
 		"much. Set when the immersive space opens." },
-	{ "display.foveation", _config_boolean, "false", "HALO_FOVEATION", _environment_value, _platform_ios,
+	{ "display.foveation", _config_boolean, "true", "HALO_FOVEATION", _environment_value, _platform_ios,
 		"Apple Vision Pro, display.stereo = \"head\": render through the\n"
 		"Compositor's foveation, sharper at the middle of each view than at its\n"
-		"edges, at display.render_quality. Off, for now: the picture isn't right\n"
-		"with it yet. Set when the immersive space opens." },
+		"edges, at display.render_quality. False renders each view evenly, for\n"
+		"comparisons. Set when the immersive space opens." },
 	{ "display.render_quality", _config_real, "0.6", "HALO_RENDER_QUALITY", _environment_value, _platform_ios,
 		"With display.foveation: the Compositor's render quality, 0 to 1 (the\n"
 		"headset's lowest to its highest): how many pixels the middle of each view\n"

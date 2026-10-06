@@ -237,6 +237,14 @@ run('xcrun', '--sdk', 'xros', 'metal', '-c', BUILD / 'host_stereo.metal', '-o', 
 # HEAD mode turns in snaps unless the player asks otherwise
 if '{ "input.turn", _config_string, "\\"snap\\""' not in (ROOT / 'port/linux/src/port_config.c').read_text():
     raise SystemExit('port_config.c: input.turn must default to "snap"')
+# HEAD mode renders through foveation unless the player turns it off: the host's fallback
+# (host_theater.m, before the game has written config.toml) and mac_run.py's defaults agree
+if '{ "display.foveation", _config_boolean, "true"' not in (ROOT / 'port/linux/src/port_config.c').read_text() or \
+        'host_config_string("display.foveation", "true"' not in (ROOT / 'port/ios/host/host_theater.m').read_text():
+    raise SystemExit('port_config.c and host_theater.m: display.foveation must default to true')
+mac_run_text = (ROOT / 'tools/mac_run.py').read_text()
+if '"display.foveation": "true",' not in mac_run_text or '"debug.foveation_eye_passes": "true",' not in mac_run_text:
+    raise SystemExit("mac_run.py: DEFAULTS must follow port_config.c's foveation defaults")
 
 # Parse untrusted XISO metadata and exercise extraction/cancellation under sanitizers.
 run('python3', 'tools/ios_xiso_test.py')

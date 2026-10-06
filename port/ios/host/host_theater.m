@@ -105,7 +105,7 @@ int host_theater_foveation(void)
 {
 	char value[16];
 
-	host_config_string("display.foveation", "false", value, sizeof(value));
+	host_config_string("display.foveation", "true", value, sizeof(value));
 	if (strcmp(value, "true"))
 		return 0;
 	host_config_string("display.stereo", "off", value, sizeof(value));

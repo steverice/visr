@@ -273,6 +273,10 @@ static void check_reading(void)
 	unlink(path);
 	reload();
 	assert(config_real("display.render_quality") == 0.6);
+	/* foveation is on by default in HEAD mode, with the eye passes through the
+	rate maps: the configuration accepted on the headset (Task 10) */
+	assert(config_boolean("display.foveation"));
+	assert(config_boolean("debug.foveation_eye_passes"));
 	assert(strstr(logged, "wrote the defaults"));
 	reload();
 	assert(config_real("display.render_quality") == 0.6);
