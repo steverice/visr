@@ -67,10 +67,17 @@ static unsigned long foveated_eyes_key;
 first foveated frame since the space opened, and at the first stereo frame
 after a level loads: a load stalls the game's loop, so that is the first
 frame after MEMORY_LOAD_GAP_SECONDS without one (and the first since the
-space opened). The render quality is chosen against it (the stereo spec's
-"Foveation and render quality": under 500 MB, the next lower quality) */
+space opened). Both come before the game has allocated its eyes' color and
+depth targets at the quality (it does that on the first foveated frame, after
+this returns to it) and before the level's textures have streamed in, so a
+settled reading follows at the MEMORY_SETTLED_FOVEATED_FRAMES'th foveated
+frame since the space opened. The render quality is chosen against the least
+of them (the stereo spec's "Foveation and render quality": under 500 MB, the
+next lower quality) */
 #define MEMORY_LOAD_GAP_SECONDS 1.0
+#define MEMORY_SETTLED_FOVEATED_FRAMES 900
 static int memory_foveated_logged;
+static unsigned long memory_foveated_frames;
 static NSTimeInterval memory_last_frame_at;
 /* the head's last pose, while ARKit places it */
 static struct host_stereo_head head;
@@ -996,6 +1003,14 @@ static void stereo_frame(struct halo_stereo_frame *frame) API_AVAILABLE(visionos
 				memory_foveated_logged = 1;
 				log_available_memory("at the first foveated frame");
 			}
+			if (++memory_foveated_frames == MEMORY_SETTLED_FOVEATED_FRAMES)
+			{
+				char when[96];
+
+				snprintf(when, sizeof(when), "at the settled reading, foveated frame %d",
+					MEMORY_SETTLED_FOVEATED_FRAMES);
+				log_available_memory(when);
+			}
 		}
 		else
 		{
@@ -1070,6 +1085,7 @@ void host_stereo_space_opened(void *layer_renderer)
 	foveation_easing_logged = 0;
 	foveated_eyes_logged = -1;
 	memory_foveated_logged = 0;
+	memory_foveated_frames = 0;
 	memory_last_frame_at = 0.0;
 #else
 	(void)layer_renderer;
