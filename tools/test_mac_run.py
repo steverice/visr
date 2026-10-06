@@ -890,9 +890,67 @@ def test_close_runner_projects_gives_up_on_an_xcode_held_by_a_dialog():
     assert close.index("with timeout of") < close.index("close")
 
 
-def test_launch_script_does_not_count_a_run_that_never_started():
-    """a run left at "not yet started" (Xcode held by a dialog) counted as started, so the runner
-    waited 300 s for a game Xcode never launched"""
+# trimmed from `sample` of an M4 build host's Xcode, 2026-10-06, held by the alert
+HELD_SAMPLE = """Call graph:
+    996 Thread_35892   DispatchQueue_1: com.apple.main-thread  (serial)
+    + 996 start  (in dyld) + 6688  [0x19c4e7e80]
+    +   996 NSApplicationMain  (in AppKit) + 880  [0x1a0effc4c]
+    +     996 -[IDEContainer _respondToFileChangeOnDiskWithFilePath:force:]  (in IDEFoundation) + 888  [0x10f988c58]
+    +       996 -[IDEDocumentController responseToExternalChangesToBackingFileForContainer:fileWasRemoved:]  (in IDEKit) + 976  [0x10b682268]
+    +         996 -[NSAlert runModal]  (in AppKit) + 196  [0x1a11cb2d4]
+    996 Thread_35910
+    + 996 thread_start  (in libsystem_pthread.dylib) + 8  [0x19c8a6b80]
+"""
+
+IDLE_SAMPLE = """Call graph:
+    778 Thread_9579811   DispatchQueue_1: com.apple.main-thread  (serial)
+    + 778 start  (in dyld) + 6688  [0x196ba1158]
+    +   778 -[NSApplication run]  (in AppKit) + 396  [0x1a0f2790c]
+    +     778 _DPSNextEvent  (in AppKit) + 580  [0x1a0f344fc]
+    778 Thread_9579830
+    + 778 -[NSAlert runModal]  (in AppKit) + 196  [0x1a11cb2d4]
+"""
+
+
+def test_modal_alert_reads_the_main_thread_of_a_held_xcode():
+    assert mac_run.modal_alert(HELD_SAMPLE) == "a project file that changed on disk"
+
+
+def test_modal_alert_ignores_an_idle_main_thread_and_other_threads():
+    assert mac_run.modal_alert(IDLE_SAMPLE) is None
+    assert mac_run.modal_alert("") is None
+
+
+def test_launch_stops_before_running_when_xcode_is_held(monkeypatch):
+    """an M4 build host's Xcode, held by an alert, never loaded the project: LAUNCH spent minutes failing"""
+    scripts = []
+    monkeypatch.setattr(mac_run, "xcode_app", lambda: "/Applications/Xcode.app")
+    monkeypatch.setattr(mac_run, "run_command", lambda *args, **options: scripts.append(options.get("input") or args[0]))
+    monkeypatch.setattr(mac_run, "xcode_alert", lambda xcode: "a project file that changed on disk")
+    with pytest.raises(SystemExit, match="held by a modal alert"):
+        mac_run.launch()
+    assert not any("run doc" in script for script in scripts)
+
+
+def test_wait_for_start_fails_early_when_xcode_is_held(monkeypatch):
+    monkeypatch.setattr(mac_run.time, "sleep", lambda seconds: None)
+    checks = []
+
+    def held():
+        checks.append(1)
+        raise SystemExit("held")
+    with pytest.raises(SystemExit):
+        mac_run.wait_for_start(lambda: False, held, 300, every=0)
+    assert checks == [1]
+
+
+def test_wait_for_start_does_not_check_xcode_once_the_game_runs():
+    assert mac_run.wait_for_start(lambda: True, lambda: pytest.fail("checked Xcode"), 300, every=0)
+
+
+def test_launch_script_does_not_ask_again_over_a_pending_run():
+    """a cold Xcode can leave a run "not yet started" for minutes while it builds: failing it, or
+    asking again over it, would break a run that was about to start"""
     script = mac_run.LAUNCH.format(xcode="/Applications/Xcode.app", target="HaloRunner", project="/p/HaloRunner.xcodeproj")
-    never = script.index('else if run_status is "not yet started" then')
-    assert never < script.index("set started_run to true")
+    assert 'if run_status is "not yet started"' not in script
+    assert 'else if run_status is not "error occurred" then' in script

@@ -31,6 +31,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -499,9 +500,9 @@ LAUNCH = """tell application "{xcode}"
 			-- launches anything (seen on an M4 Mac mini): ask again
 			if run_status is "cancelled" then
 				set last_error to "Xcode cancelled the run"
-			-- still not started after two minutes: Xcode is held (a dialog, a reload)
-			else if run_status is "not yet started" then
-				set last_error to "Xcode never started the run (is a dialog open in Xcode?)"
+			-- still pending after two minutes (a cold Xcode can still be building or
+			-- indexing): don't ask again over a pending run; mac_run.py keeps waiting for the
+			-- game and checks Xcode for a modal alert meanwhile
 			else if run_status is not "error occurred" then
 				set started_run to true
 				exit repeat
@@ -528,8 +529,54 @@ def xcode_app():
     return str(Path(developer).parents[1])
 
 
+def xcode_pid(xcode):
+    pids = subprocess.run(["pgrep", "-f", f"{xcode}/Contents/MacOS/Xcode"], capture_output=True, text=True).stdout.split()
+    return int(pids[0]) if pids else None
+
+
 def xcode_running(xcode):
-    return subprocess.run(["pgrep", "-f", f"{xcode}/Contents/MacOS/Xcode"], capture_output=True).returncode == 0
+    return xcode_pid(xcode) is not None
+
+
+def modal_alert(sample_text):
+    """what holds Xcode's main thread in a modal alert, from `sample`'s output; None when nothing does.
+    Neither AppleScript nor the window list (no titles without Screen Recording) tells an alert apart,
+    but the main thread's stack does"""
+    lines = sample_text.splitlines()
+    start = next((i for i, line in enumerate(lines) if "com.apple.main-thread" in line), None)
+    if start is None:
+        return None
+    main = []
+    for line in lines[start + 1:]:
+        if re.match(r"^\s*\d+ Thread_", line) or not line.strip():
+            break
+        main.append(line)
+    main = "\n".join(main)
+    if "runModal" not in main and "_doModalLoop" not in main:
+        return None
+    if "responseToExternalChangesToBackingFileForContainer" in main:
+        return "a project file that changed on disk"
+    if "presentError" in main:
+        return "an error"
+    return "something unknown"
+
+
+def xcode_alert(xcode):
+    """the modal alert holding Xcode, if any: a 1-second `sample` of its main thread (about 2 s)"""
+    pid = xcode_pid(xcode)
+    if pid is None:
+        return None
+    with tempfile.TemporaryDirectory() as folder:
+        report = Path(folder) / "sample.txt"
+        subprocess.run(["sample", str(pid), "1", "-file", report], capture_output=True)
+        return modal_alert(report.read_text(errors="replace")) if report.exists() else None
+
+
+def exit_if_xcode_alert(xcode):
+    alert = xcode_alert(xcode)
+    if alert:
+        sys.exit(f"Xcode ({xcode}) is held by a modal alert about {alert} on this Mac's screen, so it can't "
+                 f"load or run {TARGET}: answer the alert (or quit Xcode), then run again")
 
 
 def close_runner_projects():
@@ -584,9 +631,25 @@ def launch(documents=None):
     project = RUNNER / f"{TARGET}.xcodeproj"
     run_command("osascript", input=CLOSE_OTHERS.format(xcode=xcode, target=TARGET, project=project), text=True)
     run_command("open", "-a", xcode, project)
+    exit_if_xcode_alert(xcode)
     run_command("osascript", input=LAUNCH.format(xcode=xcode, target=TARGET, project=project), text=True)
-    if not wait_for(lambda: started(documents, running), 300):
+    if not wait_for_start(lambda: started(documents, running), lambda: exit_if_xcode_alert(xcode), 300):
         sys.exit(f"{TARGET} did not start within 300 seconds; see Xcode's report navigator")
+
+
+def wait_for_start(has_started, check_xcode, seconds, every=30):
+    """wait_for, checking Xcode for a modal alert every so often, so a held Xcode fails the run in
+    seconds rather than at the deadline"""
+    deadline = time.monotonic() + seconds
+    next_check = time.monotonic() + every
+    while time.monotonic() < deadline:
+        if has_started():
+            return True
+        if time.monotonic() >= next_check:
+            check_xcode()
+            next_check = time.monotonic() + every
+        time.sleep(2)
+    return False
 
 
 def container_documents(args):
