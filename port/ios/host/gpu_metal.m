@@ -3833,7 +3833,7 @@ static uint32_t gpu_metal_present_stereo(const struct gpu_stereo_present *presen
 		MetalTexture *color[2] = { texture_record(present->eye_color[0]), texture_record(present->eye_color[1]) };
 		MetalTexture *depth[2] = { texture_record(present->eye_depth[0]), texture_record(present->eye_depth[1]) };
 		MetalTexture *hud = present->hud ? texture_record(present->hud) : nil;
-		MetalTexture *inset = present->inset ? texture_record(present->inset) : nil;
+		MetalTexture *zoom = present->zoom ? texture_record(present->zoom) : nil;
 		BOOL on_screen = present->mode == HALO_STEREO_SCREEN || present->cinematic;
 
 		if (theater_wanted && !on_screen && present->mode == HALO_STEREO_HEAD && color[0] && color[0]->texture && color[1] &&
@@ -3867,14 +3867,15 @@ static uint32_t gpu_metal_present_stereo(const struct gpu_stereo_present *presen
 					use_texture(hud_records[layer]);
 					hud_layers[layer] = hud_records[layer]->texture;
 				}
-			if (inset && inset->texture)
-				use_texture(inset);
+			if (zoom && zoom->texture)
+				use_texture(zoom);
 			commit(YES);
 			stereo_pacing_count();
 			host_stereo_present(queue, color[0]->texture, color[1]->texture, depth[0]->texture, depth[1]->texture,
 				hud_layers, present->hud_group_extent, present->hud_aspect, present->hud_ui, present->reticle,
-				present->hud_tangents, inset ? inset->texture : nil, present->near_meters, present->far_meters,
-				stereo_cut_brightness(HOST_STEREO_VIEW_FULL, present->cut_covered || present->expanding),
+				present->hud_tangents, zoom ? zoom->texture : nil, present->zoom_tangents, present->near_meters,
+				present->far_meters, stereo_cut_brightness(HOST_STEREO_VIEW_FULL, present->cut_covered ||
+				present->expanding),
 				present->vignette, present->ui_dim, present->expanding, present->expansion, present->expansion_bars,
 				present->fade);
 			frames++;
@@ -3927,7 +3928,8 @@ static uint32_t gpu_metal_present_stereo(const struct gpu_stereo_present *presen
 		stereo_cut_brightness(HOST_STEREO_VIEW_NONE, 0);
 	}
 #endif
-	return gpu_metal_present(present->eye_color[0]);
+	/* (the window: eye 0, or a zoomed frame's picture in its place) */
+	return gpu_metal_present(present->zoom ? present->zoom : present->eye_color[0]);
 }
 
 static uint32_t gpu_metal_call_count_take(void)

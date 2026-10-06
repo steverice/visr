@@ -1723,10 +1723,10 @@ static void render_weapon_hud(
 			if (zoomed_layout)
 			{
 				hud_zoomed_layout_begin(&window_bounds);
-				/* port: in stereo, while zoomed, into the zoom's inset; and
+				/* port: in stereo, while zoomed, into the zoomed picture; and
 				never part of the weapon group's rectangle, since unzoomed it
 				draws nothing (halo_stereo.h) */
-				halo_stereo_inset_overlay(TRUE);
+				halo_stereo_zoom_overlay(TRUE);
 				halo_hud_group_measure(FALSE);
 			}
 			state_index = element->header.state_type;
@@ -1739,7 +1739,7 @@ static void render_weapon_hud(
 			if (zoomed_layout)
 			{
 				halo_hud_group_measure(TRUE); /* port */
-				halo_stereo_inset_overlay(FALSE);
+				halo_stereo_zoom_overlay(FALSE);
 				hud_zoomed_layout_end(&window_bounds);
 			}
 		}
@@ -1765,9 +1765,9 @@ static void render_weapon_hud(
 			if (zoomed_layout)
 			{
 				hud_zoomed_layout_begin(&window_bounds);
-				/* port: in stereo, while zoomed, into the zoom's inset, and not
+				/* port: in stereo, while zoomed, into the zoomed picture, and not
 				measured for the weapon group (as above) */
-				halo_stereo_inset_overlay(TRUE);
+				halo_stereo_zoom_overlay(TRUE);
 				halo_hud_group_measure(FALSE);
 			}
 
@@ -1785,7 +1785,7 @@ static void render_weapon_hud(
 			if (zoomed_layout)
 			{
 				halo_hud_group_measure(TRUE); /* port */
-				halo_stereo_inset_overlay(FALSE);
+				halo_stereo_zoom_overlay(FALSE);
 				hud_zoomed_layout_end(&window_bounds);
 			}
 		}
@@ -1856,9 +1856,9 @@ static void render_weapon_hud(
 			if (zoomed_layout)
 			{
 				hud_zoomed_layout_begin(&window_bounds);
-				/* port: in stereo, while zoomed, into the zoom's inset, and not
+				/* port: in stereo, while zoomed, into the zoomed picture, and not
 				measured for the weapon group (as above) */
-				halo_stereo_inset_overlay(TRUE);
+				halo_stereo_zoom_overlay(TRUE);
 				halo_hud_group_measure(FALSE);
 			}
 			hud_draw_numbers(
@@ -1873,7 +1873,7 @@ static void render_weapon_hud(
 			if (zoomed_layout)
 			{
 				halo_hud_group_measure(TRUE); /* port */
-				halo_stereo_inset_overlay(FALSE);
+				halo_stereo_zoom_overlay(FALSE);
 				hud_zoomed_layout_end(&window_bounds);
 			}
 		}
@@ -2078,8 +2078,8 @@ void hud_render_weapon_interface(
 		hud_index = definition->weapon.interface_definition.hud_interface.index;
 		if (hud_index != NONE)
 		{
-			/* port: in stereo, into the reticle's layer, or while zoomed the
-			zoom's inset (halo_stereo.h) */
+			/* port: in stereo, into the reticle's layer, zoomed or not
+			(halo_stereo.h) */
 			halo_stereo_reticle_overlay(TRUE);
 			crosshairs_draw(
 				player,

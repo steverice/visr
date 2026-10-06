@@ -24,8 +24,8 @@ enum
 {
 	HALO_STEREO_LAYER_MONO = -1,
 	HALO_STEREO_LAYER_HUD = 2,
-	/* the zoom's inset (halo_stereo_inset_begin) */
-	HALO_STEREO_LAYER_INSET = 3,
+	/* the zoomed picture (halo_stereo_zoom_begin) */
+	HALO_STEREO_LAYER_ZOOM = 3,
 	/* the crosshairs (halo_stereo_reticle_overlay): the presenter's
 	head-locked reticle quad shows this layer whole */
 	HALO_STEREO_LAYER_RETICLE = 4,
@@ -137,7 +137,7 @@ struct halo_stereo_frame
 
 void halo_stereo_frame_begin(void);                    /* latches this frame's state */
 const struct halo_stereo_frame *halo_stereo_frame(void);
-/* -1 mono, 0/1 an eye, 2 the HUD, 3 the zoom's inset, 4 the reticle. The
+/* -1 mono, 0/1 an eye, 2 the HUD, 3 the zoomed picture, 4 the reticle. The
 HUD layer (and the reticle's and each HUD group's target) holds
 premultiplied color and, in alpha, how much of the picture still shows
 under it (d3d8_device.c, hud_layer_blend): the presenters put it over each
@@ -145,79 +145,75 @@ eye as rgb + eye * alpha */
 void halo_stereo_layer(int layer);
 int halo_stereo_current_layer(void);
 /* 1 in a stereo pass that draws the frame's moment again after eye 0 (eye
-1, the zoom's inset): what advances by the frame's time while it renders
-(glow, fog's wind) advances in eye 0 only */
+1): what advances by the frame's time while it renders (glow, fog's wind)
+advances in eye 0 only, or in the zoomed pass, a zoomed frame's only one */
 int halo_stereo_repeat_pass(void);
 
-/* Zoom in head-tracked stereo (the stereo spec's D5: a mono inset, as
-HaloCEVR does). While the local player is zoomed in HEAD mode's full view
-(or the side-by-side view, which stands for it on the Mac), the eyes keep
-the headset's field of view, at normal scale, without the zoom's screen
-effects (the scope mask, the zoom's blur), and the zoomed camera renders
-once more, mono, into the inset layer: the game's screen as mono draws it
-zoomed, at square pixels, HALO_STEREO_INSET_HEIGHT_SHARE of the eyes'
-height, with the zoom's screen effects, its crosshairs and the zoomed
-view's HUD elements (halo_stereo_inset_overlay) and the frame's flash. The
-presenter shows the inset's central square, HALO_STEREO_INSET_LINES layout
-lines on a side, on a quad HALO_STEREO_INSET_WIDTH_METERS wide and
-HALO_STEREO_INSET_DISTANCE_METERS ahead along the reticle's direction
-(halo_stereo_reticle): head-locked on foot, on the HUD's plane and under the
-HUD's pieces, which stay readable over it. The zoomed camera's vertical
-field of view is the quad's angle over the zoom's magnification
-(halo_stereo_inset_field_of_view), so the picture is that many times the
-world around it. Not on the screen (SCREEN mode, the film): there the
-game's own zoom shows on the screen, as in mono. */
+/* Zoom in head-tracked stereo (the stereo spec's D5 as amended, "Zoom fills
+the view"). While the local player is zoomed in HEAD mode's full view (or
+the side-by-side view, which stands for it on the Mac), the eye passes are
+skipped and the zoomed camera renders once, mono, into the zoom layer: one
+pass with a symmetric frustum spanning the view (halo_stereo_zoom_view),
+each tangent divided by the zoom's magnification, so the picture is that
+many times the world's angular scale, with the zoom's screen effects (the
+scope mask, the zoom's blur, night vision) and the zoomed view's HUD
+elements (halo_stereo_zoom_overlay). Its target is the view's span at the
+eyes' density (halo_stereo_zoom_density), unfoveated. The presenter shows
+it to both eyes over the whole view on an opaque head-locked quad at the
+HUD's plane, HALO_STEREO_ZOOM_DISTANCE_METERS ahead, so its depth is the
+HUD's, with the HUD's pieces and the reticle over it. Not on the screen
+(SCREEN mode, the film): there the game's own zoom shows on the screen, as
+in mono. */
 /* the debug side-by-side view's eyes (stereo.c): each eye's half tangents,
 and its offset from the camera in world units */
 #define HALO_STEREO_SIDE_BY_SIDE_TANGENT 0.8f
 #define HALO_STEREO_SIDE_BY_SIDE_OFFSET 0.0105f
-#define HALO_STEREO_INSET_DISTANCE_METERS 2.0f
-#define HALO_STEREO_INSET_WIDTH_METERS 0.8f
-#define HALO_STEREO_INSET_HEIGHT_SHARE 0.5f
-#define HALO_STEREO_INSET_LINES 480.0f
+/* the HUD's plane (host_stereo_hud.h, HOST_STEREO_HUD_DISTANCE) */
+#define HALO_STEREO_ZOOM_DISTANCE_METERS 2.0f
 /* render.c's eye loop, before the eyes and after halo_stereo_head_orient:
 whether the local player is zoomed this frame; returns 1 if the frame
-renders the inset's pass. The pass waits while the last frame's HUD layer
-held a menu (halo_stereo_set_ui_shown) or a seat's aim
-(halo_stereo_reticle) points behind the eyes, where the presenter wouldn't
-show it; the frame is still the inset's for the eyes
-(halo_stereo_eye_unzoomed) and the HUD (halo_stereo_inset_overlay), so the
-eyes never show the zoom's mask */
-int halo_stereo_inset_begin(int zoomed);
+renders the zoomed pass in place of the eyes. The pass waits while the last
+frame's HUD layer held a menu (halo_stereo_set_ui_shown), where the
+presenter shows the eyes under the UI's quad; the frame is still zoomed for
+the eyes (halo_stereo_eye_unzoomed) and the HUD (halo_stereo_zoom_overlay),
+so the eyes never show the zoom's mask */
+int halo_stereo_zoom_begin(int zoomed);
 /* d3d8_device.c, as it presents a stereo frame: whether the HUD layer went
 whole on the UI's quad (a menu, the console, a progress bar) */
 void halo_stereo_set_ui_shown(int shown);
-/* the inset's pass shades only the square the presenter shows and a margin
-beside it (d3d8_device.c), as wide as the zoom's screen effect reads past a
-pixel: at least HALO_STEREO_INSET_MARGIN_LINES of the screen's 480 lines,
-and more if a blur or warp has read farther this run, plus
-HALO_STEREO_INSET_MARGIN_SLACK_LINES for the bilinear taps.
-rasterizer_xbox_screen_effect.c reports each reach in the inset's pass
-(the convolution radius, twice it for a warp without a mask) */
-#define HALO_STEREO_INSET_MARGIN_LINES 30.0f
-#define HALO_STEREO_INSET_MARGIN_SLACK_LINES 2.0f
-void halo_stereo_inset_blur_reach(float lines);
-float halo_stereo_inset_margin_lines(void);
-/* the inset's vertical field of view in radians for the zoom's
-magnification (the game's weapon_get_zoom_magnification): the quad's
-angle with its tangent divided by the magnification, so things in it are
-that many times their size beside it */
-float halo_stereo_inset_field_of_view(float magnification);
+/* the zoomed view's half tangents across and up, before the magnification:
+each the widest of the frame's eyes' (left or right, up or down), out to
+where that eye's edge meets the HUD's plane from the eye's own place, so
+the presenter's quad there covers both eyes' views */
+void halo_stereo_zoom_view(float tangents[2]);
+/* the zoom layer's screen-sized targets against an eye's, across and up:
+the view's span over the narrowest eye's, so the zoomed picture has the
+eyes' pixels per tangent (and so per degree) over the whole view */
+void halo_stereo_zoom_density(float scale[2]);
+/* what the game lays out on its screen, layout_aspect (its width over
+480 lines) across, is shown over the zoomed view's shape: the share across
+that keeps it unstretched, the screen's shape over the view's (1 for an
+unknown screen). The zoom's 4:3 scope mask (rasterizer_xbox_screen_effect.c)
+and the zoomed view's HUD elements (d3d8_device.c) are fit to the view's
+height, centered */
+float halo_stereo_zoom_fit(float layout_aspect);
 /* port/linux/game/cinematic_screen.c: the local player's zoom
 magnification, from the weapon of the unit that aims (a seat's gun too); 1
 unzoomed */
 float halo_zoom_magnification(short local_player_index);
-/* 1 while this frame renders the inset's pass (halo_stereo_inset_begin's
+/* 1 while this frame renders the zoomed pass (halo_stereo_zoom_begin's
 result, to the frame's end) */
-int halo_stereo_inset(void);
-/* 1 in an eye's layer of a frame with the inset: the zoom's screen effects
-(interface.c) stay out of the eyes */
+int halo_stereo_zoom(void);
+/* 1 in an eye's layer of a zoomed frame (the pass waiting under a menu):
+the zoom's screen effects (interface.c) stay out of the eyes */
 int halo_stereo_eye_unzoomed(void);
-/* hud_weapon.c, around the weapon's crosshairs and the zoomed view's
-elements (the scope's angle ticks and range numbers): with on, in the HUD
-layer of a frame with the inset, they draw into the inset instead; off puts
-the HUD layer back */
-void halo_stereo_inset_overlay(int on);
+/* hud_weapon.c, around the zoomed view's elements (the scope's angle ticks
+and range numbers, the "2x"): with on, in the HUD layer of a zoomed frame,
+they draw into the zoom layer instead; off puts the HUD layer back.
+halo_stereo_zoom_overlay_on: 1 between the two, where d3d8_device.c fits
+the draws to the view (halo_stereo_zoom_fit) */
+void halo_stereo_zoom_overlay(int on);
+int halo_stereo_zoom_overlay_on(void);
 /* 1 while this frame's HUD is split into the reticle's layer and the HUD
 groups' targets: a stereo frame of the full view (HEAD mode, or the
 side-by-side view, which stands for it on the Mac), not the film or SCREEN
@@ -225,21 +221,20 @@ gameplay, where the HUD goes on the screen whole */
 int halo_stereo_hud_split(void);
 /* hud_weapon.c, around crosshairs_draw: with on, in the HUD layer, the
 crosshairs draw into the reticle's layer (HALO_STEREO_LAYER_RETICLE) while
-the HUD is split, or in a frame with the inset into the inset, as
-halo_stereo_inset_overlay; off puts the HUD layer back. Nothing else draws
-into the reticle's layer */
+the HUD is split, zoomed or not; off puts the HUD layer back. Nothing else
+draws into the reticle's layer */
 void halo_stereo_reticle_overlay(int on);
 /* 1 once a crosshair drew into the reticle's layer this frame (render.c
 flashes it as it does the HUD layer); d3d8_device.c calls
 halo_stereo_reticle_drew as a draw goes to that layer */
 int halo_stereo_reticle_drawn(void);
 void halo_stereo_reticle_drew(void);
-/* the inset's camera, from the game's camera before the head turned it
+/* the zoomed camera, from the game's camera before the head turned it
 (render.c): on foot it turns with the head as the eyes' cameras do
 (halo_stereo_head_orient), since the look is the head's; in a
 head-tracked third-person seat it stays the game's camera, where the gun
-aims, which halo_stereo_reticle points the presenter's quad along */
-void halo_stereo_inset_orient(float forward[3], float up[3]);
+aims */
+void halo_stereo_zoom_orient(float forward[3], float up[3]);
 
 /* render.c sets this around what draws a menu, the console or the progress
 bar into the HUD layer: in HEAD mode the presenter then puts the whole layer
@@ -398,7 +393,7 @@ struct render_frustum;
 void halo_stereo_lod_projection(const struct render_camera *camera, struct render_frustum *cull_frustum);
 /* The eye pass's camera position (world units). render_player_frame_stereo
 (render.c) sets it around each eye's render_window and clears it (NULL)
-after; it stays NULL in mono, the HUD, the zoom's inset and a mirror's
+after; it stays NULL in mono, the HUD, the zoomed pass and a mirror's
 window. render_sky centers the sky on it, so the sky sits at infinity in
 each eye. The pointer is the caller's, valid only while it is set */
 union real_point3d;

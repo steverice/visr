@@ -339,13 +339,13 @@ static float title_bars_now, title_bars_film;
 /* the side-by-side view's model of the expansion (halo_stereo_side_by_side_window):
 each eye's window last frame */
 static float side_by_side_last_window[2][4];
-/* the zoom's inset this frame (halo_stereo_inset_begin): whether the
-frame is zoomed in the full view, which keeps the zoom's screen effects out
-of the eyes and routes the crosshairs out of the HUD layer, and whether the
-inset's pass runs, which it doesn't while its quad won't show; the last
-state logged (-1: none yet); the HUD's draws routed into it
-(halo_stereo_inset_overlay) */
-static int inset_frame, inset_pass, inset_logged = -1, inset_overlay_on;
+/* the zoom this frame (halo_stereo_zoom_begin): whether the frame is
+zoomed in the full view, which keeps the zoom's screen effects out of the
+eyes and routes the zoomed view's elements out of the HUD layer, and
+whether the zoomed pass runs in place of the eyes, which waits under a
+menu; the last state logged (-1: none yet); the HUD's draws routed into it
+(halo_stereo_zoom_overlay) */
+static int zoom_frame, zoom_pass, zoom_logged = -1, zoom_overlay_on;
 /* the crosshairs routed out of the HUD layer (halo_stereo_reticle_overlay),
 and whether any drew into the reticle's layer this frame */
 static int reticle_overlay_on, reticle_drawn;
@@ -821,9 +821,9 @@ void halo_stereo_frame_begin(void)
 	head_log_done = 0;
 	head_log_frame++;
 	ui_span = 0;
-	inset_frame = 0;
-	inset_pass = 0;
-	inset_overlay_on = 0;
+	zoom_frame = 0;
+	zoom_pass = 0;
+	zoom_overlay_on = 0;
 	reticle_overlay_on = 0;
 	reticle_drawn = 0;
 	reticle_set(NULL, NULL, NULL);
@@ -1032,9 +1032,9 @@ void halo_stereo_frame_begin(void)
 	} else
 		third_person_head = 0;
 	/* without eyes (the space closed, a load) the next zoom logs again, and
-	no menu holds the inset back */
+	no menu holds the zoomed pass back */
 	if (stereo_frame.eye_count != 2) {
-		inset_logged = -1;
+		zoom_logged = -1;
 		ui_shown_last = 0;
 	}
 	if (expansion_on && (stereo_frame.eye_count != 2 ||
@@ -1192,32 +1192,37 @@ int halo_stereo_current_layer(void)
 
 int halo_stereo_repeat_pass(void)
 {
-	return stereo_layer == 1 || stereo_layer == HALO_STEREO_LAYER_INSET;
+	return stereo_layer == 1;
 }
 
-/* the zoom's inset: HEAD mode's full view and the side-by-side view (the
-Mac's stand-in for it), never the screen (SCREEN gameplay, the film), where
-the game's own zoom shows as in mono */
-int halo_stereo_inset_begin(int zoomed)
+/* the zoom: HEAD mode's full view and the side-by-side view (the Mac's
+stand-in for it), never the screen (SCREEN gameplay, the film), where the
+game's own zoom shows as in mono */
+int halo_stereo_zoom_begin(int zoomed)
 {
 	int mode = stereo_frame.mode;
 
-	inset_frame = zoomed && stereo_frame.eye_count == 2 && !halo_stereo_film() && !halo_stereo_screen_gameplay() &&
+	zoom_frame = zoomed && stereo_frame.eye_count == 2 && !halo_stereo_film() && !halo_stereo_screen_gameplay() &&
 		(mode == HALO_STEREO_HEAD || mode == HALO_STEREO_SIDE_BY_SIDE);
-	/* the pass alone waits while its quad won't show: under the last frame's
-	menu, or with a seat's aim off the view (the presenter's rule,
-	host_stereo_hud.c). The eyes still leave the zoom out, so they don't
-	blink a masked view around a menu */
-	inset_pass = inset_frame && !ui_shown_last && reticle_direction[2] <= -0.1f;
+	/* the pass alone waits under the last frame's menu, where the presenter
+	shows the eyes under the UI's quad. The eyes still leave the zoom out,
+	so they don't blink a masked view around a menu */
+	zoom_pass = zoom_frame && !ui_shown_last;
 	/* the first time, and each change under debug.gpu_stats */
-	if (inset_frame != inset_logged && (inset_logged < 0 ? inset_frame : stereo_stats))
-		platform_log(inset_frame ? "stereo: zoomed: the zoomed view on the inset, %.0f%% of the eyes' height, its "
-			"central %.0f lines on a quad %.2f m wide, %.2f m ahead" : "stereo: unzoomed: no inset",
-			100.0f * HALO_STEREO_INSET_HEIGHT_SHARE, HALO_STEREO_INSET_LINES, HALO_STEREO_INSET_WIDTH_METERS,
-			HALO_STEREO_INSET_DISTANCE_METERS);
-	if (inset_frame || inset_logged >= 0)
-		inset_logged = inset_frame;
-	return inset_pass;
+	if (zoom_frame != zoom_logged && (zoom_logged < 0 ? zoom_frame : stereo_stats)) {
+		float view[2];
+
+		halo_stereo_zoom_view(view);
+		if (zoom_frame)
+			platform_log("stereo: zoomed: one mono zoomed pass fills the view, the eyes' passes skipped: the view's "
+				"half tangents %.3f by %.3f, each over the zoom's magnification, shown %.1f m ahead", view[0], view[1],
+				HALO_STEREO_ZOOM_DISTANCE_METERS);
+		else
+			platform_log("stereo: unzoomed: the eyes' passes");
+	}
+	if (zoom_frame || zoom_logged >= 0)
+		zoom_logged = zoom_frame;
+	return zoom_pass;
 }
 
 void halo_stereo_set_ui_shown(int shown)
@@ -1225,64 +1230,86 @@ void halo_stereo_set_ui_shown(int shown)
 	ui_shown_last = shown != 0;
 }
 
-float halo_stereo_inset_field_of_view(float magnification)
+void halo_stereo_zoom_view(float tangents[2])
 {
-	float half_tangent = HALO_STEREO_INSET_WIDTH_METERS / 2.0f / HALO_STEREO_INSET_DISTANCE_METERS;
+	float distance = HALO_STEREO_ZOOM_DISTANCE_METERS;
+	int eye;
 
-	if (!(magnification >= 1.0f))
-		magnification = 1.0f;
-	return 2.0f * atanf(half_tangent / magnification);
+	tangents[0] = tangents[1] = 0.0f;
+	for (eye = 0; eye < 2; eye++) {
+		const struct halo_stereo_eye *e = &stereo_frame.eyes[eye];
+		/* where the eye's frustum meets the HUD's plane, from the head */
+		float x = e->offset[0] * METERS_PER_UNIT, y = e->offset[1] * METERS_PER_UNIT;
+		float across = fmaxf(e->right * distance + x, e->left * distance - x) / distance;
+		float rise = fmaxf(e->up * distance + y, e->down * distance - y) / distance;
+
+		tangents[0] = fmaxf(tangents[0], across);
+		tangents[1] = fmaxf(tangents[1], rise);
+	}
 }
 
-int halo_stereo_inset(void)
+void halo_stereo_zoom_density(float scale[2])
 {
-	return inset_pass;
+	float view[2], across = 0.0f, rise = 0.0f;
+	int eye;
+
+	halo_stereo_zoom_view(view);
+	/* the narrowest eye has the most pixels per tangent */
+	for (eye = 0; eye < 2; eye++) {
+		const struct halo_stereo_eye *e = &stereo_frame.eyes[eye];
+
+		if (eye == 0 || e->left + e->right < across)
+			across = e->left + e->right;
+		if (eye == 0 || e->up + e->down < rise)
+			rise = e->up + e->down;
+	}
+	scale[0] = across > 0.0f ? 2.0f * view[0] / across : 1.0f;
+	scale[1] = rise > 0.0f ? 2.0f * view[1] / rise : 1.0f;
 }
 
-/* the farthest the zoom's blur or warp has read past a pixel in the inset's
-pass this run, in the screen's lines (halo_stereo_inset_blur_reach) */
-static float inset_blur_reach;
-
-void halo_stereo_inset_blur_reach(float lines)
+float halo_stereo_zoom_fit(float layout_aspect)
 {
-	if (!(lines > inset_blur_reach))
-		return;
-	inset_blur_reach = lines;
-	if (stereo_stats || inset_blur_reach + HALO_STEREO_INSET_MARGIN_SLACK_LINES > HALO_STEREO_INSET_MARGIN_LINES)
-		platform_log("stereo: the zoom's screen effect reads %.1f lines past a pixel; the inset shades a margin of "
-			"%.1f lines beside its square", lines, halo_stereo_inset_margin_lines());
+	float view[2];
+
+	halo_stereo_zoom_view(view);
+	if (!(layout_aspect > 0.0f) || !(view[0] > 0.0f) || !(view[1] > 0.0f))
+		return 1.0f;
+	return layout_aspect * view[1] / view[0];
 }
 
-float halo_stereo_inset_margin_lines(void)
+int halo_stereo_zoom(void)
 {
-	float margin = inset_blur_reach + HALO_STEREO_INSET_MARGIN_SLACK_LINES;
-
-	return margin > HALO_STEREO_INSET_MARGIN_LINES ? margin : HALO_STEREO_INSET_MARGIN_LINES;
+	return zoom_pass;
 }
 
 int halo_stereo_eye_unzoomed(void)
 {
-	return inset_frame && (stereo_layer == 0 || stereo_layer == 1);
+	return zoom_frame && (stereo_layer == 0 || stereo_layer == 1);
 }
 
-void halo_stereo_inset_overlay(int on)
+void halo_stereo_zoom_overlay(int on)
 {
 	if (on) {
-		if (inset_frame && stereo_layer == HALO_STEREO_LAYER_HUD) {
-			stereo_layer = HALO_STEREO_LAYER_INSET;
-			inset_overlay_on = 1;
+		if (zoom_frame && stereo_layer == HALO_STEREO_LAYER_HUD) {
+			stereo_layer = HALO_STEREO_LAYER_ZOOM;
+			zoom_overlay_on = 1;
 		}
-	} else if (inset_overlay_on) {
+	} else if (zoom_overlay_on) {
 		stereo_layer = HALO_STEREO_LAYER_HUD;
-		inset_overlay_on = 0;
+		zoom_overlay_on = 0;
 	}
+}
+
+int halo_stereo_zoom_overlay_on(void)
+{
+	return zoom_overlay_on;
 }
 
 void halo_stereo_reticle_overlay(int on)
 {
 	if (on) {
-		if (stereo_layer == HALO_STEREO_LAYER_HUD && (inset_frame || halo_stereo_hud_split())) {
-			stereo_layer = inset_frame ? HALO_STEREO_LAYER_INSET : HALO_STEREO_LAYER_RETICLE;
+		if (stereo_layer == HALO_STEREO_LAYER_HUD && halo_stereo_hud_split()) {
+			stereo_layer = HALO_STEREO_LAYER_RETICLE;
 			reticle_overlay_on = 1;
 		}
 	} else if (reticle_overlay_on) {
@@ -1571,7 +1598,7 @@ void halo_stereo_head_orient(float forward[3], float up[3])
 		reticle_set(NULL, NULL, NULL);
 }
 
-void halo_stereo_inset_orient(float forward[3], float up[3])
+void halo_stereo_zoom_orient(float forward[3], float up[3])
 {
 	if (!third_person_head)
 		halo_stereo_head_orient(forward, up);

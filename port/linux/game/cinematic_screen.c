@@ -172,7 +172,7 @@ int halo_screen_fade(float tick_fraction, float rgb_intensity[4])
 	return 1;
 }
 
-/* The zoom's magnification for the local player's inset (render.c), as the
+/* The zoom's magnification for the local player's zoomed pass (render.c), as the
 HUD reads it for the aim assist's range (hud.c): the current weapon of the
 unit that aims (a gunner's seat's too) at the player's zoom level; 1 when
 unzoomed or unarmed. The game's own zoomed camera divides the field of view

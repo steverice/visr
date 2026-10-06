@@ -1993,7 +1993,7 @@ static void present_half(gpu_texture picture, int half_x, int half_width, int wi
 }
 
 /* the side-by-side debug view: eye 0 in the left half of the window, eye 1 in
-the right, the HUD over each */
+the right (or, zoomed, the zoomed picture in both), the HUD over each */
 static uint32_t gpu_gl_present_stereo(const struct gpu_stereo_present *present)
 {
 	int window_width, window_height, half_width, eye, boxes[2][4];
@@ -2007,6 +2007,42 @@ static uint32_t gpu_gl_present_stereo(const struct gpu_stereo_present *present)
 	glClear(GL_COLOR_BUFFER_BIT);
 	for (eye = 0; eye < 2; eye++)
 		present_half(present->eye_color[eye], eye * half_width, half_width, window_height, boxes[eye]);
+	/* zoomed (halo_stereo.h): the zoomed picture in place of the eyes'
+	(their pictures are last frame's), as HEAD mode's presenter's quad on
+	the HUD's plane shows it to each eye's fixed frustum, with the parallax
+	of its distance */
+	if (present->zoom && present->zoom_tangents[0] > 0.0f && present->zoom_tangents[1] > 0.0f && overlay_prepare())
+	{
+		float across = present->zoom_tangents[0], up = present->zoom_tangents[1];
+
+		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, default_framebuffer());
+		glDisable(GL_DEPTH_TEST);
+		glDisable(GL_CULL_FACE);
+		glDisable(GL_STENCIL_TEST);
+		glDisable(GL_BLEND);
+		glUseProgram(overlay.program);
+		glBindVertexArray(overlay.vertex_array);
+		glActiveTexture(GL_TEXTURE0);
+		glBindTexture(GL_TEXTURE_2D, present->zoom);
+		glBindSampler(0, overlay.sampler);
+		for (eye = 0; eye < 2; eye++)
+		{
+			/* the eye sits its offset (meters) to the side: its view's edge
+			at tangent t meets the quad at (offset / distance + t) of the
+			quad's half tangent */
+			float offset = (eye == 0 ? -HALO_STEREO_SIDE_BY_SIDE_OFFSET : HALO_STEREO_SIDE_BY_SIDE_OFFSET) * 3.048f /
+				HALO_STEREO_ZOOM_DISTANCE_METERS;
+
+			glUniform4f(overlay.source, 0.5f + (offset - HALO_STEREO_SIDE_BY_SIDE_TANGENT) / (2.0f * across),
+				0.5f - HALO_STEREO_SIDE_BY_SIDE_TANGENT / (2.0f * up),
+				0.5f + (offset + HALO_STEREO_SIDE_BY_SIDE_TANGENT) / (2.0f * across),
+				0.5f + HALO_STEREO_SIDE_BY_SIDE_TANGENT / (2.0f * up));
+			glViewport(boxes[eye][0], boxes[eye][1], boxes[eye][2], boxes[eye][3]);
+			glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+		}
+		glBindSampler(0, 0);
+		glBindVertexArray(streams.vertex_array);
+	}
 	/* the widgets' dim (halo_stereo_ui_dim_active), as HEAD mode's presenter
 	darkens the eyes by it: each eye's picture times 1 - ui_dim (the quad's
 	own color counts for nothing) */
@@ -2035,44 +2071,6 @@ static uint32_t gpu_gl_present_stereo(const struct gpu_stereo_present *present)
 		glBindSampler(0, 0);
 		glBindVertexArray(streams.vertex_array);
 		glDisable(GL_BLEND);
-	}
-	/* the zoom's inset (halo_stereo.h): its central square, opaque, where the
-	HEAD presenter's quad would be, in each eye's fixed frustum, with the
-	parallax of its distance, under the HUD as there */
-	if (present->inset && overlay_prepare())
-	{
-		float layout_width = (present->hud_aspect > 0.0f ? present->hud_aspect : 4.0f / 3.0f) * 480.0f;
-		float side = HALO_STEREO_INSET_LINES < layout_width ? HALO_STEREO_INSET_LINES : layout_width;
-		float half_tangent = HALO_STEREO_INSET_WIDTH_METERS / 2.0f / HALO_STEREO_INSET_DISTANCE_METERS;
-
-		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, default_framebuffer());
-		glDisable(GL_DEPTH_TEST);
-		glDisable(GL_CULL_FACE);
-		glDisable(GL_STENCIL_TEST);
-		glDisable(GL_BLEND);
-		glUseProgram(overlay.program);
-		glUniform4f(overlay.source, 0.5f - side / 2.0f / layout_width, 0.0f, 0.5f + side / 2.0f / layout_width, 1.0f);
-		glBindVertexArray(overlay.vertex_array);
-		glActiveTexture(GL_TEXTURE0);
-		glBindTexture(GL_TEXTURE_2D, present->inset);
-		glBindSampler(0, overlay.sampler);
-		for (eye = 0; eye < 2; eye++)
-		{
-			/* the eye sits its offset (meters) to the side, so the quad's
-			center is that much the other way over the distance */
-			float offset = (eye == 0 ? -HALO_STEREO_SIDE_BY_SIDE_OFFSET : HALO_STEREO_SIDE_BY_SIDE_OFFSET) * 3.048f;
-			float center = -offset / HALO_STEREO_INSET_DISTANCE_METERS;
-			float scale = 0.5f / HALO_STEREO_SIDE_BY_SIDE_TANGENT;
-			int x0 = boxes[eye][0] + (int)lroundf(boxes[eye][2] * (0.5f + (center - half_tangent) * scale));
-			int x1 = boxes[eye][0] + (int)lroundf(boxes[eye][2] * (0.5f + (center + half_tangent) * scale));
-			int y0 = boxes[eye][1] + (int)lroundf(boxes[eye][3] * (0.5f - half_tangent * scale));
-			int y1 = boxes[eye][1] + (int)lroundf(boxes[eye][3] * (0.5f + half_tangent * scale));
-
-			glViewport(x0, y0, x1 - x0, y1 - y0);
-			glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-		}
-		glBindSampler(0, 0);
-		glBindVertexArray(streams.vertex_array);
 	}
 	/* the HUD over each half: the crosshairs' layer, each HUD group's
 	target and the HUD layer itself (the catch-all), each laid out as the

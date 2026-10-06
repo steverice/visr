@@ -612,9 +612,9 @@ static DWORD surface_dimensions(const D3DSurface *surface, unsigned long *width,
 /* the screen's scale, or with foveated eye passes the eyes' allocated size
 over their screen size times it: the density the eyes would have unfoveated,
 for the targets that aren't foveated but follow the eyes' size (the HUD
-layer, the HUD groups' and the reticle's targets, the zoom's inset and the
-effect targets), so that they cost what they did before foveation rather
-than growing with the maps' screen size */
+layer, the HUD groups' and the reticle's targets, the zoomed picture and
+the effect targets), so that they cost what they did before foveation
+rather than growing with the maps' screen size */
 static void screen_scale_dense(float scale[2])
 {
 	const struct halo_stereo_frame *stereo = halo_stereo_frame();
@@ -664,16 +664,8 @@ static void offscreen_target_scale(unsigned long width, unsigned long height, DW
 	}
 }
 
-/* the zoom's inset shades its central square and a margin of this many
-pixels on either side (target_inset_columns): halo_stereo_inset_margin_lines
-of the screen's lines at the target's height */
-static int32_t inset_margin_pixels(unsigned long target_height)
-{
-	return (int32_t)ceilf(halo_stereo_inset_margin_lines() * (float)target_height / (float)SCREEN_HEIGHT);
-}
-
 /* the layer a screen-sized target is drawn for now: in a stereo frame each
-eye, the HUD and the zoom's inset have their own textures (the one layer
+eye, the HUD and the zoomed picture have their own textures (the one layer
 key: a new layer is a change to halo_stereo.h), else the one the game
 always had */
 static int render_target_layer(void)
@@ -711,14 +703,17 @@ static struct render_target_entry *render_target_get_layer(const D3DSurface *sur
 			scale[0] = screen_scale_mono[0];
 			scale[1] = screen_scale_mono[1];
 		}
-		/* the zoom's inset: the screen as mono draws it, at square pixels and
-		a share of the eyes' height (halo_stereo.h) */
-		if (layer == HALO_STEREO_LAYER_INSET)
+		/* the zoomed picture: the whole view at the eyes' density without
+		foveation, unfoveated (halo_stereo_zoom_density), in steps of 1/256 of
+		an eye's so that a tangent's rounding doesn't make a new target */
+		if (layer == HALO_STEREO_LAYER_ZOOM)
 		{
-			float dense[2];
+			float dense[2], density[2];
 
 			screen_scale_dense(dense);
-			scale[0] = scale[1] = dense[1] * HALO_STEREO_INSET_HEIGHT_SHARE;
+			halo_stereo_zoom_density(density);
+			scale[0] = dense[0] * roundf(density[0] * 256.0f) / 256.0f;
+			scale[1] = dense[1] * roundf(density[1] * 256.0f) / 256.0f;
 		}
 		/* the reticle's layer and the HUD groups' targets are color only:
 		their draws share the HUD layer's depth and stencil, as mono's HUD
@@ -794,19 +789,17 @@ static struct render_target_entry *render_target_get_layer(const D3DSurface *sur
 		texture.depth = 1;
 		texture.levels = 1;
 		entry->target.texture = gpu_texture_create(&texture);
-		/* the zoom's inset: its size against the square the presenter shows,
-		and what its draws shade, scissored to the square and its margin
-		(draw_targets) */
-		if (layer == HALO_STEREO_LAYER_INSET && !depth)
+		/* the zoomed picture: its size against an eye's unfoveated one */
+		if (layer == HALO_STEREO_LAYER_ZOOM && !depth)
 		{
-			float width = (float)entry->target.gl_width;
-			float side = (float)entry->target.gl_height < width ? (float)entry->target.gl_height : width;
-			float shaded = side + 2.0f * (float)inset_margin_pixels(entry->target.gl_height);
+			float dense[2], view[2];
 
-			platform_log("stereo: the inset's target %lux%lu is %.2f times the %.0f-pixel square it shows; "
-				"its draws shade %.2f times it now (the square and the blur's margin)",
-				entry->target.gl_width, entry->target.gl_height, width / side, side,
-				(shaded < width ? shaded : width) / side);
+			screen_scale_dense(dense);
+			halo_stereo_zoom_view(view);
+			platform_log("stereo: the zoomed picture's target %lux%lu, %.3f by %.3f times an eye's %.0fx%.0f: the "
+				"view's half tangents %.3f by %.3f at the eyes' pixels per tangent", entry->target.gl_width,
+				entry->target.gl_height, scale[0] / dense[0], scale[1] / dense[1], width * dense[0],
+				height * dense[1], view[0], view[1]);
 		}
 	}
 	entry->next = render_targets;
@@ -878,14 +871,9 @@ static int target_hud_group;
 /* debug.gpu_stats: HUD-layer draws measured on the CPU (immediate mode)
 and those taken as the whole viewport, since the last line */
 static unsigned long hud_draws_measured, hud_draws_unmeasured;
-/* the bound color target is the zoom's inset: the columns of its central
-square, the part the presenter shows (halo_stereo.h), and a margin on
-either side (inset_margin_pixels), in target pixels; width 0 otherwise
-(draw_targets). Its draws are scissored to them, so the rest of the
-screen-sized target isn't shaded. The margin covers what the zoom's screen
-effect reads past the square's edges: without one, an 11-pixel band at the
-edges came out brighter (Task 9's a30 pistol capture) */
-static int32_t target_inset_columns[2];
+/* the bound color target is the zoomed picture (draw_targets), whose HUD
+draws (halo_stereo_zoom_overlay_on) are fit to the view's shape */
+static BOOL target_zoom_layer;
 /* something drew into the HUD layer this frame under render.c's UI span
 (halo_stereo_set_ui_span) */
 static BOOL hud_layer_ui;
@@ -938,7 +926,7 @@ static const char *foveation_audit_layer(int layer)
 	case 0: return "left eye";
 	case 1: return "right eye";
 	case HALO_STEREO_LAYER_HUD: return "HUD";
-	case HALO_STEREO_LAYER_INSET: return "inset";
+	case HALO_STEREO_LAYER_ZOOM: return "zoom";
 	case HALO_STEREO_LAYER_RETICLE: return "reticle";
 	case HALO_STEREO_LAYER_UI: return "UI";
 	}
@@ -1054,15 +1042,7 @@ static BOOL draw_targets(gpu_texture *color_texture, gpu_texture *depth_texture)
 		color->layer >= HALO_STEREO_LAYER_HUD_GROUP);
 	target_hud_group = color && color->layer >= HALO_STEREO_LAYER_HUD_GROUP ?
 		color->layer - HALO_STEREO_LAYER_HUD_GROUP : HALO_HUD_GROUP_NONE;
-	target_inset_columns[0] = target_inset_columns[1] = 0;
-	if (color && color->layer == HALO_STEREO_LAYER_INSET && color->target.gl_width > color->target.gl_height)
-	{
-		int32_t width = (int32_t)color->target.gl_width;
-		int32_t columns = (int32_t)color->target.gl_height + 2 * inset_margin_pixels(color->target.gl_height);
-
-		target_inset_columns[1] = columns < width ? columns : width;
-		target_inset_columns[0] = (width - target_inset_columns[1]) / 2;
-	}
+	target_zoom_layer = color && color->layer == HALO_STEREO_LAYER_ZOOM;
 	/* viewports and clears are in the targets' units (render_target_get) */
 	target_scale[0] = color ? color->target.scale[0] : depth->target.scale[0];
 	target_scale[1] = color ? color->target.scale[1] : depth->target.scale[1];
@@ -3069,23 +3049,19 @@ static void raster_state_fill(BOOL has_depth, struct gpu_viewport *viewport, str
 	scissor->y = viewport->y;
 	scissor->width = viewport->width;
 	scissor->height = viewport->height;
-	/* port: the zoom's inset shades only its central square and margin */
-	if (target_inset_columns[1] > 0)
+	/* port: the zoomed view's HUD elements, laid out on the game's screen,
+	are shown over the view's shape (halo_stereo_zoom_fit): the viewport
+	narrows or widens across about its center so they keep their shape, fit
+	to the view's height as the scope mask is. The scissor stays the
+	viewport's own */
+	if (target_zoom_layer && halo_stereo_zoom_overlay_on())
 	{
-		int32_t left = scissor->x > target_inset_columns[0] ? scissor->x : target_inset_columns[0];
-		int32_t right = scissor->x + scissor->width;
+		float fit = halo_stereo_zoom_fit((float)halo_screen_width() / (float)SCREEN_HEIGHT);
+		float center = (float)viewport->x + (float)viewport->width / 2.0f;
+		float width = (float)viewport->width * fit;
 
-		if (right > target_inset_columns[0] + target_inset_columns[1])
-			right = target_inset_columns[0] + target_inset_columns[1];
-		/* a viewport wholly outside the columns would leave an empty
-		rectangle, which is no scissor at all. No game draw does that (the
-		inset's pass draws full-screen viewports), so keep the viewport's
-		own scissor then rather than invent a sentinel pixel */
-		if (right > left)
-		{
-			scissor->x = left;
-			scissor->width = right - left;
-		}
+		viewport->x = (int32_t)lroundf(center - width / 2.0f);
+		viewport->width = (int32_t)lroundf(width);
 	}
 
 	depth_stencil->depth_test = has_depth && rs[D3DRS_ZENABLE];
@@ -4616,11 +4592,14 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 	if (device.gl_ready)
 	{
 		const struct halo_stereo_frame *stereo = halo_stereo_frame();
-		/* a frame presents in stereo only if its eyes were drawn: the menus,
-		loading screens and any frame without an eye pass
-		(render_player_frame_stereo) draw everything in the mono layer, which
-		gpu_present_stereo never reads, so they present mono as before */
-		int stereo_frame = stereo->eye_count == 2 && back_buffer_drawn_this_frame(0);
+		/* a frame presents in stereo only if its eyes, or the zoomed picture
+		in their place (halo_stereo_zoom), were drawn: the menus, loading
+		screens and any frame without an eye pass (render_player_frame_stereo)
+		draw everything in the mono layer, which gpu_present_stereo never
+		reads, so they present mono as before */
+		struct render_target_entry *zoom = stereo->eye_count == 2 && halo_stereo_zoom() ?
+			back_buffer_drawn_this_frame(HALO_STEREO_LAYER_ZOOM) : NULL;
+		int stereo_frame = stereo->eye_count == 2 && (back_buffer_drawn_this_frame(0) || zoom);
 		static unsigned long frames_without_eyes;
 
 		/* a few seconds without the Compositor's eyes (the space closed):
@@ -4629,11 +4608,11 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 			frames_without_eyes = 0;
 		else if (stereo->mode != HALO_STEREO_OFF && ++frames_without_eyes == 300)
 			stereo_targets_release();
-		/* a stereo frame's screenshot and trace are of eye 0 */
-		struct render_target_entry *back_buffer = render_target_get_layer(&device.back_buffer,
+		/* a stereo frame's screenshot and trace are of eye 0, or the zoomed
+		picture in a zoomed frame */
+		struct render_target_entry *back_buffer = zoom ? zoom : render_target_get_layer(&device.back_buffer,
 			stereo_frame ? 0 : HALO_STEREO_LAYER_MONO);
 		struct render_target_entry *hud = stereo_frame ? back_buffer_drawn_this_frame(HALO_STEREO_LAYER_HUD) : NULL;
-		struct render_target_entry *inset = stereo_frame ? back_buffer_drawn_this_frame(HALO_STEREO_LAYER_INSET) : NULL;
 		/* the reticle's layer and each HUD group's target, if drawn this
 		frame (halo_stereo.h) */
 		struct render_target_entry *reticle = stereo_frame ? back_buffer_drawn_this_frame(HALO_STEREO_LAYER_RETICLE) : NULL;
@@ -4660,20 +4639,25 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 		if (screenshot_every > 0 && device.frame % (unsigned long)screenshot_every == 0)
 		{
 			write_screenshot(back_buffer, "");
-			/* and each picture of a stereo frame, to free-view or inspect */
+			/* and each picture of a stereo frame, to free-view or inspect: the
+			eyes', or a zoomed frame's one picture for both (its eyes weren't
+			drawn) */
 			if (stereo_frame)
 			{
-				write_screenshot(back_buffer, "-left");
-				write_screenshot(render_target_get_layer(&device.back_buffer, 1), "-right");
-				write_depth_screenshot(render_target_get_layer(&device.depth_buffer, 0), "-left-depth");
-				write_window_screenshot(back_buffer);
+				if (zoom)
+					write_screenshot(zoom, "-zoom");
+				else
+				{
+					write_screenshot(back_buffer, "-left");
+					write_screenshot(render_target_get_layer(&device.back_buffer, 1), "-right");
+					write_depth_screenshot(render_target_get_layer(&device.depth_buffer, 0), "-left-depth");
+					write_window_screenshot(back_buffer);
+				}
 				if (hud)
 				{
 					write_screenshot(hud, "-hud");
 					write_screenshot_channel(hud, "-hud-alpha", 1);
 				}
-				if (inset)
-					write_screenshot(inset, "-inset");
 				if (ui)
 				{
 					write_screenshot(ui, "-ui");
@@ -4711,7 +4695,7 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 			frame and every 900th after: walls and floors should leave none
 			outside the sky, so a nonzero share in an enclosed space means
 			static geometry lost its depth (headset session 1) */
-			if (debug_settings.statistics && depth_checks++ % 900 == 0)
+			if (debug_settings.statistics && !zoom && depth_checks++ % 900 == 0)
 			{
 				float share = depth_empty_share(render_target_get_layer(&device.depth_buffer, 0));
 
@@ -4768,11 +4752,15 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 					hud_draws_unmeasured);
 				hud_draws_measured = hud_draws_unmeasured = 0;
 			}
-			/* the zoom's inset, only if its pass ran this frame (the HUD's
-			crosshairs still go to its layer while the pass waits under a
-			menu, halo_stereo_inset_begin) */
-			if (inset && halo_stereo_inset())
-				present.inset = inset->target.texture;
+			/* the zoomed picture in the eyes' place, only if its pass ran this
+			frame (the zoomed view's elements still go to its layer while the
+			pass waits under a menu, halo_stereo_zoom_begin), and the view it
+			spans */
+			if (zoom)
+			{
+				present.zoom = zoom->target.texture;
+				halo_stereo_zoom_view(present.zoom_tangents);
+			}
 			/* the eyes' planes (the eye loop's, halo_stereo_set_depth_range), in
 			meters: one world unit is 3.048 m */
 			halo_stereo_depth_range(&present.near_meters, &present.far_meters);
@@ -4816,7 +4804,7 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 			the full view */
 			present.expanding = halo_stereo_expansion(&present.expansion, &present.expansion_bars);
 			present.hud_ui = ui ? 1 : hud && hud_layer_ui && !halo_stereo_film_letterbox();
-			/* the next frame's inset waits while a menu holds the layer */
+			/* the next frame's zoomed pass waits while a menu holds the layer */
 			halo_stereo_set_ui_shown(present.hud_ui);
 			halo_stereo_reticle(present.reticle);
 			halo_stereo_hud_tangents(present.hud_tangents);

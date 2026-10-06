@@ -104,30 +104,38 @@ int main(void)
 
 	/* stereo frames (render_player_frame_stereo): every pass repeats eye 0's
 	shared numbers, eye 0 draws more of its own after them (weather, the fog
-	screen, a new particle's sprite), eye 1 draws only the shared ones and
-	the inset none, and successive frames must not repeat eye 0's numbers;
-	the game's seed comes back after each frame */
+	screen, a new particle's sprite), eye 1 draws only the shared ones, and
+	successive frames must not repeat eye 0's numbers; the game's seed comes
+	back after each frame. Every fourth frame is zoomed: its one zoomed pass
+	draws as a mono frame does, with no stereo passes */
 	game_before = local_seed;
 	for (frame_index = 0; frame_index < 8; frame_index++)
 	{
 		short pass;
 
 		halo_render_random_begin();
-		for (pass = 0; pass < 3; pass++)
+		if (frame_index % 4 == 3)
 		{
-			halo_render_random_stereo_pass(pass);
-			if (pass < 2)
+			for (i = 0; i < 4; i++)
+				eye[0][i] = eye[1][i] = draw();
+			for (i = 0; i < 3; i++)
+				eye_0_only[frame_index][i] = draw();
+		}
+		else
+		{
+			for (pass = 0; pass < 2; pass++)
 			{
+				halo_render_random_stereo_pass(pass);
 				for (i = 0; i < 4; i++)
 					eye[pass][i] = draw();
+				if (pass == 0)
+				{
+					for (i = 0; i < 3; i++)
+						eye_0_only[frame_index][i] = draw();
+				}
 			}
-			if (pass == 0)
-			{
-				for (i = 0; i < 3; i++)
-					eye_0_only[frame_index][i] = draw();
-			}
+			halo_render_random_stereo_end();
 		}
-		halo_render_random_stereo_end();
 		halo_render_random_end();
 		for (i = 0; i < 4; i++)
 			assert(eye[0][i] == eye[1][i]);
@@ -148,6 +156,7 @@ int main(void)
 	assert(local_seed == game_before);
 
 	puts("PASS: render random: the game's local sequence ignores the frames between ticks, "
-		"the render's carries on, nested brackets, stereo passes keep eye 0's draws, unmatched ends");
+		"the render's carries on, nested brackets, stereo passes keep eye 0's draws, zoomed frames draw as mono, "
+		"unmatched ends");
 	return 0;
 }

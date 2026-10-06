@@ -70,7 +70,8 @@ int main(void)
 	FIELD(gpu_stereo_present, hud_ui);
 	FIELD(gpu_stereo_present, reticle);
 	FIELD(gpu_stereo_present, hud_tangents);
-	FIELD(gpu_stereo_present, inset);
+	FIELD(gpu_stereo_present, zoom);
+	FIELD(gpu_stereo_present, zoom_tangents);
 	FIELD(gpu_stereo_present, reticle_layer);
 	FIELD(gpu_stereo_present, hud_group);
 	FIELD(gpu_stereo_present, hud_group_extent);

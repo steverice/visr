@@ -3,7 +3,7 @@ reticle's layer whole at its natural size, centered or along a seat's aim;
 one quad per HUD group that drew, showing its whole rectangle, in the bands
 above and below the reticle and clear of it, every band element and the UI
 inside foveation's sharp region with the head level; the catch-all, the
-HUD layer whole where the HUD pass projected it; the zoom's inset's quad,
+HUD layer whole where the HUD pass projected it; the zoomed picture's quad,
 the level frame's yaw. With --quads WIDTH UI X Y Z it prints the layout's
 quads for sample group rectangles instead (one per line: frame, catch-all,
 source u0 v0 u1 v1, center, x axis, y axis, layer). */
@@ -423,44 +423,30 @@ static void reticle_checks(void)
 	}
 }
 
-/* the zoom's inset (halo_stereo.h): the inset layer's central square on an
-opaque square quad 0.8 m wide, 2 m ahead (the HUD's plane), by the
-reticle's rule */
-static void inset_checks(float width)
+/* the zoom (halo_stereo.h, "Zoom fills the view"): the zoomed picture whole
+on an opaque, head-locked quad on the HUD's plane, as wide and tall as the
+view's half tangents there */
+static void zoom_checks(void)
 {
 	struct host_stereo_hud_quad quad;
-	float ahead[3] = { 0.0f, 0.0f, -1.0f };
-	float yaw = -30.0f * DEGREES, pitch = 10.0f * DEGREES;
-	float aim[3] = { -sinf(yaw) * cosf(pitch), sinf(pitch), -cosf(yaw) * cosf(pitch) };
-	float behind[3] = { 0.3f, 0.0f, 1.0f };
-	float point[3] = { 0.1f, -0.3f, -0.4f };
-	float side = fminf(480.0f, width);
-	char what[160];
+	const float tangents[2] = { 1.776f, 1.05f };
+	const float none[2] = { 0.0f, 1.0f };
+	char what[200];
 
-	check(host_stereo_hud_inset(width, NULL, ahead, &quad) == 1 && quad.opaque && quad.frame == HOST_STEREO_HUD_HEAD &&
-		!quad.catch_all, "the inset is an opaque, head-locked quad");
+	check(host_stereo_hud_zoom(tangents, &quad) == 1 && quad.opaque && quad.frame == HOST_STEREO_HUD_HEAD &&
+		!quad.catch_all, "the zoomed picture is an opaque, head-locked quad");
 	check(fabsf(quad.center[0]) < 1e-6f && fabsf(quad.center[1]) < 1e-6f &&
-		fabsf(quad.center[2] + HOST_STEREO_HUD_DISTANCE) < 1e-6f,
-		"on foot it's straight ahead, 2 m away, on the HUD's plane");
-	snprintf(what, sizeof(what), "it's 0.8 m wide and square (%.3f by %.3f m, %.1f degrees across)",
-		2.0f * quad.x_axis[0], 2.0f * quad.y_axis[1], 2.0f * atanf(quad.x_axis[0] / 2.0f) / DEGREES);
-	check(fabsf(2.0f * quad.x_axis[0] - 0.8f) < 1e-6f && fabsf(2.0f * quad.y_axis[1] - 0.8f) < 1e-6f &&
-		fabsf(quad.x_axis[1]) < 1e-6f && fabsf(quad.y_axis[0]) < 1e-6f, what);
-	snprintf(what, sizeof(what), "at %.0f lines across it shows the layer's central %.0f-line square (u %.4f to %.4f)",
-		width, side, quad.source[0], quad.source[2]);
-	check(fabsf(quad.source[0] - (width - side) / 2.0f / width) < 1e-6f &&
-		fabsf(quad.source[2] - (width + side) / 2.0f / width) < 1e-6f && quad.source[1] == 0.0f &&
-		quad.source[3] == 1.0f && fabsf((quad.source[2] - quad.source[0]) * width - (quad.source[3] - quad.source[1]) * 480.0f) <
-		1e-3f * width || side < 480.0f, what);
-	check(host_stereo_hud_inset(width, NULL, aim, &quad) == 1 &&
-		fabsf(atan2f(quad.center[0], -quad.center[2]) - 30.0f * DEGREES) < 1e-4f &&
-		fabsf(asinf(quad.center[1] / 2.0f) - 10.0f * DEGREES) < 1e-4f && fabsf(quad.x_axis[1]) < 1e-6f,
-		"in a seat it sits along the gun's aim, 30 degrees right and 10 up, upright");
-	check(host_stereo_hud_inset(width, NULL, behind, &quad) == 0, "with the aim behind the eyes there's none");
-	check(host_stereo_hud_inset(width, point, aim, &quad) == 1 && quad.center[0] == 0.1f && quad.center[1] == -0.3f &&
-		quad.center[2] == -0.4f && fabsf(2.0f * quad.x_axis[0] * 2.0f * quad.x_axis[0] +
-		2.0f * quad.x_axis[2] * 2.0f * quad.x_axis[2] - 0.64f) < 1e-5f,
-		"given a point (Task 11's scope on the gun), it's centered there, facing back along the aim");
+		fabsf(quad.center[2] + HOST_STEREO_HUD_DISTANCE) < 1e-6f && HOST_STEREO_HUD_DISTANCE ==
+		HALO_STEREO_ZOOM_DISTANCE_METERS, "straight ahead on the HUD's plane, 2 m away: its depth is the HUD's");
+	snprintf(what, sizeof(what), "it spans the view: %.3f by %.3f m there (%.1f by %.1f degrees)",
+		2.0f * quad.x_axis[0], 2.0f * quad.y_axis[1], 2.0f * atanf(tangents[0]) / DEGREES,
+		2.0f * atanf(tangents[1]) / DEGREES);
+	check(fabsf(quad.x_axis[0] - tangents[0] * HOST_STEREO_HUD_DISTANCE) < 1e-5f &&
+		fabsf(quad.y_axis[1] - tangents[1] * HOST_STEREO_HUD_DISTANCE) < 1e-5f && quad.x_axis[1] == 0.0f &&
+		quad.x_axis[2] == 0.0f && quad.y_axis[0] == 0.0f && quad.y_axis[2] == 0.0f, what);
+	check(quad.source[0] == 0.0f && quad.source[1] == 0.0f && quad.source[2] == 1.0f && quad.source[3] == 1.0f,
+		"and shows the zoomed picture whole: its frustum is the view's");
+	check(host_stereo_hud_zoom(none, &quad) == 0, "without a view's tangents there's none");
 }
 
 static void level_checks(void)
@@ -582,9 +568,7 @@ int main(int argc, char **argv)
 	ui_checks(16.0f / 9.0f);
 	ui_checks(0.9f);
 	reticle_checks();
-	inset_checks(640.0f);
-	inset_checks(854.0f);
-	inset_checks(1600.0f);
+	zoom_checks();
 	level_checks();
 	cut_checks();
 	printf("%s\n", failures ? "stereo_hud_probe: FAILED" : "stereo_hud_probe: PASS");

@@ -454,7 +454,11 @@ struct gpu_stereo_present
 	int32_t hud_ui;
 	float reticle[3];                  /* where the HUD's center points in the eyes' frame (halo_stereo_reticle) */
 	float hud_tangents[2];             /* the HUD pass's half tangents across and up (halo_stereo_hud_tangents) */
-	gpu_texture inset;                 /* the zoom's inset (halo_stereo.h), laid out as the HUD; 0 if none this frame */
+	/* the zoomed picture (halo_stereo.h), in place of the eyes' pictures,
+	over the whole view; 0 if the frame isn't zoomed. Its half tangents
+	across and up (halo_stereo_zoom_view) size the presenter's quad */
+	gpu_texture zoom;
+	float zoom_tangents[2];
 	/* the crosshairs' layer (HALO_STEREO_LAYER_RETICLE), laid out as the
 	HUD; 0 if none drew this frame */
 	gpu_texture reticle_layer;
@@ -482,7 +486,8 @@ struct gpu_stereo_present
 
 /* presents a stereo frame as gpu_present does a mono one (and returns the
 same). The GL backend's debug view puts eye 0 in the left half of the window,
-eye 1 in the right, and the HUD over each half. */
+eye 1 in the right (or, zoomed, the zoomed picture in both), and the HUD over
+each half. */
 uint32_t gpu_present_stereo(const struct gpu_stereo_present *present);
 /* the GL calls (a backend's commands) issued since the last call, for
 debug.gpu_stats */

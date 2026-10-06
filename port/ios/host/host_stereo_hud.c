@@ -220,21 +220,16 @@ int host_stereo_hud_reticle(float layout_width, const float position[3], const f
 	return 1;
 }
 
-int host_stereo_hud_inset(float layout_width, const float position[3], const float direction[3],
-	struct host_stereo_hud_quad *quad)
+int host_stereo_hud_zoom(const float tangents[2], struct host_stereo_hud_quad *quad)
 {
-	float side, square[4];
-
-	if (!(layout_width > 0.0f))
-		layout_width = 640.0f;
-	side = fminf(HALO_STEREO_INSET_LINES, layout_width);
-	square[0] = layout_width / 2.0f - side / 2.0f;
-	square[1] = HOST_STEREO_HUD_LINES / 2.0f - side / 2.0f;
-	square[2] = layout_width / 2.0f + side / 2.0f;
-	square[3] = HOST_STEREO_HUD_LINES / 2.0f + side / 2.0f;
-	if (!facing_rectangle(layout_width, square, HALO_STEREO_INSET_WIDTH_METERS / 2.0f,
-		HALO_STEREO_INSET_WIDTH_METERS / 2.0f, HALO_STEREO_INSET_DISTANCE_METERS, position, direction, quad))
+	if (!(tangents[0] > 0.0f) || !(tangents[1] > 0.0f))
 		return 0;
+	memset(quad, 0, sizeof(*quad));
+	quad->source[2] = quad->source[3] = 1.0f;
+	quad->center[2] = -HOST_STEREO_HUD_DISTANCE;
+	quad->x_axis[0] = tangents[0] * HOST_STEREO_HUD_DISTANCE;
+	quad->y_axis[1] = tangents[1] * HOST_STEREO_HUD_DISTANCE;
+	quad->frame = HOST_STEREO_HUD_HEAD;
 	/* its picture covers what it's over */
 	quad->opaque = 1;
 	return 1;

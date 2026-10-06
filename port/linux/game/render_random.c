@@ -24,9 +24,10 @@ own seed in and the game's back out, so the game's local sequence advances
 only by the game's own draws. The render's sequence starts as the bitwise
 complement of the game's seed at the first frame.
 
-A stereo frame (render_player_frame_stereo, render.c) draws each eye, and
-the zoom's inset, from the same render seed, so a lightning bolt has one
-shape in both eyes: halo_render_random_stereo_pass puts the seed eye 0
+A stereo frame (render_player_frame_stereo, render.c) draws each eye from
+the same render seed, so a lightning bolt has one shape in both eyes (a
+zoomed frame's one zoomed pass draws as mono does, without these calls):
+halo_render_random_stereo_pass puts the seed eye 0
 started from back before each later pass. Some draws happen in eye 0 alone
 (weather's spawns, the fog screen's wind and layer offsets, a new particle's
 first sprite), so the seed a later pass leaves behind lacks them; were the

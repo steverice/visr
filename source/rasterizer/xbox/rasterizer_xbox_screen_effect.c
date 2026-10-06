@@ -229,19 +229,6 @@ static void rasterizer_screen_effect_set_texture_transforms(
 		48,
 		global_d3d_device);
 
-	/* port: the zoom's inset shades only its square and a margin beside it
-	(halo_stereo_inset_margin_lines): how far past a pixel this effect reads,
-	in the viewport's lines (the blur's taps reach the radius; a warp without
-	a mask shifts the screen by twice it) */
-	if (halo_stereo_current_layer() == HALO_STEREO_LAYER_INSET)
-	{
-		if (parameters->convolution_type == _rasterizer_screen_effect_convolution_type_blur)
-			halo_stereo_inset_blur_reach(parameters->convolution_radius);
-		else if (parameters->convolution_type == _rasterizer_screen_effect_convolution_type_warp)
-			halo_stereo_inset_blur_reach(parameters->convolution_mask ?
-				parameters->convolution_radius : 2.0f * parameters->convolution_radius);
-	}
-
 	{
 		struct bitmap_data viewport_map =
 		{
@@ -362,6 +349,20 @@ static void rasterizer_screen_effect_set_texture_transforms(
 		{
 			constants[0][3] += x_offset * convolution_scale.i;
 			constants[1][3] += y_offset * convolution_scale.j;
+			/* port: the zoomed pass is shown over the view's shape, not the
+			screen's (halo_stereo_zoom_fit): the mask, laid out centered in
+			the screen's lines, is widened or narrowed across about the
+			viewport's center so it keeps its shape, fit to the view's
+			height: its coordinate at a pixel x becomes its coordinate at
+			c + (x - c) / fit, c the viewport's center */
+			if (halo_stereo_current_layer() == HALO_STEREO_LAYER_ZOOM)
+			{
+				real fit = halo_stereo_zoom_fit((real)viewport_map.width / (real)viewport_map.height);
+				real center = viewport_map.width * 0.5f;
+
+				constants[0][3] += center * convolution_scale.i * (1.0f - 1.0f / fit);
+				constants[0][0] /= fit;
+			}
 		}
 
 		if (scanline_bitmap == &viewport_map)

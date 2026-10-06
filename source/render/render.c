@@ -87,7 +87,7 @@ symbols in this file:
 #include "effects/weather_particle_systems.h"
 #include "main/main.h"
 #include "main/console.h" /* port: stereo's UI quad (console_is_active) */
-#include "game/players.h" /* port: stereo's zoom inset (player_control_get_zoom_level) */
+#include "game/players.h" /* port: stereo's zoomed pass (player_control_get_zoom_level) */
 #include "structures/structures.h"
 
 /* ---------- constants */
@@ -459,9 +459,9 @@ static void render_window(
 		else
 		{
 			interface_draw_screen_effects();
-			/* the zoom's inset takes its flash after the HUD pass draws its
-			crosshairs into it, over them as in mono */
-			if (halo_stereo_current_layer() != HALO_STEREO_LAYER_INSET)
+			/* the zoomed pass takes its flash after the HUD pass draws the
+			zoomed view's elements into it, over them as in mono */
+			if (halo_stereo_current_layer() != HALO_STEREO_LAYER_ZOOM)
 				rasterizer_screen_flash();
 		}
 	}
@@ -506,36 +506,23 @@ static void render_player_frame_stereo(
 	real time_delta_since_tick_sec;
 	struct render_screen_flash screen_flash;
 	float fade[4];
-	boolean inset;
-	short pass_count;
-	struct render_camera inset_camera;
-	struct render_camera inset_rasterizer_camera;
+	boolean zoomed;
+	short first_pass;
+	short pass_end;
+	struct render_camera zoom_camera;
+	struct render_camera zoom_rasterizer_camera;
+	real_rectangle2d zoom_bounds;
+	struct render_frustum zoom_frustum;
 
 	stereo = halo_stereo_frame();
-	/* the zoom's inset (halo_stereo.h): while zoomed in HEAD mode's full
-	view the eyes keep the headset's view, and a third pass renders the
-	zoomed camera mono into the inset layer. Its cameras are the game's
-	before the head turns them below (halo_stereo_inset_orient turns them on
-	foot), with the field of view that magnifies the inset's quad by the
-	zoom's own figure over the world beside it */
-	inset_camera = *camera;
-	inset_rasterizer_camera = window->rasterizer_camera;
-	halo_stereo_inset_orient(&inset_camera.forward.i, &inset_camera.up.i);
-	halo_stereo_inset_orient(&inset_rasterizer_camera.forward.i, &inset_rasterizer_camera.up.i);
-	{
-		/* the game's field of view spans its window's height (the HUD's safe
-		frame), the inset's square the whole screen's: the frustum's bounds
-		are in units of the window's half height */
-		real_rectangle2d screen_bounds;
-		real inset_tangent = tangent(
-			halo_stereo_inset_field_of_view(halo_zoom_magnification(window->local_player_index)) * 0.5f);
-
-		render_camera_build_frustum_bounds(&inset_camera, &screen_bounds);
-		if (screen_bounds.y1 > 0.0f)
-			inset_tangent /= screen_bounds.y1;
-		inset_camera.vertical_field_of_view = inset_rasterizer_camera.vertical_field_of_view =
-			2.0f * arctangent(inset_tangent, 1.0f);
-	}
+	/* the zoom (halo_stereo.h): while zoomed in HEAD mode's full view, one
+	mono pass of the zoomed camera fills the view in place of the eyes. Its
+	cameras are the game's before the head turns them below
+	(halo_stereo_zoom_orient turns them on foot) */
+	zoom_camera = *camera;
+	zoom_rasterizer_camera = window->rasterizer_camera;
+	halo_stereo_zoom_orient(&zoom_camera.forward.i, &zoom_camera.up.i);
+	halo_stereo_zoom_orient(&zoom_rasterizer_camera.forward.i, &zoom_rasterizer_camera.up.i);
 	/* head-tracked stereo: the cameras turn by the head's turn the look takes
 	in next frame, and tilt by its roll (the render's alone; the aim has no
 	roll), so the picture matches the pose the presenter hands the
@@ -543,13 +530,33 @@ static void render_player_frame_stereo(
 	halo_stereo_head_orient(&camera->forward.i, &camera->up.i);
 	halo_stereo_head_orient(&window->rasterizer_camera.forward.i, &window->rasterizer_camera.up.i);
 	/* (after the head's turn, which sets where a seat's reticle points) */
-	inset = halo_stereo_inset_begin(player_control_get_zoom_level(window->local_player_index) != NONE);
-	pass_count = inset ? 3 : 2;
+	zoomed = halo_stereo_zoom_begin(player_control_get_zoom_level(window->local_player_index) != NONE);
+	/* the eyes (passes 0 and 1), or while zoomed the zoomed pass alone (2) */
+	first_pass = zoomed ? 2 : 0;
+	pass_end = zoomed ? 3 : 2;
 	/* the presenter's depth range (d3d8_device.c): the eyes' planes */
 	halo_stereo_set_depth_range(window->rasterizer_camera.z_near, window->rasterizer_camera.z_far);
 	aspect = (real)(window->rasterizer_camera.viewport_bounds.x1 - window->rasterizer_camera.viewport_bounds.x0) /
 		(real)(window->rasterizer_camera.viewport_bounds.y1 - window->rasterizer_camera.viewport_bounds.y0);
 	field_of_view_tangent = tangent(window->rasterizer_camera.vertical_field_of_view * 0.5f);
+	/* the zoomed pass's frustum: symmetric over the view the eyes span
+	(halo_stereo_zoom_view), each tangent over the zoom's magnification, so
+	its picture shown over the view is that many times the world's angular
+	scale. It culls with its own (render_player_frame does), so a seat's
+	zoom, along the gun, sees what the head has turned away from */
+	{
+		real view[2];
+		real magnification = halo_zoom_magnification(window->local_player_index);
+
+		halo_stereo_zoom_view(view);
+		if (!(magnification >= 1.0f))
+			magnification = 1.0f;
+		zoom_bounds.x1 = view[0] / magnification / (aspect * field_of_view_tangent);
+		zoom_bounds.x0 = -zoom_bounds.x1;
+		zoom_bounds.y1 = view[1] / magnification / field_of_view_tangent;
+		zoom_bounds.y0 = -zoom_bounds.y1;
+		render_camera_build_frustum(&zoom_camera, &zoom_bounds, &zoom_frustum, TRUE);
+	}
 	/* the screen's eyes (the 3D film's, SCREEN gameplay's) take their
 	frusta from the camera's field of view (stereo.c); nothing otherwise */
 	halo_stereo_screen_frusta(field_of_view_tangent);
@@ -587,8 +594,13 @@ static void render_player_frame_stereo(
 	/* port: what the game sizes in pixels (model detail, the model cull,
 	particles, sprites) reads the culling frustum's pixel scale, which the
 	union's bounds would make about half mono's: keep mono's, times
-	display.lod_scale (stereo_lod.c). The planes stay the union's */
-	halo_stereo_lod_projection(&cull_camera, &cull_frustum);
+	display.lod_scale (stereo_lod.c). The planes stay the union's. The
+	zoomed pass, which culls with its own frustum, keeps mono's zoomed scale
+	the same way */
+	if (zoomed)
+		halo_stereo_lod_projection(&zoom_camera, &zoom_frustum);
+	else
+		halo_stereo_lod_projection(&cull_camera, &cull_frustum);
 	halo_stereo_log_culling(cull_distance_back);
 
 	cross_product3d(&window->rasterizer_camera.forward, &window->rasterizer_camera.up, &right);
@@ -608,15 +620,14 @@ static void render_player_frame_stereo(
 	halo_stereo_set_fade(fade);
 
 	time_delta_since_tick_sec = render.time_delta_since_tick_sec;
-	/* the eyes, then the zoom's inset if any (pass 2) */
-	for (eye = 0; eye < pass_count; eye++)
+	/* the eyes, or the zoomed pass (pass 2) alone */
+	for (eye = first_pass; eye < pass_end; eye++)
 	{
 		struct render_camera eye_camera;
 		real_rectangle2d eye_bounds;
 		struct render_frustum eye_frustum;
 		struct render_mirror mirror;
 		boolean has_mirror = FALSE;
-		struct render_frustum inset_frustum;
 
 		if (eye < 2)
 		{
@@ -637,23 +648,21 @@ static void render_player_frame_stereo(
 		}
 		else
 		{
-			/* the inset: mono's zoomed camera and frustum, which it also culls
-			with (render_player_frame), so a seat's inset, along the gun,
-			sees what the head has turned away from */
-			eye_camera = inset_rasterizer_camera;
-			render_camera_build_frustum_bounds(&inset_camera, &eye_bounds);
-			render_camera_build_frustum(&inset_camera, &eye_bounds, &inset_frustum, TRUE);
+			/* the zoomed pass: the zoomed camera over the view */
+			eye_camera = zoom_rasterizer_camera;
+			eye_bounds = zoom_bounds;
 		}
 		render_camera_build_frustum(&eye_camera, &eye_bounds, &eye_frustum, TRUE);
 
 		/* the layer is set before the mirror, so a screen-sized target the
 		mirror pass touches is this eye's */
-		halo_stereo_layer(eye < 2 ? eye : HALO_STEREO_LAYER_INSET);
+		halo_stereo_layer(eye < 2 ? eye : HALO_STEREO_LAYER_ZOOM);
 		/* port: once per frame in stereo: what advances by the frame's time
 		while it renders (glow, the sky's animation, weather) advances in eye
-		0 only, and eye 1 and the inset (their mirrors too) draw the same
-		moment (halo_stereo_repeat_pass) */
-		if (eye >= 1)
+		0 only, and eye 1 (its mirror too) draws the same moment
+		(halo_stereo_repeat_pass); the zoomed pass is a zoomed frame's only
+		one, and advances it */
+		if (eye == 1)
 			render.time_delta_since_tick_sec = 0.0f;
 		/* port: and what renders from the local random seed (a lightning
 		bolt's shape and jitter) draws the same numbers in every pass, so eye
@@ -665,8 +674,10 @@ static void render_player_frame_stereo(
 		before both. The fog screen's own new layer offsets don't matter: a
 		repeat pass's fog screen state is put back when its window ends
 		(rasterizer_xbox_environment_fog.c). A consumer added later than
-		those needs its own per-frame seed, as Task 4's review suggested */
-		halo_render_random_stereo_pass(eye); /* render_random.c */
+		those needs its own per-frame seed, as Task 4's review suggested. The
+		zoomed pass, a frame's only one, takes the seed as mono does */
+		if (!zoomed)
+			halo_render_random_stereo_pass(eye); /* render_random.c */
 		/* the mirror's render_window runs in the eye's layer, so it skips
 		render_ui_widgets, deliberately: they draw once, in the HUD pass. It
 		takes the flash as mono's mirror does (the game's function, for no
@@ -717,13 +728,13 @@ static void render_player_frame_stereo(
 		render_stereo_visibility_camera = eye < 2 ? &cull_camera : NULL;
 		render_stereo_screen_flash = &screen_flash;
 		/* port: the eye's position, for what sits at infinity in each eye
-		(the sky, render_sky); not the inset's mono pass, and set only now,
+		(the sky, render_sky); not the zoomed mono pass, and set only now,
 		so the mirror's window above keeps its own camera */
 		halo_stereo_set_eye_position(eye < 2 ? &eye_camera.position : NULL);
 		render_window(
 			window->local_player_index,
-			eye < 2 ? camera : &inset_camera,
-			eye < 2 ? &cull_frustum : &inset_frustum,
+			eye < 2 ? camera : &zoom_camera,
+			eye < 2 ? &cull_frustum : &zoom_frustum,
 			&eye_camera,
 			&eye_frustum,
 			_render_target_primary,
@@ -734,7 +745,8 @@ static void render_player_frame_stereo(
 	}
 	render.time_delta_since_tick_sec = time_delta_since_tick_sec;
 	/* port: the frame leaves the seed where eye 0 left it (render_random.c) */
-	halo_render_random_stereo_end();
+	if (!zoomed)
+		halo_render_random_stereo_end();
 
 	/* the HUD pass: the presenter blends its layer over each eye by its
 	alpha, the picture's transmittance (d3d8_device.c, hud_layer_blend). The
@@ -762,8 +774,9 @@ static void render_player_frame_stereo(
 	rasterizer_window_begin(&parameters);
 	if (!bink_playback_in_progress())
 	{
-		/* (while zoomed, the crosshairs and the zoomed view's elements draw
-		into the inset: halo_stereo_inset_overlay) */
+		/* (while zoomed, the zoomed view's elements draw into the zoomed
+		picture, halo_stereo_zoom_overlay, and the crosshairs into the
+		reticle's layer as over the eyes) */
 		interface_draw_hud();
 		/* port: the flash over the HUD layer, and over each HUD group's
 		target and the reticle's layer that drew this frame, as mono's is
@@ -793,10 +806,11 @@ static void render_player_frame_stereo(
 			halo_stereo_layer(HALO_STEREO_LAYER_HUD);
 		}
 		halo_hud_group_measure(TRUE);
-		/* the inset's flash, over its crosshairs as mono's is over the HUD */
-		if (inset)
+		/* the zoomed picture's flash, over the zoomed view's elements as
+		mono's is over the HUD */
+		if (zoomed)
 		{
-			halo_stereo_layer(HALO_STEREO_LAYER_INSET);
+			halo_stereo_layer(HALO_STEREO_LAYER_ZOOM);
 			rasterizer_screen_flash();
 			halo_stereo_layer(HALO_STEREO_LAYER_HUD);
 		}

@@ -53,9 +53,10 @@ The HUD is laid out at hud_aspect's shape (its width over its height); with
 hud_ui the HUD layer holds a menu, the console or a progress bar and
 everything goes whole on the UI's quad; reticle is where the crosshair
 points in the eyes' frame, and hud_tangents the HUD pass's projection, for
-the catch-all quad. inset (nil: none) is the zoom's inset, laid out as the
-HUD, whose central square goes on its own quad on the HUD's plane, under
-the HUD's quads (host_stereo_hud_inset). While expanding (a cutscene's
+the catch-all quad. zoom (nil: none) is the zoomed picture, which shows in
+place of the eyes' pictures over the whole view, on an opaque quad on the
+HUD's plane zoom_tangents wide and tall, under the HUD's quads
+(host_stereo_hud_zoom). While expanding (a cutscene's
 film handing over to the full view, halo_stereo_window.h) the eyes show only
 inside the window growing from the theater screen's rectangle at expansion
 (0 to 1), black on the bars it carries (expansion_bars), with the theater's
@@ -64,8 +65,9 @@ only a menu's UI quad */
 void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLTexture> right,
 	id<MTLTexture> left_depth, id<MTLTexture> right_depth, __unsafe_unretained id<MTLTexture> const *hud_layers,
 	const float (*hud_group_extent)[4], float hud_aspect, int hud_ui, const float reticle[3],
-	const float hud_tangents[2], id<MTLTexture> inset, float near_meters, float far_meters, float brightness,
-	float vignette, float ui_dim, int expanding, float expansion, float expansion_bars, const float fade[4]);
+	const float hud_tangents[2], id<MTLTexture> zoom, const float zoom_tangents[2], float near_meters,
+	float far_meters, float brightness, float vignette, float ui_dim, int expanding, float expansion,
+	float expansion_bars, const float fade[4]);
 /* HEAD mode without eyes this frame (a load: a mono picture), or with a
 menu over the film (the main menu's scripted scene, the pause menu in a
 cutscene): 1 while the Compositor's frame host_stereo_frame opened can take

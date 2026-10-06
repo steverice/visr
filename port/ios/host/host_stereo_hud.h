@@ -94,8 +94,8 @@ struct host_stereo_hud_quad
 	int layer;
 	/* the catch-all: the HUD layer whole, head-locked */
 	int catch_all;
-	/* covers what it's over whatever its texture's alpha (the zoom's inset,
-	a picture) */
+	/* covers what it's over whatever its texture's alpha (the zoomed
+	picture, a picture) */
 	int opaque;
 };
 
@@ -117,19 +117,14 @@ arguments. */
 int host_stereo_hud_reticle(float layout_width, const float position[3], const float direction[3],
 	struct host_stereo_hud_quad *quad);
 
-/* The zoom's inset (halo_stereo.h): the inset layer's central square,
-HALO_STEREO_INSET_LINES on a side (the layer is laid out as the HUD,
-layout_width lines across), on an opaque square quad
-HALO_STEREO_INSET_WIDTH_METERS wide, facing the eyes, by the reticle's
-rule (host_stereo_hud_reticle) at HALO_STEREO_INSET_DISTANCE_METERS:
-straight ahead and head-locked on foot, along a head-tracked seat's aim,
-none when that's not ahead, or centered at position (Task 11: the scope on
-the gun). At the HUD's distance, it's drawn before the HUD's pieces, so the
-counters, meters and tracker stay readable over it with no clash of depth;
-the game draws the crosshairs into the inset meanwhile, so the reticle's
-quad is empty */
-int host_stereo_hud_inset(float layout_width, const float position[3], const float direction[3],
-	struct host_stereo_hud_quad *quad);
+/* The zoom (halo_stereo.h, "Zoom fills the view"): the zoomed picture
+whole on an opaque head-locked quad straight ahead on the HUD's plane,
+HOST_STEREO_HUD_DISTANCE away, tangents (the guest's halo_stereo_zoom_view:
+half tangents across and up) wide and tall there, so it covers both eyes'
+views and its depth is the HUD's. Drawn in place of the eyes' pictures and
+before the HUD's pieces and the reticle, which stay over it; 0 (no quad)
+without positive tangents */
+int host_stereo_hud_zoom(const float tangents[2], struct host_stereo_hud_quad *quad);
 
 /* the quads for a HEAD-mode frame's HUD laid out layout_width lines across,
 given each HUD group's rectangle (group_extent: x0, y0, x1, y1 in layout

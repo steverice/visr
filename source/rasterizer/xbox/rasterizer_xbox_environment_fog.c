@@ -397,16 +397,17 @@ static struct render_lighting const *cached_lighting = NULL;
 static struct render_animation const *cached_animation = NULL;
 static boolean reported_too_many_opaque_models = FALSE;
 static boolean local_fog_screen_first_time = TRUE;
-/* port: a stereo frame's repeat passes (eye 1, the zoom's inset;
-halo_stereo_repeat_pass) share the window's fog screen state with eye 0:
+/* port: a stereo frame's repeat pass (eye 1; halo_stereo_repeat_pass)
+shares the window's fog screen state with eye 0:
 the scroll its layers take from the camera's motion since the last pass,
 and the camera that motion is measured from. Each repeat pass takes its
 layers from that state as eye 0 left it, which turns the offset between
 its camera and eye 0's into the layers' parallax, and puts the state back
 when its window ends, so the persistent state follows eye 0's camera alone
-from frame to frame. Without that, the zoom's inset (a narrower view, so a
-larger scroll for the same offset) left a net scroll every frame and the
-fog crawled sideways while the player held still */
+from frame to frame. Without that, a repeat pass with a narrower view
+(Task 8's zoom inset: a larger scroll for the same offset) left a net
+scroll every frame and the fog crawled sideways while the player held
+still */
 static struct rasterizer_environment_fog_screen_window fog_screen_saved_window;
 static real_matrix4x3 fog_screen_saved_camera_matrix;
 static short fog_screen_saved_window_index = NONE;
@@ -1059,8 +1060,8 @@ void _rasterizer_environment_fog_screen_begin(
 			}
 
 			/* port: once per frame in stereo: the wind turns and blows in eye 0
-			only; eye 1 and the zoom's inset still move the layers by their own
-			cameras */
+			only (or in the zoomed pass, a zoomed frame's only one); eye 1 still
+			moves the layers by its own camera */
 			if (!halo_stereo_repeat_pass())
 				rasterizer_environment_fog_screen_wind_update(screen, &window->wind);
 			rasterizer_environment_fog_screen_wind_get_vector(

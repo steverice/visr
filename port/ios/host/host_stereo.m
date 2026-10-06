@@ -72,8 +72,8 @@ static unsigned long screen_frames, stereo_presents, ui_presents;
 /* the last frame's HUD went whole on the UI's quad: -1 none yet since the
 space opened */
 static int ui_shown = -1;
-/* the last frame showed the zoom's inset */
-static int inset_logged;
+/* the last frame showed the zoomed picture */
+static int zoom_logged;
 static int depth_reported;
 /* the Compositor's frame is open for this game frame (host_stereo_frame)
 with display.stereo = "head", whatever the frame is (the full view, the film
@@ -1020,7 +1020,7 @@ void host_stereo_space_opened(void *layer_renderer)
 	stereo_presents = 0;
 	ui_presents = 0;
 	ui_shown = -1;
-	inset_logged = 0;
+	zoom_logged = 0;
 	depth_reported = 0;
 	foveation_logged_key = nil;
 	foveation_frames = 0;
@@ -1192,8 +1192,9 @@ static void rotation_rows(simd_float4x4 matrix, float rows[3][3])
 void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLTexture> right,
 	id<MTLTexture> left_depth, id<MTLTexture> right_depth, __unsafe_unretained id<MTLTexture> const *hud_layers,
 	const float (*hud_group_extent)[4], float hud_aspect, int hud_ui, const float reticle[3],
-	const float hud_tangents[2], id<MTLTexture> inset, float near_meters, float far_meters, float brightness,
-	float vignette, float ui_dim, int expanding, float expansion, float expansion_bars, const float fade[4])
+	const float hud_tangents[2], id<MTLTexture> zoom, const float zoom_tangents[2], float near_meters,
+	float far_meters, float brightness, float vignette, float ui_dim, int expanding, float expansion,
+	float expansion_bars, const float fade[4])
 {
 	id<MTLTexture> hud = hud_layers[HOST_STEREO_HUD_LAYER_HUD];
 	/* the HUD's pieces need its layer or the UI's (a pause can leave the
@@ -1229,11 +1230,11 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 		the game's picture in mono, where it multiplies the gamma-encoded
 		color: about the 2.2 power of that in linear light */
 		float ui_keep = 1.0f - fmaxf(0.0f, fminf(1.0f, ui_dim));
-		/* the zoom's inset, under the HUD, along the reticle's direction; not
-		while a menu holds the HUD layer, whose UI quad it would cover */
-		struct host_stereo_hud_quad inset_quad;
-		int inset_shown = inset && !hud_ui && !expanding &&
-			host_stereo_hud_inset(layout_width, NULL, reticle, &inset_quad);
+		/* the zoomed picture, in place of the eyes' over the whole view, under
+		the HUD; the guest passes it only when its pass ran, which waits
+		while a menu holds the HUD layer */
+		struct host_stereo_hud_quad zoom_quad;
+		int zoom_shown = zoom && !expanding && host_stereo_hud_zoom(zoom_tangents, &zoom_quad);
 		/* outside the expanding window the theater's surroundings show: the
 		dark, or the room */
 		double clear_alpha = expanding && !host_theater_dark() ? 0.0 : 1.0;
@@ -1248,18 +1249,17 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 				1000.0f * host_stereo_hud_band_scale(layout_width, hud_group_extent), 1000.0f * HOST_STEREO_HUD_METERS_PER_LINE,
 				HOST_STEREO_HUD_DISTANCE, HUD_SHARP_RADIUS_DEGREES, hud_tangents ? hud_tangents[0] : 0.0f,
 				hud_tangents ? hud_tangents[1] : 0.0f, near_meters, far_meters, count, count == 1 ? "" : "s");
-		/* the zoom's inset as it comes and goes */
-		if ((inset_shown != 0) != inset_logged)
+		/* the zoomed picture as it comes and goes */
+		if ((zoom_shown != 0) != zoom_logged)
 		{
-			if (inset_shown)
-				host_logf(HOST_LOG_INFO, "stereo: zoomed: the inset (%lux%lu, its central %.0f lines) on a quad %.2f m "
-					"wide, %.2f m ahead along (%.3f, %.3f, %.3f)", (unsigned long)inset.width,
-					(unsigned long)inset.height, fminf(HALO_STEREO_INSET_LINES, layout_width),
-					HALO_STEREO_INSET_WIDTH_METERS, HALO_STEREO_INSET_DISTANCE_METERS, inset_quad.center[0],
-					inset_quad.center[1], inset_quad.center[2]);
+			if (zoom_shown)
+				host_logf(HOST_LOG_INFO, "stereo: zoomed: the zoomed picture (%lux%lu) fills the view in place of the "
+					"eyes' on a head-locked quad %.2f by %.2f m, %.1f m ahead (half tangents %.3f by %.3f)",
+					(unsigned long)zoom.width, (unsigned long)zoom.height, 2.0f * zoom_quad.x_axis[0],
+					2.0f * zoom_quad.y_axis[1], -zoom_quad.center[2], zoom_tangents[0], zoom_tangents[1]);
 			else
-				host_logf(HOST_LOG_INFO, "stereo: the inset is gone");
-			inset_logged = inset_shown != 0;
+				host_logf(HOST_LOG_INFO, "stereo: the zoomed picture is gone: the eyes' pictures");
+			zoom_logged = zoom_shown != 0;
 		}
 		/* each change between the HUD's pieces and the UI's quad */
 		if (hud_shown && (hud_ui != 0) != ui_shown)
@@ -1394,49 +1394,56 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 				if (color.textureType == MTLTextureType2DArray)
 					pass.renderTargetArrayLength = 1;
 				/* foveated: every draw into the view goes through its rate map,
-				the eye's picture, the inset and the HUD's quads alike; the
-				viewport stays the texture map's, the logical one in the map's
-				screen coordinates */
+				the eye's picture, the zoomed picture and the HUD's quads alike;
+				the viewport stays the texture map's, the logical one in the
+				map's screen coordinates */
 				pass.rasterizationRateMap = host_theater_view_rate_map(drawable, map);
 				id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
 				[encoder setViewport:cp_view_texture_map_get_viewport(map)];
 				[encoder setDepthStencilState:depth_always];
-				/* foveated eye passes: the eye's picture is in its map's physical
-				layout, at the top left of its targets (foveated_eyes) */
-				if (eye_rate_maps[eye] && colors[eye].width == (NSUInteger)foveated_allocated_width &&
-					colors[eye].height == (NSUInteger)foveated_allocated_height)
+				/* the eye's picture, unless the zoomed picture takes its place */
+				if (!zoom_shown)
 				{
-					MTLSize physical = [eye_rate_maps[eye] physicalSizeForLayer:0];
-					struct eye_foveation foveation = {
-						{ (float)picture_width, (float)picture_height },
-						{ (float)physical.width, (float)physical.height },
-						{ (float)colors[eye].width, (float)colors[eye].height } };
+					/* foveated eye passes: the eye's picture is in its map's
+					physical layout, at the top left of its targets (foveated_eyes) */
+					if (eye_rate_maps[eye] && colors[eye].width == (NSUInteger)foveated_allocated_width &&
+						colors[eye].height == (NSUInteger)foveated_allocated_height)
+					{
+						MTLSize physical = [eye_rate_maps[eye] physicalSizeForLayer:0];
+						struct eye_foveation foveation = {
+							{ (float)picture_width, (float)picture_height },
+							{ (float)physical.width, (float)physical.height },
+							{ (float)colors[eye].width, (float)colors[eye].height } };
 
-					[encoder setRenderPipelineState:eye_foveated_pipeline];
-					[encoder setFragmentBuffer:eye_rate_map_parameters[eye] offset:0 atIndex:1];
-					[encoder setFragmentBytes:&foveation length:sizeof(foveation) atIndex:2];
+						[encoder setRenderPipelineState:eye_foveated_pipeline];
+						[encoder setFragmentBuffer:eye_rate_map_parameters[eye] offset:0 atIndex:1];
+						[encoder setFragmentBytes:&foveation length:sizeof(foveation) atIndex:2];
+					}
+					else
+						[encoder setRenderPipelineState:eye_pipeline];
+					[encoder setFragmentTexture:colors[eye] atIndex:0];
+					[encoder setFragmentTexture:depths[eye] atIndex:1];
+					[encoder setFragmentSamplerState:linear_sampler atIndex:0];
+					[encoder setFragmentSamplerState:nearest_sampler atIndex:1];
+					[encoder setFragmentBytes:&eye_uniforms length:sizeof(eye_uniforms) atIndex:0];
+					[encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
 				}
-				else
-					[encoder setRenderPipelineState:eye_pipeline];
-				[encoder setFragmentTexture:colors[eye] atIndex:0];
-				[encoder setFragmentTexture:depths[eye] atIndex:1];
-				[encoder setFragmentSamplerState:linear_sampler atIndex:0];
-				[encoder setFragmentSamplerState:nearest_sampler atIndex:1];
-				[encoder setFragmentBytes:&eye_uniforms length:sizeof(eye_uniforms) atIndex:0];
-				[encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
-				/* the zoom's inset, on the HUD's plane, then the HUD's pieces at
-				the shape the game lays it out in (its texture is the eyes' size,
-				whose pixels needn't be square), which stay readable over it */
-				if (inset_shown || quad_count > 0)
+				/* the zoomed picture, opaque on the HUD's plane with the plane's
+				depth, then the HUD's pieces at the shape the game lays it out in
+				(its texture is the eyes' size, whose pixels needn't be square),
+				which stay readable over it */
+				if (zoom_shown || quad_count > 0)
 				{
 					simd_float4x4 clip_from_device = simd_mul(projection, simd_inverse(cp_view_get_transform(view)));
 
-					if (inset_shown)
+					/* (dimmed as the eye's picture would be: the cut's fade and the
+					widgets' dim, eye_uniforms.brightness) */
+					if (zoom_shown)
 					{
-						__unsafe_unretained id<MTLTexture> inset_layers[1] = { inset };
+						__unsafe_unretained id<MTLTexture> zoom_layers[1] = { zoom };
 
-						hud_draw(encoder, inset_layers, 1, &inset_quad, 1, clip_from_device, level, decode_srgb,
-							brightness, 1);
+						hud_draw(encoder, zoom_layers, 1, &zoom_quad, 1, clip_from_device, level, decode_srgb,
+							eye_uniforms.brightness, 1);
 					}
 					if (quad_count > 0)
 						hud_draw(encoder, hud_layers, HOST_STEREO_HUD_LAYER_COUNT, quads, quad_count, clip_from_device,
@@ -1466,7 +1473,8 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 	(void)hud_ui;
 	(void)reticle;
 	(void)hud_tangents;
-	(void)inset;
+	(void)zoom;
+	(void)zoom_tangents;
 	(void)near_meters;
 	(void)far_meters;
 	(void)brightness;
@@ -1550,9 +1558,8 @@ void host_stereo_present_ui(id<MTLCommandQueue> queue, id<MTLTexture> picture, i
 				if (color.textureType == MTLTextureType2DArray)
 					pass.renderTargetArrayLength = 1;
 				/* foveated: every draw into the view goes through its rate map,
-				the eye's picture, the inset and the HUD's quads alike; the
-				viewport stays the texture map's, the logical one in the map's
-				screen coordinates */
+				the picture and the quads alike; the viewport stays the texture
+				map's, the logical one in the map's screen coordinates */
 				pass.rasterizationRateMap = host_theater_view_rate_map(drawable, map);
 				id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
 				[encoder setViewport:cp_view_texture_map_get_viewport(map)];
