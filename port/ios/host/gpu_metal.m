@@ -870,7 +870,7 @@ static uint32_t gpu_metal_stream(uint32_t kind, const void *data, uint32_t size,
 {
 	@autoreleasepool
 	{
-		MetalBuffer *record;
+		__unsafe_unretained MetalBuffer *record;
 		uint32_t offset;
 
 		frame_begin();
@@ -1735,7 +1735,7 @@ frame's draws until a serial moves: a Metal draw reads everything bound, so
 each snapshot is whole */
 static void bind_constants(const struct gpu_constant_store *constants, const struct gpu_uniforms *uniforms)
 {
-	MetalBuffer *record;
+	__unsafe_unretained MetalBuffer *record;
 
 	if (!snapshot.valid || snapshot.frame != frames || snapshot.constants_serial != constants->serial ||
 		snapshot.uniforms_serial != uniforms->serial)
@@ -1777,7 +1777,7 @@ static void bind_attributes(const struct gpu_draw *draw)
 	{
 		const struct gpu_vertex_attribute *attribute = &draw->attributes[index];
 		struct metal_attribute *entry = &table.entries[index];
-		MetalBuffer *record = attribute->stream < GPU_STREAM_CONSTANT ?
+		__unsafe_unretained MetalBuffer *record = attribute->stream < GPU_STREAM_CONSTANT ?
 			buffer_record(draw->streams[attribute->stream].buffer) : nil;
 
 		entry->format = attribute->format;
@@ -1821,9 +1821,9 @@ static void bind_stages(const struct gpu_draw *draw, unsigned exact)
 	for (stage = 0; stage < GPU_STAGE_COUNT; stage++)
 	{
 		const struct gpu_stage *packet = &draw->stages[stage];
-		MetalTexture *record = packet->type ? texture_record(packet->texture) : nil;
-		id<MTLTexture> texture = record ? record->texture : nil;
-		id<MTLSamplerState> sampler;
+		__unsafe_unretained MetalTexture *record = packet->type ? texture_record(packet->texture) : nil;
+		__unsafe_unretained id<MTLTexture> texture = record ? record->texture : nil;
+		__unsafe_unretained id<MTLSamplerState> sampler;
 
 		/* a stage with no texture, or one with no storage yet, samples black,
 		as GL's texture 0 or an incomplete texture does */
@@ -1892,11 +1892,11 @@ static uint32_t convert_primitive(const struct gpu_draw *draw, MTLPrimitiveType 
 {
 	const uint16_t *source = NULL;
 	uint32_t count = draw->count, converted, index, *indices;
-	MetalBuffer *record;
+	__unsafe_unretained MetalBuffer *record;
 
 	if (draw->index_buffer)
 	{
-		MetalBuffer *index_record = buffer_record(draw->index_buffer);
+		__unsafe_unretained MetalBuffer *index_record = buffer_record(draw->index_buffer);
 
 		if (!index_record || draw->index_offset + (uint64_t)count * 2 > index_record->buffer.length)
 			return 0;
@@ -1939,9 +1939,12 @@ static uint32_t gpu_metal_draw(const struct gpu_draw *draw, const struct gpu_con
 {
 	@autoreleasepool
 	{
-		MetalShader *vertex = table_get(shaders, draw->vertex_shader), *pixel = table_get(shaders, draw->pixel_shader);
-		MetalTexture *depth = texture_record(draw->depth_target);
-		id<MTLRenderPipelineState> pipeline;
+		/* (unretained: the tables and caches keep these for longer than the
+		draw, so retaining them would only cost a retain and a release each) */
+		__unsafe_unretained MetalShader *vertex = table_get(shaders, draw->vertex_shader);
+		__unsafe_unretained MetalShader *pixel = table_get(shaders, draw->pixel_shader);
+		__unsafe_unretained MetalTexture *depth = texture_record(draw->depth_target);
+		__unsafe_unretained id<MTLRenderPipelineState> pipeline;
 		unsigned long width, height;
 		struct gpu_rect area;
 		MTLScissorRect scissor;
@@ -1989,7 +1992,7 @@ static uint32_t gpu_metal_draw(const struct gpu_draw *draw, const struct gpu_con
 		if (metal_state_object(&state_cache, METAL_STATE_PIPELINE, (__bridge void *)pipeline, 0))
 			[encoder setRenderPipelineState:pipeline];
 		{
-			id<MTLDepthStencilState> depth_stencil = depth_state(&draw->depth_stencil);
+			__unsafe_unretained id<MTLDepthStencilState> depth_stencil = depth_state(&draw->depth_stencil);
 			uint32_t reference = draw->depth_stencil.stencil_reference & 0xff;
 			MTLViewport viewport = { (double)draw->viewport.x, (double)draw->viewport.y,
 				(double)draw->viewport.width, (double)draw->viewport.height, draw->viewport.min_z, draw->viewport.max_z };
@@ -2053,7 +2056,7 @@ static uint32_t gpu_metal_draw(const struct gpu_draw *draw, const struct gpu_con
 		}
 		if (draw->index_buffer)
 		{
-			MetalBuffer *record = buffer_record(draw->index_buffer);
+			__unsafe_unretained MetalBuffer *record = buffer_record(draw->index_buffer);
 
 			if (!record)
 				return 1;
