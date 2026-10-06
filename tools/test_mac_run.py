@@ -1,8 +1,12 @@
 """Tests for the Mac runner's pure helpers (tools/mac_run.py)."""
 
+import argparse
 import plistlib
+import shutil
 import struct
 from pathlib import Path
+
+import pytest
 
 from tools import mac_run
 
@@ -379,3 +383,472 @@ def test_simulator_run_refuses_a_missing_app(tmp_path):
         assert "no simulator app" in str(stop)
     else:
         raise AssertionError("run_simulator accepted a missing app")
+
+
+def make_native_app(root, bundle_id):
+    """a stand-in for the Catalyst app: its executable and Info.plist"""
+    app = root / "build/HaloCE.app"
+    (app / "Contents/MacOS").mkdir(parents=True)
+    (app / "Contents/MacOS/HaloCE").write_text("")
+    with (app / "Contents/Info.plist").open("wb") as file:
+        plistlib.dump({"CFBundleIdentifier": bundle_id}, file)
+    return app
+
+
+def native_args(root, app, **overrides):
+    values = dict(runner="native", app=app, bundle_id=None, maps=None, out=root / "out", xiso=None, team=None,
+                  simulator=None, exit_after=40.0, time_limit=0.0, set=[], init=[], screenshot_every=0,
+                  dump_shaders=False, replay=None, metal_validation=False, metal_shader_validation=False)
+    values.update(overrides)
+    return argparse.Namespace(**values)
+
+
+def fake_launches(launches, exit_line="halo-ios: game exit 0"):
+    """launch_native without a game: records what each launch would have read, writes the game's log"""
+    def launch_native(app, data, out, environment, limit):
+        init = data / "init.txt"
+        launches.append({"init": init.read_text() if init.exists() else "", "out": out,
+                         "config": (data / "config.toml").read_text(), "environment": environment})
+        (data / "ios-runtime.log").write_text(f"Halo iOS native guest starting\n{exit_line}\n")
+        return True
+    return launch_native
+
+
+@pytest.fixture
+def native(tmp_path, monkeypatch):
+    """a native app, a seeded data folder, no running copy, and Xcode out of reach"""
+    def no_xcode(*args, **kwargs):
+        raise AssertionError("the native runner drove Xcode")
+    monkeypatch.setattr(mac_run, "launch", no_xcode)
+    monkeypatch.setattr(mac_run, "build_wrapper", no_xcode)
+    monkeypatch.setattr(mac_run, "native_pids", lambda app: [])
+    monkeypatch.setenv("HALO_NATIVE_DATA", str(tmp_path / "data"))
+    (tmp_path / "data/maps").mkdir(parents=True)
+    (tmp_path / "data/seeded").write_text("seeded by the test fixture\n")
+    return make_native_app(tmp_path, "org.example.mac")
+
+
+def test_native_data_folder_defaults_to_application_support(tmp_path):
+    assert mac_run.native_data_folder("org.example.mac", {}, tmp_path) == \
+        tmp_path / "Library/Application Support/org.example.mac/runner-data"
+
+
+def test_native_data_folder_takes_a_remote_host_s_folder_from_the_environment(tmp_path):
+    assert mac_run.native_data_folder("org.example.mac", {"HALO_NATIVE_DATA": str(tmp_path / "d")}, tmp_path) == \
+        tmp_path / "d"
+
+
+def test_native_command_pins_the_display_and_passes_the_data_folder(tmp_path):
+    data = tmp_path / "Application Support/runner-data"
+    command = mac_run.native_command(Path("/b/HaloCE.app"), data, tmp_path / "out", {"MTL_DEBUG_LAYER": "1"})
+    assert command[:3] == ["open", "--new", "--wait-apps"]
+    variables = [command[i + 1] for i, part in enumerate(command) if part == "--env"]
+    assert f"HALO_DATA_ROOT={data}" in variables
+    assert "HALO_HOST_DISPLAY=1366x1024@2" in variables
+    assert "HALO_RUNNER=1" in variables
+    assert "MTL_DEBUG_LAYER=1" in variables
+    # the logs go to the data folder (internal disk), not --out, which may be on a removable volume
+    assert command[command.index("--stdout") + 1] == str(data / "open-stdout.log")
+    assert command[command.index("--stderr") + 1] == str(data / "open-stderr.log")
+    assert command[-1] == "/b/HaloCE.app"
+
+
+def fake_open(monkeypatch, stdout, stderr, status=0):
+    """subprocess.Popen standing in for open: writes the log files its command names, as launchd would"""
+    class Opener:
+        def __init__(self, command):
+            Path(command[command.index("--stdout") + 1]).write_text(stdout)
+            Path(command[command.index("--stderr") + 1]).write_text(stderr)
+
+        def wait(self, timeout=None):
+            return status
+
+    monkeypatch.setattr(mac_run.subprocess, "Popen", Opener)
+
+
+def test_launch_native_copies_the_open_logs_into_out_and_replaces_the_old_ones(tmp_path, monkeypatch):
+    data, out = tmp_path / "data", tmp_path / "out"
+    data.mkdir()
+    (data / "open-stdout.log").write_text("stale stdout\n")
+    (data / "open-stderr.log").write_text("stale stderr\n")
+    fake_open(monkeypatch, "fresh stdout\n", "fresh stderr\n")
+    assert mac_run.launch_native(Path("/b/HaloCE.app"), data, out, {}, 10)
+    assert (out / "open-stdout.log").read_text() == "fresh stdout\n"
+    assert (out / "open-stderr.log").read_text() == "fresh stderr\n"
+    # the data folder's copies hold this launch's content, not the stale files or an append
+    assert (data / "open-stdout.log").read_text() == "fresh stdout\n"
+    assert (data / "open-stderr.log").read_text() == "fresh stderr\n"
+
+
+def test_launch_native_copies_the_open_logs_when_open_fails(tmp_path, monkeypatch):
+    data, out = tmp_path / "data", tmp_path / "out"
+    data.mkdir()
+    fake_open(monkeypatch, "", "open: -10810\n", status=1)
+    with pytest.raises(SystemExit):
+        mac_run.launch_native(Path("/b/HaloCE.app"), data, out, {}, 10)
+    assert (out / "open-stderr.log").read_text() == "open: -10810\n"
+    assert (data / "open-stderr.log").read_text() == "open: -10810\n"
+
+
+def test_native_pattern_escapes_the_app_path():
+    assert mac_run.native_pattern(Path("/a.b/Halo (1).app")) == r"/a\.b/Halo \(1\)\.app/Contents/MacOS/HaloCE"
+
+
+def test_game_exit_reads_the_game_s_last_exit_line():
+    assert mac_run.game_exit("halo-ios: starting\nhalo-ios: game exit 0\n") == 0
+    assert mac_run.game_exit("game exit 3") == 3
+    assert mac_run.game_exit("halo-ios: FATAL: out of guest memory\n") is None
+
+
+def test_prepare_rewrite_drops_settings_an_earlier_run_left(tmp_path):
+    (tmp_path / "config.toml").write_text("[debug]\nnetwork_test = \"host:bloodgulch\"\n")
+    args = argparse.Namespace(xiso=None, screenshot_every=0, dump_shaders=False, replay=None, exit_after=5,
+                              set=["display.renderer=\"metal\""], init=[])
+    mac_run.prepare(args, tmp_path, rewrite=True)
+    text = (tmp_path / "config.toml").read_text()
+    assert "network_test" not in text
+    assert "exit_after = 5.0" in text and 'renderer = "metal"' in text
+
+
+def test_prepare_still_merges_for_the_ipad_runner(tmp_path):
+    (tmp_path / "config.toml").write_text("[debug]\nnetwork_test = \"host:bloodgulch\"\n")
+    args = argparse.Namespace(xiso=None, screenshot_every=0, dump_shaders=False, replay=None, exit_after=5,
+                              set=[], init=[])
+    mac_run.prepare(args, tmp_path)
+    assert "network_test" in (tmp_path / "config.toml").read_text()
+
+
+def test_native_run_never_drives_xcode(tmp_path, monkeypatch, native):
+    launches = []
+    monkeypatch.setattr(mac_run, "launch_native", fake_launches(launches))
+    mac_run.run_native(native_args(tmp_path, native, metal_validation=True))
+    assert len(launches) == 1
+    assert launches[0]["environment"]["MTL_DEBUG_LAYER"] == "1"
+    assert (tmp_path / "out/ios-runtime.log").is_file()
+
+
+def test_native_run_refuses_while_the_app_is_still_running(tmp_path, monkeypatch, native):
+    monkeypatch.setattr(mac_run, "native_pids", lambda app: [4242])
+    monkeypatch.setattr(mac_run, "launch_native", fake_launches([]))
+    with pytest.raises(SystemExit, match=r"already running \(pid 4242\)"):
+        mac_run.run_native(native_args(tmp_path, native))
+
+
+def test_native_run_fails_when_the_game_does_not_exit_cleanly(tmp_path, monkeypatch, native):
+    monkeypatch.setattr(mac_run, "launch_native", fake_launches([], exit_line="halo-ios: FATAL: no maps"))
+    with pytest.raises(SystemExit, match="did not exit cleanly"):
+        mac_run.run_native(native_args(tmp_path, native))
+    assert (tmp_path / "out/ios-runtime.log").is_file()    # the logs are collected anyway
+
+
+def test_native_run_refuses_an_app_built_for_another_bundle_id(tmp_path, monkeypatch, native):
+    monkeypatch.setattr(mac_run, "launch_native", fake_launches([]))
+    with pytest.raises(SystemExit, match="built for org.example.mac"):
+        mac_run.run_native(native_args(tmp_path, native, bundle_id="org.example.other"))
+
+
+def test_native_run_rewrites_config_each_run(tmp_path, monkeypatch, native):
+    launches = []
+    monkeypatch.setattr(mac_run, "launch_native", fake_launches(launches))
+    mac_run.run_native(native_args(tmp_path, native, set=['debug.input_replay="a10.rec"']))
+    mac_run.run_native(native_args(tmp_path, native))
+    assert "a10.rec" in launches[0]["config"]
+    assert "a10.rec" not in launches[1]["config"]
+
+
+def seeding(monkeypatch, tmp_path):
+    """an empty data folder, extracted maps to seed it from, and cp -c -R done by copytree"""
+    shutil.rmtree(tmp_path / "data/maps")
+    (tmp_path / "data/seeded").unlink()
+    maps = tmp_path / "extracted/maps"
+    maps.mkdir(parents=True)
+    (maps / "a10.map").write_text("map")
+    monkeypatch.setattr(mac_run, "run_command",
+                        lambda *command, **options: shutil.copytree(command[3], command[4]))
+    return maps
+
+
+def test_native_run_seeds_a_new_data_folder_once_with_throwaway_a10_and_menu_runs(tmp_path, monkeypatch, native):
+    maps = seeding(monkeypatch, tmp_path)
+    launches = []
+    monkeypatch.setattr(mac_run, "launch_native", fake_launches(launches))
+    mac_run.run_native(native_args(tmp_path, native, maps=maps))
+    assert (tmp_path / "data/maps/a10.map").is_file()
+    assert [launch["init"] for launch in launches] == ["map_name a10\n", "", ""]
+    assert launches[0]["out"] == tmp_path / "out-seed"
+    assert launches[1]["out"] == tmp_path / "out-seed-menu"
+    assert launches[2]["out"] == tmp_path / "out"
+    assert (tmp_path / "data/seeded").read_text().strip()
+    assert "exit_after = 20.0" in launches[1]["config"]
+    assert "fixed_timestep = true" in launches[1]["config"]
+    assert "screenshot_every = 0" in launches[1]["config"]
+    mac_run.run_native(native_args(tmp_path, native, maps=maps))
+    assert len(launches) == 4    # seeded once
+
+
+def test_an_interrupted_seed_is_redone(tmp_path, monkeypatch, native):
+    maps = seeding(monkeypatch, tmp_path)
+    (tmp_path / "data/maps.partial").mkdir()
+    (tmp_path / "data/maps.partial/half.map").write_text("half")
+    monkeypatch.setattr(mac_run, "launch_native", fake_launches([]))
+    mac_run.run_native(native_args(tmp_path, native, maps=maps))
+    assert (tmp_path / "data/maps/a10.map").is_file()
+    assert not (tmp_path / "data/maps/half.map").exists()
+    assert not (tmp_path / "data/maps.partial").exists()
+
+
+def test_a_failed_throwaway_run_leaves_the_folder_unseeded(tmp_path, monkeypatch, native):
+    maps = seeding(monkeypatch, tmp_path)
+    monkeypatch.setattr(mac_run, "launch_native", fake_launches([], exit_line="halo-ios: FATAL: no maps"))
+    with pytest.raises(SystemExit, match="throwaway a10 run"):
+        mac_run.run_native(native_args(tmp_path, native, maps=maps))
+    assert not (tmp_path / "data/maps").exists()
+    assert (tmp_path / "out-seed/ios-runtime.log").is_file()
+
+
+def test_a_failed_menu_seed_run_leaves_the_folder_unseeded(tmp_path, monkeypatch, native):
+    maps = seeding(monkeypatch, tmp_path)
+    launches = []
+    good = fake_launches(launches)
+    bad = fake_launches(launches, exit_line="halo-ios: FATAL: no maps")
+
+    def launch(app, data, out, environment, limit):
+        return (bad if out.name == "out-seed-menu" else good)(app, data, out, environment, limit)
+    monkeypatch.setattr(mac_run, "launch_native", launch)
+    with pytest.raises(SystemExit, match="throwaway menu run"):
+        mac_run.run_native(native_args(tmp_path, native, maps=maps))
+    assert len(launches) == 2
+    assert not (tmp_path / "data/maps").exists()
+    assert (tmp_path / "data/maps.partial/a10.map").is_file()
+    assert (tmp_path / "out-seed-menu/ios-runtime.log").is_file()
+
+
+def test_native_run_without_maps_says_how_to_seed(tmp_path, monkeypatch, native):
+    shutil.rmtree(tmp_path / "data/maps")
+    (tmp_path / "data/seeded").unlink()
+    monkeypatch.setattr(mac_run, "launch_native", fake_launches([]))
+    with pytest.raises(SystemExit, match="--maps"):
+        mac_run.run_native(native_args(tmp_path, native))
+
+
+def test_a_throwaway_run_that_open_could_not_start_leaves_the_folder_unseeded(tmp_path, monkeypatch, native):
+    maps = seeding(monkeypatch, tmp_path)
+
+    def open_fails(app, data, out, environment, limit):
+        raise SystemExit("open could not start the app (exit 1)")
+    monkeypatch.setattr(mac_run, "launch_native", open_fails)
+    with pytest.raises(SystemExit, match="open could not start"):
+        mac_run.run_native(native_args(tmp_path, native, maps=maps))
+    assert not (tmp_path / "data/maps").exists()
+    assert (tmp_path / "data/maps.partial/a10.map").is_file()
+
+
+def test_a_fresh_folder_gets_the_marker_only_after_both_throwaway_runs(tmp_path, monkeypatch, native):
+    maps = seeding(monkeypatch, tmp_path)
+    seen = []
+    good = fake_launches([])
+
+    def launch(app, data, out, environment, limit):
+        seen.append((out.name, (data / "seeded").exists()))
+        return good(app, data, out, environment, limit)
+    monkeypatch.setattr(mac_run, "launch_native", launch)
+    mac_run.run_native(native_args(tmp_path, native, maps=maps))
+    assert seen == [("out-seed", False), ("out-seed-menu", False), ("out", True)]
+
+
+def test_a_folder_with_maps_and_no_marker_plays_the_throwaway_runs_without_cloning(tmp_path, monkeypatch, native):
+    (tmp_path / "data/seeded").unlink()
+    (tmp_path / "data/maps/mine.map").write_text("made elsewhere")
+
+    def no_clone(*command, **options):
+        raise AssertionError("cloned into a folder that already has maps")
+    monkeypatch.setattr(mac_run, "run_command", no_clone)
+    launches = []
+    monkeypatch.setattr(mac_run, "launch_native", fake_launches(launches))
+    mac_run.run_native(native_args(tmp_path, native))    # no --maps
+    assert [launch["init"] for launch in launches] == ["map_name a10\n", "", ""]
+    assert launches[0]["out"] == tmp_path / "out-seed"
+    assert launches[1]["out"] == tmp_path / "out-seed-menu"
+    assert (tmp_path / "data/seeded").is_file()
+    assert (tmp_path / "data/maps/mine.map").read_text() == "made elsewhere"
+
+
+def test_a_folder_with_the_marker_is_not_seeded_again(tmp_path, monkeypatch, native):
+    launches = []
+    monkeypatch.setattr(mac_run, "launch_native", fake_launches(launches))
+    mac_run.run_native(native_args(tmp_path, native))
+    assert [launch["out"] for launch in launches] == [tmp_path / "out"]
+
+
+def test_a_failed_throwaway_run_leaves_existing_maps_alone_and_writes_no_marker(tmp_path, monkeypatch, native):
+    (tmp_path / "data/seeded").unlink()
+    (tmp_path / "data/maps/mine.map").write_text("made elsewhere")
+    monkeypatch.setattr(mac_run, "launch_native", fake_launches([], exit_line="halo-ios: FATAL: no maps"))
+    with pytest.raises(SystemExit, match="throwaway a10 run"):
+        mac_run.run_native(native_args(tmp_path, native))
+    assert (tmp_path / "data/maps/mine.map").read_text() == "made elsewhere"
+    assert not (tmp_path / "data/maps.partial").exists()
+    assert not (tmp_path / "data/seeded").exists()
+
+
+SHA = "ab" * 32
+INPUT_LOG = f"""halo-ios: Halo iOS native guest starting
+halo-ios: guest image sha256 {SHA}
+halo-ios: display pinned to 1366x1024@2: 2732x2048 pixels, width 640
+halo-ios: guest display: width 640, pixels 2732x2048
+screen: 640x480 drawn at 2732x2048 (maximum texture size 16384)
+OpenGL ES 3.0 Metal - 102 on Apple M6
+OpenGL ES 3.0: copy image 0, border clamp 0, anisotropy 1, S3TC 0, sample counting 1
+OpenGL function glDrawElementsBaseVertex is unavailable
+GPU capabilities: base vertex 0
+halo-ios: audio device: 48000 Hz, 2 channels, format 0x8120, 512 sample frames
+halo-ios: audio output active: 4096 PCM bytes, peak 0.2500
+frame 30: 120 draws, 3 immediate, 4000 GL calls
+"""
+INPUT_CONFIG = """[debug]
+exit_after = 40.0
+screenshot_directory = "{root}/runner/shots"
+gpu_dump_shaders = "{root}/runner/shaders"
+"""
+
+
+def input_run(folder, log=INPUT_LOG, root="/data"):
+    folder.mkdir(parents=True)
+    (folder / "stderr.log").write_text(log)
+    (folder / "config.toml").write_text(INPUT_CONFIG.format(root=root))
+    return folder
+
+
+def test_input_lines_keep_the_lines_that_name_a_run_s_inputs():
+    lines = mac_run.input_lines(INPUT_LOG)
+    assert f"guest image sha256 {SHA}" in lines
+    assert "audio device: 48000 Hz, 2 channels, format 0x8120, 512 sample frames" in lines
+    assert "OpenGL function glDrawElementsBaseVertex is unavailable" in lines
+    assert not any("display pinned" in line or "frame 30" in line for line in lines)
+
+
+def test_runs_that_differ_only_in_their_data_folder_and_the_pin_match(tmp_path):
+    a = input_run(tmp_path / "ipad", INPUT_LOG.replace("halo-ios: display pinned to 1366x1024@2: 2732x2048 pixels, width 640\n", ""),
+                  root="/Users/x/Library/Containers/ABC/Data/Documents")
+    b = input_run(tmp_path / "native", root="/Users/x/Library/Application Support/org.example.mac/runner-data")
+    assert mac_run.compare_inputs(a, b) == []
+
+
+def test_another_guest_image_is_a_difference(tmp_path):
+    a = input_run(tmp_path / "a")
+    b = input_run(tmp_path / "b", INPUT_LOG.replace(SHA, "cd" * 32))
+    problems = mac_run.compare_inputs(a, b)
+    assert len(problems) == 1 and "guest image sha256" in problems[0]
+
+
+def test_a_gl_entry_point_found_by_only_one_runner_is_a_difference(tmp_path):
+    a = input_run(tmp_path / "a")
+    b = input_run(tmp_path / "b", INPUT_LOG.replace("OpenGL function glDrawElementsBaseVertex is unavailable\n", ""))
+    assert mac_run.compare_inputs(a, b)
+
+
+def test_a_setting_only_one_run_had_is_a_difference(tmp_path):
+    a = input_run(tmp_path / "a")
+    b = input_run(tmp_path / "b")
+    (b / "config.toml").write_text((b / "config.toml").read_text() + 'network_test = "host:bloodgulch"\n')
+    problems = mac_run.compare_inputs(a, b)
+    assert problems == ['config.toml debug.network_test: None against "host:bloodgulch"']
+
+
+def test_a_log_with_none_of_the_lines_is_a_problem_not_a_match(tmp_path):
+    a = input_run(tmp_path / "a", "nothing\n")
+    b = input_run(tmp_path / "b", "nothing\n")
+    assert any("none of the run's inputs" in problem for problem in mac_run.compare_inputs(a, b))
+
+
+def test_a_kind_of_input_both_logs_lack_is_a_problem(tmp_path):
+    log = INPUT_LOG.replace("halo-ios: audio device: 48000 Hz, 2 channels, format 0x8120, 512 sample frames\n", "")
+    a = input_run(tmp_path / "a", log)
+    b = input_run(tmp_path / "b", log)
+    problems = mac_run.compare_inputs(a, b)
+    assert problems == [f"{a}/stderr.log does not name the audio device", f"{b}/stderr.log does not name the audio device"]
+
+
+def test_compare_inputs_reports_missing_files(tmp_path):
+    a = input_run(tmp_path / "a")
+    (tmp_path / "b").mkdir()
+    problems = mac_run.compare_inputs(a, tmp_path / "b")
+    assert any("stderr.log missing" in problem for problem in problems)
+    assert any("config.toml missing" in problem for problem in problems)
+
+
+def ipad_args(root, **overrides):
+    values = dict(runner="ipad", app=root, bundle_id="org.example.ipad", team="TEAM", maps=None, out=root / "out",
+                  xiso=None, simulator=None, exit_after=40.0, time_limit=0.0, set=[], init=[], screenshot_every=0,
+                  dump_shaders=False, replay=None, metal_validation=False, metal_shader_validation=False,
+                  fresh_config=False)
+    values.update(overrides)
+    return argparse.Namespace(**values)
+
+
+def ipad_run_rewrite(tmp_path, monkeypatch, **overrides):
+    """what rewrite the iPad path hands to prepare"""
+    (tmp_path / "HaloCE").write_text("")
+    seen = []
+    monkeypatch.setattr(mac_run, "build_wrapper", lambda args: None)
+    monkeypatch.setattr(mac_run, "container_documents", lambda args: tmp_path)
+    monkeypatch.setattr(mac_run, "prepare", lambda args, documents, rewrite=False: seen.append(rewrite))
+    monkeypatch.setattr(mac_run, "launch", lambda documents: None)
+    monkeypatch.setattr(mac_run, "wait_for", lambda condition, limit: True)
+    monkeypatch.setattr(mac_run, "collect", lambda documents, out: None)
+    mac_run.run(ipad_args(tmp_path, **overrides))
+    return seen
+
+
+def parsed_fresh_config(monkeypatch, argv):
+    seen = []
+    monkeypatch.setattr(mac_run, "run", lambda args: seen.append(args.fresh_config))
+    monkeypatch.setattr("sys.argv", ["mac_run.py", "run", "--out", "out"] + argv)
+    mac_run.main()
+    return seen[0]
+
+
+def test_ipad_run_merges_config_without_fresh_config(tmp_path, monkeypatch):
+    assert ipad_run_rewrite(tmp_path, monkeypatch) == [False]
+
+
+def test_ipad_run_rewrites_config_with_fresh_config(tmp_path, monkeypatch):
+    assert ipad_run_rewrite(tmp_path, monkeypatch, fresh_config=True) == [True]
+
+
+def test_fresh_config_flag_and_environment_default(monkeypatch):
+    monkeypatch.delenv("HALO_FRESH_CONFIG", raising=False)
+    assert parsed_fresh_config(monkeypatch, []) is False
+    assert parsed_fresh_config(monkeypatch, ["--fresh-config"]) is True
+    monkeypatch.setenv("HALO_FRESH_CONFIG", "1")
+    assert parsed_fresh_config(monkeypatch, []) is True
+    monkeypatch.setenv("HALO_FRESH_CONFIG", "0")
+    assert parsed_fresh_config(monkeypatch, []) is False
+
+
+def test_the_native_runner_is_the_default_and_ipad_is_asked_for(monkeypatch):
+    seen = []
+    monkeypatch.setattr(mac_run, "run", lambda args: seen.append(args.runner))
+    for argv in ([], ["--runner", "ipad"], ["--runner", "native"]):
+        monkeypatch.setattr("sys.argv", ["mac_run.py", "run", "--out", "out"] + argv)
+        mac_run.main()
+    assert seen == ["native", "ipad", "native"]
+
+
+def test_native_run_ignores_warnings_but_the_ipad_scheme_keeps_them(tmp_path, monkeypatch, native):
+    launches = []
+    monkeypatch.setattr(mac_run, "launch_native", fake_launches(launches))
+    mac_run.run_native(native_args(tmp_path, native, metal_validation=True))
+    environment = launches[0]["environment"]
+    assert environment["MTL_DEBUG_LAYER_WARNING_MODE"] == "ignore"
+    assert environment["MTL_DEBUG_LAYER"] == "1" and environment["MTL_DEBUG_LAYER_ERROR_MODE"] == "nslog"
+    assert mac_run.validation_environment(True, False)["MTL_DEBUG_LAYER_WARNING_MODE"] == "nslog"
+
+
+def test_the_native_app_comes_from_the_checkout_by_default():
+    assert mac_run.native_app_default({}) == mac_run.ROOT / "build/mac/app/Release-maccatalyst/HaloCE.app"
+
+
+def test_the_native_app_comes_from_a_host_s_designated_folder(tmp_path):
+    assert mac_run.native_app_default({"HALO_MAC_BUILD": str(tmp_path)}) == \
+        tmp_path / mac_run.ROOT.name / "app/Release-maccatalyst/HaloCE.app"

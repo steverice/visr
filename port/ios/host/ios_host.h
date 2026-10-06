@@ -29,6 +29,8 @@ backgrounds the app */
 void host_lifecycle_install(void);
 void host_lifecycle_hold(void);
 void host_sdl_audio_pause(int paused);
+/* the runner's pinned display (HALO_HOST_DISPLAY, host_main.m): the drawable size the guest is told */
+void host_sdl_pin_window_pixels(int width, int height);
 void host_frame_counter_start(int fixed_timestep, int metal);
 void host_frame_counter_show(unsigned long frame);
 int host_ios_gamepads(uint32_t *out, int capacity);

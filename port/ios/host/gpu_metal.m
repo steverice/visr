@@ -80,6 +80,12 @@ Handles index tables of these; 0 is none. */
 {
 @public
 	id<MTLFunction> function;
+	/* a pixel shader's text, and its compilations with exact border colors
+	(exact_borders), compiled on first use: one for each EXACT_BORDERS mask,
+	nil until tried, and a bit per mask tried */
+	NSString *source;
+	id<MTLFunction> exact[16];
+	uint16_t exact_tried;
 }
 @end
 @implementation MetalShader
@@ -882,7 +888,8 @@ static gpu_shader gpu_metal_shader_create(uint32_t stage, const char *source)
 	@autoreleasepool
 	{
 		NSError *error = nil;
-		id<MTLLibrary> library = [device newLibraryWithSource:@(source)
+		NSString *text = @(source);
+		id<MTLLibrary> library = [device newLibraryWithSource:text
 			options:stage == GPU_SHADER_VERTEX ? compile_options : pixel_compile_options error:&error];
 		MetalShader *record;
 
@@ -903,8 +910,38 @@ static gpu_shader gpu_metal_shader_create(uint32_t stage, const char *source)
 			platform_log("the %s shader has no entry point", stage == GPU_SHADER_VERTEX ? "vertex" : "pixel");
 			return 0;
 		}
+		if (stage != GPU_SHADER_VERTEX)
+			record->source = text;
 		return [shaders add:record];
 	}
+}
+
+/* a pixel shader's function for a draw whose stages in exact (a mask of
+exact_borders) rebuild their border colors: the shader compiled again with
+EXACT_BORDERS on the first draw that asks for that mask. nil if it doesn't
+compile (logged once), and the draw then samples the plain way. */
+static id<MTLFunction> pixel_function(MetalShader *pixel, unsigned exact)
+{
+	if (!exact)
+		return pixel->function;
+	if (!(pixel->exact_tried & (1u << exact)) && pixel->source)
+	{
+		@autoreleasepool
+		{
+			NSError *error = nil;
+			NSString *text = [NSString stringWithFormat:@"#define EXACT_BORDERS %u\n%@", exact, pixel->source];
+			/* relaxed, as the plain variant (gpu_metal_initialize) */
+			id<MTLLibrary> library = [device newLibraryWithSource:text options:pixel_compile_options error:&error];
+
+			pixel->exact_tried |= 1u << exact;
+			if (library)
+				pixel->exact[exact] = [library newFunctionWithName:@"fragment_main"];
+			if (!pixel->exact[exact])
+				platform_log("cannot compile the pixel shader with exact border colors (stages %#x): %s", exact,
+					library ? "no entry point" : error.localizedDescription.UTF8String);
+		}
+	}
+	return pixel->exact[exact];
 }
 
 /* ---------- render passes */
@@ -1254,7 +1291,10 @@ struct metal_attribute_table
 struct pipeline_key
 {
 	gpu_shader vertex_shader, pixel_shader;
-	uint8_t blend, source, destination, operation, write_mask, pad[3];
+	uint8_t blend, source, destination, operation, write_mask;
+	/* the stages that rebuild their border colors (exact_borders) */
+	uint8_t exact_borders;
+	uint8_t pad[2];
 	uint32_t color_format, depth_format;
 };
 
@@ -1439,7 +1479,7 @@ static void check_uniform_layout(MTLRenderPipelineReflection *reflection)
 
 /* the pipeline for a draw, or nil if it can't be made (cached either way) */
 static id<MTLRenderPipelineState> draw_pipeline(const struct gpu_draw *draw, MetalShader *vertex, MetalShader *pixel,
-	MTLPixelFormat color, MTLPixelFormat depth)
+	unsigned exact, MTLPixelFormat color, MTLPixelFormat depth)
 {
 	struct pipeline_key key;
 	NSData *name;
@@ -1457,6 +1497,7 @@ static id<MTLRenderPipelineState> draw_pipeline(const struct gpu_draw *draw, Met
 		key.operation = draw->blend.operation;
 	}
 	key.write_mask = draw->color_target ? draw->blend.color_write_mask & 0xf : 0;
+	key.exact_borders = (uint8_t)exact;
 	key.color_format = (uint32_t)color;
 	key.depth_format = (uint32_t)depth;
 	_Static_assert(sizeof(key) <= FRONT_CACHE_KEY, "pipeline_key fits the front cache");
@@ -1472,7 +1513,7 @@ static id<MTLRenderPipelineState> draw_pipeline(const struct gpu_draw *draw, Met
 		NSError *error = nil;
 
 		descriptor.vertexFunction = vertex->function;
-		descriptor.fragmentFunction = pixel->function;
+		descriptor.fragmentFunction = pixel_function(pixel, exact) ?: pixel->function;
 		attachment.pixelFormat = color;
 		attachment.writeMask = write_mask(key.write_mask);
 		if (key.blend)
@@ -1567,35 +1608,74 @@ static id<MTLDepthStencilState> depth_state(const struct gpu_depth_stencil_state
 }
 
 /* whether the GPU has border colors (Apple7 and later, and Macs): BORDER
-addressing then samples the nearest of Metal's three border colors instead of
-clamping to the edge, which smeared a shadow map's edge texels into long
-streaks across the ground */
+addressing then samples the game's border color instead of clamping to the
+edge, which smeared a shadow map's edge texels into long streaks across the
+ground */
 static BOOL border_colors;
 
-/* Metal's border color nearest a D3DCOLOR (ARGB): the Xbox's uses are
-transparent or opaque black and opaque white */
+/* Metal's border color for a D3DCOLOR (ARGB): its own when Metal has it
+(transparent black, opaque black, opaque white). Any other color (the motion
+sensor's sweep has 0x46000000, the loading bar 0x05050505) is rebuilt in the
+pixel shader from this sampler's transparent black border and an opaque white
+one (exact_borders). */
 static MTLSamplerBorderColor border_color(uint32_t color)
 {
-	unsigned alpha = color >> 24, red = (color >> 16) & 0xff, green = (color >> 8) & 0xff, blue = color & 0xff;
+	return color == 0xffffffffu ? MTLSamplerBorderColorOpaqueWhite :
+		color == 0xff000000u ? MTLSamplerBorderColorOpaqueBlack : MTLSamplerBorderColorTransparentBlack;
+}
 
-	if (alpha < 0x80)
-		return MTLSamplerBorderColorTransparentBlack;
-	return red + green + blue >= 3 * 0x80 ? MTLSamplerBorderColorOpaqueWhite : MTLSamplerBorderColorOpaqueBlack;
+/* exact border colors, after pfista/halo-og's native Metal renderer: the
+stages of a draw whose BORDER addressing has a color Metal lacks, bit n for
+stage n. Each samples its texture a second time, with an opaque white border
+(sampler 4 + n), and the pixel shader compiled with EXACT_BORDERS
+(nv2a_msl.c) rebuilds the game's color from the two, as xemu's custom border
+colors sample it. A cube texture never samples its border in Metal. Other
+draws are as before. */
+static unsigned exact_borders(const struct gpu_draw *draw)
+{
+	unsigned mask = 0;
+	int stage;
+
+	if (!border_colors)
+		return 0;
+	for (stage = 0; stage < GPU_STAGE_COUNT; stage++)
+	{
+		const struct gpu_stage *packet = &draw->stages[stage];
+		const struct gpu_sampler_state *state = &packet->sampler;
+		uint32_t color = state->border_color;
+
+		if (!packet->type || packet->type == GPU_TEXTURE_CUBE ||
+			color == 0 || color == 0xff000000u || color == 0xffffffffu)
+			continue;
+		if (state->address_u == GPU_ADDRESS_BORDER || state->address_v == GPU_ADDRESS_BORDER ||
+			(packet->type == GPU_TEXTURE_3D && state->address_w == GPU_ADDRESS_BORDER))
+			mask |= 1u << stage;
+	}
+	return mask;
 }
 
 /* a stage's sampler, mapped as gpu_gl.c maps it on OpenGL ES: every filter
 but POINT is linear, ANISOTROPIC turns on anisotropy, the first level sampled
 is D3D's MAXMIPLEVEL, BORDER addressing clamps to the border (border_colors)
-or the edge, and the LOD bias is the shader's */
-static id<MTLSamplerState> sampler_state(const struct gpu_sampler_state *state)
+or the edge, and the LOD bias is the shader's. white: the same with an opaque
+white border, an exact border stage's second sampler. */
+static id<MTLSamplerState> sampler_state(const struct gpu_sampler_state *state, BOOL white)
 {
+	struct
+	{
+		struct gpu_sampler_state state;
+		uint32_t white;
+	} key;
 	NSData *name;
 	id<MTLSamplerState> result;
 
-	_Static_assert(sizeof(*state) <= FRONT_CACHE_KEY, "gpu_sampler_state fits the front cache");
-	if ((result = front_cache_get(&sampler_cache, state, sizeof(*state))))
+	memset(&key, 0, sizeof(key));
+	key.state = *state;
+	key.white = white;
+	_Static_assert(sizeof(key) <= FRONT_CACHE_KEY, "the sampler key fits the front cache");
+	if ((result = front_cache_get(&sampler_cache, &key, sizeof(key))))
 		return result;
-	name = [NSData dataWithBytes:state length:sizeof(*state)];
+	name = [NSData dataWithBytes:&key length:sizeof(key)];
 	result = samplers[name];
 	if (!result)
 	{
@@ -1614,7 +1694,7 @@ static id<MTLSamplerState> sampler_state(const struct gpu_sampler_state *state)
 				addresses[axis] == GPU_ADDRESS_BORDER && border_colors ? MTLSamplerAddressModeClampToBorderColor :
 				MTLSamplerAddressModeClampToEdge;
 		if (border_colors)
-			descriptor.borderColor = border_color(state->border_color);
+			descriptor.borderColor = white ? MTLSamplerBorderColorOpaqueWhite : border_color(state->border_color);
 		descriptor.sAddressMode = modes[0];
 		descriptor.tAddressMode = modes[1];
 		descriptor.rAddressMode = modes[2];
@@ -1624,7 +1704,7 @@ static id<MTLSamplerState> sampler_state(const struct gpu_sampler_state *state)
 		result = [device newSamplerStateWithDescriptor:descriptor];
 		samplers[name] = result;
 	}
-	front_cache_put(&sampler_cache, state, sizeof(*state), result);
+	front_cache_put(&sampler_cache, &key, sizeof(key), result);
 	return result;
 }
 
@@ -1717,7 +1797,7 @@ static void bind_attributes(const struct gpu_draw *draw)
 	metal_state_always(&state_cache);
 }
 
-static void bind_stages(const struct gpu_draw *draw)
+static void bind_stages(const struct gpu_draw *draw, unsigned exact)
 {
 	int stage;
 
@@ -1735,9 +1815,32 @@ static void bind_stages(const struct gpu_draw *draw)
 		use_texture(record);
 		if (metal_state_object(&state_cache, METAL_STATE_TEXTURE + stage, (__bridge void *)texture, 0))
 			[encoder setFragmentTexture:texture atIndex:stage];
-		sampler = packet->type ? sampler_state(&packet->sampler) : empty_sampler;
+		sampler = packet->type ? sampler_state(&packet->sampler, NO) : empty_sampler;
 		if (metal_state_object(&state_cache, METAL_STATE_SAMPLER + stage, (__bridge void *)sampler, 0))
 			[encoder setFragmentSamplerState:sampler atIndex:stage];
+	}
+	/* exact border colors (exact_borders): the white samplers and the colors,
+	set on every such draw, which are few (the state cache doesn't track them) */
+	if (exact)
+	{
+		float colors[GPU_STAGE_COUNT][4];
+
+		memset(colors, 0, sizeof(colors));
+		for (stage = 0; stage < GPU_STAGE_COUNT; stage++)
+		{
+			uint32_t color = draw->stages[stage].sampler.border_color;
+
+			if (!(exact & (1u << stage)))
+				continue;
+			[encoder setFragmentSamplerState:sampler_state(&draw->stages[stage].sampler, YES) atIndex:GPU_STAGE_COUNT + stage];
+			metal_state_always(&state_cache);
+			colors[stage][0] = (float)((color >> 16) & 0xff) / 255.0f;
+			colors[stage][1] = (float)((color >> 8) & 0xff) / 255.0f;
+			colors[stage][2] = (float)(color & 0xff) / 255.0f;
+			colors[stage][3] = (float)(color >> 24) / 255.0f;
+		}
+		[encoder setFragmentBytes:colors length:sizeof(colors) atIndex:3];
+		metal_state_always(&state_cache);
 	}
 }
 
@@ -1805,11 +1908,12 @@ static uint32_t gpu_metal_draw(const struct gpu_draw *draw, const struct gpu_con
 		struct gpu_rect area;
 		MTLScissorRect scissor;
 		MTLPrimitiveType type;
+		unsigned exact = exact_borders(draw);
 
 		/* as GL's program_get: no program, no draw */
 		if (!vertex || !pixel)
 			return 0;
-		pipeline = draw_pipeline(draw, vertex, pixel, MTLPixelFormatBGRA8Unorm,
+		pipeline = draw_pipeline(draw, vertex, pixel, exact, MTLPixelFormatBGRA8Unorm,
 			depth && depth->texture ? depth->texture.pixelFormat : MTLPixelFormatInvalid);
 		if (!pipeline)
 			return 0;
@@ -1883,7 +1987,7 @@ static uint32_t gpu_metal_draw(const struct gpu_draw *draw, const struct gpu_con
 			if (metal_state_value(&state_cache, METAL_STATE_BLEND_COLOR, blend, sizeof(blend)))
 				[encoder setBlendColorRed:blend[0] green:blend[1] blue:blend[2] alpha:blend[3]];
 		}
-		bind_stages(draw);
+		bind_stages(draw, exact);
 		bind_constants(constants, uniforms);
 		bind_attributes(draw);
 		pass_commands++;

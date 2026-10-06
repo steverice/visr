@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Run the iPad build on this Mac as a "Designed for iPad" app, and compare runs.
+"""Run the game on this Mac, and compare runs. The native Mac Catalyst runner is the default;
+`run --runner ipad` runs the iPad build as a "Designed for iPad" app instead.
 
-macOS launches an iPad app only if Xcode installed it. It also kills the app
+For the iPad runner: macOS launches an iPad app only if Xcode installed it. It also kills the app
 that port/ios's CMake project builds ("Code Signature Invalid"), although the
 same executable runs when a plain Xcode project signs it. So `run` generates a
 small wrapper project around the CMake-built HaloCE executable and Info.plist,
@@ -14,9 +15,16 @@ such result folders against each other.
 `run --simulator UDID` runs a simulator build (an iOS or visionOS simulator app,
 tools/ios_build.py --simulator) in that simulator instead, with the same
 config.toml, init.txt and result folders, so its runs compare with the Mac's.
+
+`run` (`--runner native`, the default) runs the Mac Catalyst build (tools/ios_build.py --mac): no Xcode,
+no device registration, started with `open` on a persistent data folder per host, with the
+display pinned to what the iPad runner sees, so its results compare with the iPad runner's.
 """
 
 import argparse
+import datetime
+import difflib
+import os
 import plistlib
 import re
 import shutil
@@ -206,6 +214,82 @@ def _compare_files(problems, folder, a, b, files_a, files_b, contents):
 def capability_lines(log):
     """the GPU capability lines in a log"""
     return [match.group(1) for match in map(CAPABILITIES.search, log.splitlines()) if match]
+
+
+# The log lines that name a run's inputs and environment, which the iPad and native runners must print
+# identically (the native runner's parity runs): the guest image, the display the guest is told, the
+# render size, the GL implementation and the entry points it lacks, the
+# capabilities, the audio device, and a shader replay's verdict. "display pinned" is the native runner's
+# own and is not compared.
+INPUT_LINES = re.compile(
+    r"(guest image sha256 [0-9a-f]{64}"
+    r"|guest display: .*"
+    r"|screen: .* drawn at .*"
+    r"|OpenGL ES \d+\.\d+: .*"
+    r"|OpenGL function \S+ is unavailable"
+    r"|OpenGL .* on .*"
+    r"|Metal on .*"
+    r"|GPU capabilities: .*"
+    r"|audio device: .*"
+    r"|audio output active: .*"
+    r"|shader replay: .*)$")
+# the lines every game run's log must have, under either runner and either renderer: a pair of logs that
+# both lack one would otherwise compare equal on that point
+REQUIRED_INPUTS = {
+    "the guest's SHA-256": re.compile(r"^guest image sha256 "),
+    "the guest's display": re.compile(r"^guest display: "),
+    "the renderer": re.compile(r"^(OpenGL .* on |Metal on )"),
+    "the GPU capabilities": re.compile(r"^GPU capabilities: "),
+    "the audio device": re.compile(r"^audio device: "),
+}
+# a path into a run's own data folder in config.toml, which differs between the runners
+RUNNER_PATH = re.compile(r'^"[^"]*/runner(/|")')
+
+
+def input_lines(log):
+    """the lines of a log that name the run's inputs (INPUT_LINES), in order"""
+    return [match.group(1) for match in map(INPUT_LINES.search, log.splitlines()) if match]
+
+
+def config_settings(text):
+    """{"section.key": raw value} of a config.toml as prepare writes it, with paths into the run's
+    data folder written as $DATA, so two runners' files compare by their settings"""
+    settings, section = {}, ""
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1]
+            continue
+        key, _, value = line.partition("=")
+        settings[f"{section}.{key.strip()}"] = RUNNER_PATH.sub(r'"$DATA/runner\1', value.strip())
+    return settings
+
+
+def compare_inputs(a, b):
+    """the differences between what two result folders' runs were given (empty: none): the
+    INPUT_LINES of their logs, in order, and their config.toml settings"""
+    a, b = Path(a), Path(b)
+    problems = [f"{folder / name} missing" for folder in (a, b) for name in ("stderr.log", "config.toml")
+                if not (folder / name).is_file()]
+    if problems:
+        return problems
+    lines_a, lines_b = (input_lines((folder / "stderr.log").read_text(errors="replace")) for folder in (a, b))
+    for folder, lines in ((a, lines_a), (b, lines_b)):
+        for what, pattern in REQUIRED_INPUTS.items():
+            if not any(pattern.search(line) for line in lines):
+                problems.append(f"{folder}/stderr.log does not name {what}")
+    if not lines_a and not lines_b:
+        problems.append(f"{a}/stderr.log and {b}/stderr.log name none of the run's inputs")
+    elif lines_a != lines_b:
+        diff = difflib.unified_diff(lines_a, lines_b, str(a), str(b), lineterm="", n=0)
+        problems.append("log lines differ:\n  " + "\n  ".join(list(diff)[2:]))
+    config_a, config_b = (config_settings((folder / "config.toml").read_text()) for folder in (a, b))
+    for key in sorted(config_a.keys() | config_b.keys()):
+        if config_a.get(key) != config_b.get(key):
+            problems.append(f"config.toml {key}: {config_a.get(key)} against {config_b.get(key)}")
+    return problems
 
 
 def compare(a, b, tolerance=0, ignore_gl_calls=False, channel_tolerance=0, fraction=0.0, across_backends=False):
@@ -479,7 +563,7 @@ def container_documents(args):
     return find_container(CONTAINERS, args.bundle_id)
 
 
-def prepare(args, documents):
+def prepare(args, documents, rewrite=False):
     documents.mkdir(parents=True, exist_ok=True)
     if args.xiso and not (documents / "maps").is_dir():
         run_command("cp", "-c", args.xiso, documents / args.xiso.name)
@@ -500,7 +584,10 @@ def prepare(args, documents):
         key, value = assignment.split("=", 1)
         settings[key.strip()] = value.strip()
     config = documents / "config.toml"
-    config.write_text(merge_config(config.read_text() if config.is_file() else "", settings))
+    # rewrite: from DEFAULTS and this run's settings only (the native runner's persistent data
+    # folder); otherwise merged into the container's file, as the iPad runner always has
+    old = "" if rewrite or not config.is_file() else config.read_text()
+    config.write_text(merge_config(old, settings))
     init = documents / "init.txt"
     if args.init:
         init.write_text("\n".join(args.init) + "\n")
@@ -562,18 +649,223 @@ def run_simulator(args):
     print(f"results: {args.out}")
 
 
+def native_app_default(environment=None):
+    """the Catalyst app tools/ios_build.py --mac built: in the checkout, or under $HALO_MAC_BUILD (a host
+    that runs developer-built apps only from one folder: the MacBook's Santa)"""
+    environment = os.environ if environment is None else environment
+    if environment.get("HALO_MAC_BUILD"):
+        return Path(environment["HALO_MAC_BUILD"]) / ROOT.name / "app/Release-maccatalyst/HaloCE.app"
+    return ROOT / "build/mac/app/Release-maccatalyst/HaloCE.app"
+
+
+NATIVE_EXECUTABLE = "Contents/MacOS/HaloCE"
+# what the iPad runner's SDL reports on a 2x screen, pinned for the native app (host_main.m)
+NATIVE_DISPLAY = "1366x1024@2"
+# the game's exit (host_exit, host_main.m) in ios-runtime.log: open --wait-apps returns 0 whatever it was
+GAME_EXIT = re.compile(r"game exit (-?\d+)$")
+# characters a pgrep pattern (extended regular expression) treats specially
+ERE_SPECIAL = re.compile(r"([.^$*+?()\[\]{}|\\])")
+
+
+def native_data_folder(bundle_id, environment=None, home=None):
+    """the native runner's data folder (one per host, kept between runs): $HALO_NATIVE_DATA (a remote
+    host's, remote-job-run.sh), else ~/Library/Application Support/BUNDLE_ID/runner-data"""
+    environment = os.environ if environment is None else environment
+    if environment.get("HALO_NATIVE_DATA"):
+        return Path(environment["HALO_NATIVE_DATA"])
+    return (home or Path.home()) / "Library/Application Support" / bundle_id / "runner-data"
+
+
+def native_command(app, data, out, environment):
+    """the open command that starts the native app on data, pinned, with environment for the game"""
+    variables = {"HALO_DATA_ROOT": str(data), "HALO_HOST_DISPLAY": NATIVE_DISPLAY, "HALO_RUNNER": "1",
+                 **environment}
+    command = ["open", "--new", "--wait-apps"]
+    for name, value in variables.items():
+        command += ["--env", f"{name}={value}"]
+    # open's own stdout and stderr go to files in the data folder, not to out: launchd opens them, and
+    # macOS's TCC denies its helper (xpcproxy) access to removable volumes, so a path on one (g-force's
+    # baselines symlink points at /Volumes/Tank) fails the launch with -10810 before the app starts. The
+    # data folder is on the internal disk on every host; launch_native copies the logs into out afterward
+    return command + ["--stdout", str(data / "open-stdout.log"), "--stderr", str(data / "open-stderr.log"),
+                      str(app)]
+
+
+def native_pattern(app):
+    """a pgrep -f pattern matching the native app's executable"""
+    return ERE_SPECIAL.sub(r"\\\1", f"{Path(app).resolve()}/{NATIVE_EXECUTABLE}")
+
+
+def native_pids(app):
+    """the processes running the native app's executable"""
+    result = subprocess.run(["pgrep", "-f", native_pattern(app)], capture_output=True, text=True)
+    return [int(pid) for pid in result.stdout.split()]
+
+
+def game_exit(log):
+    """the status the game exited with, from its log, or None if it never got to exit"""
+    for line in reversed(log.splitlines()):
+        match = GAME_EXIT.search(line)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+OPEN_LOGS = ("open-stdout.log", "open-stderr.log")
+
+
+def launch_native(app, data, out, environment, limit):
+    """start the native app with open and wait for it to quit: True when it did within limit
+    seconds, False when it was still running and was killed"""
+    out.mkdir(parents=True, exist_ok=True)
+    data.mkdir(parents=True, exist_ok=True)
+    for name in OPEN_LOGS:
+        (data / name).unlink(missing_ok=True)
+    try:
+        return _launch_native(app, data, out, environment, limit)
+    finally:
+        for name in OPEN_LOGS:
+            if (data / name).is_file():
+                shutil.copy2(data / name, out / name)
+
+
+def _launch_native(app, data, out, environment, limit):
+    command = native_command(app, data, out, environment)
+    print("+", " ".join(command), flush=True)
+    opener = subprocess.Popen(command)
+    try:
+        status = opener.wait(timeout=limit)
+    except subprocess.TimeoutExpired:
+        subprocess.run(["pkill", "-f", native_pattern(app)])
+        try:
+            opener.wait(timeout=60)
+        except subprocess.TimeoutExpired:
+            opener.kill()
+        return False
+    if status != 0:
+        sys.exit(f"open could not start {app} (exit {status}): a user must be logged in to this Mac's "
+                 f"screen; see {out}/open-stderr.log")
+    return True
+
+
+SEED_MARKER = "seeded"
+
+
+def seeding_run(args, data, label, out, init, exit_after, unseed=True):
+    """play one throwaway run of a data folder's seed: the menu or a10, fixed timestep, no
+    screenshots. When open fails or the game does not exit cleanly, exit naming the logs. For a
+    folder this runner cloned (unseed), first rename maps back to maps.partial so the next run
+    clones again rather than trusting the folder; maps that were already there are left alone. No
+    marker is written either way, so the next run seeds again."""
+    settings = argparse.Namespace(xiso=None, screenshot_every=0, dump_shaders=False, replay=None,
+                                  exit_after=exit_after, set=["debug.fixed_timestep=true"], init=init)
+    prepare(settings, data, rewrite=True)
+    try:
+        finished = launch_native(args.app, data, out, {}, 600)
+    except SystemExit:
+        # open itself failed: unseed here too, or the next run would trust the folder
+        if unseed:
+            (data / "maps").rename(data / "maps.partial")
+        raise
+    collect(data, out)
+    log = out / "ios-runtime.log"
+    if not finished or (game_exit(log.read_text(errors="replace")) if log.is_file() else None) != 0:
+        if unseed:
+            (data / "maps").rename(data / "maps.partial")
+        sys.exit(f"the throwaway {label} run in the data folder {data} failed; its logs are in {out}")
+
+
+def seed_native_data(args, data):
+    """seed a data folder that has no `seeded` marker: play two throwaway runs, then write the marker.
+    The a10 run comes first: a host's first a10 GL run in a newly seeded folder has fallen behind on
+    g-force and the mini (REMOTE.md). The menu run comes second: the first menu run in a new folder
+    writes last_language.dat and savegame.bin and precaches the ui map once more, so it differs from
+    every later menu run, and the iPad runner's container is always past that state. A folder without
+    maps is cloned from --maps first (into maps.partial, renamed when complete, so an interrupted
+    clone is redone); a failed throwaway run then unseeds it. A folder that already has maps (made some
+    other way, such as by an earlier Catalyst spike) is not cloned into and its maps are never renamed
+    or removed, so --maps is not needed; a failed throwaway run just exits. The marker is written only
+    after both runs succeed."""
+    cloned = not (data / "maps").is_dir()
+    if cloned:
+        if not args.maps or not Path(args.maps).is_dir():
+            sys.exit(f"no maps in {data}: pass --maps with a folder of extracted maps to seed it from")
+        data.mkdir(parents=True, exist_ok=True)
+        partial = data / "maps.partial"
+        shutil.rmtree(partial, ignore_errors=True)
+        run_command("cp", "-c", "-R", Path(args.maps), partial)
+        partial.rename(data / "maps")
+        print(f"seeded {data}: cloned the maps, then a throwaway a10 run and a throwaway menu run (the "
+              f"first menu run in a new folder writes the language and savegame files and precaches ui "
+              f"once more)", flush=True)
+    else:
+        print(f"seeded {data}: it has maps but no {SEED_MARKER} marker, so no clone; a throwaway a10 run "
+              f"and a throwaway menu run (the first a10 run in such a folder would precache a10, and the "
+              f"first menu run writes the language and savegame files and precaches ui once more)",
+              flush=True)
+    seeding_run(args, data, "a10", args.out.parent / f"{args.out.name}-seed", ["map_name a10"], 40.0, cloned)
+    seeding_run(args, data, "menu", args.out.parent / f"{args.out.name}-seed-menu", [], 20.0, cloned)
+    note = f"{datetime.date.today().isoformat()}: throwaway a10 run, then throwaway menu run"
+    (data / SEED_MARKER).write_text(note + "\n")
+
+
+def run_native(args):
+    args.app = args.app or native_app_default()
+    if not (args.app / NATIVE_EXECUTABLE).is_file():
+        sys.exit(f"no native app at {args.app}; run tools/ios_build.py --mac first")
+    with (args.app / "Contents/Info.plist").open("rb") as file:
+        bundle_id = plistlib.load(file)["CFBundleIdentifier"]
+    if args.bundle_id and args.bundle_id != bundle_id:
+        sys.exit(f"{args.app} was built for {bundle_id}, not {args.bundle_id}; "
+                 f"rebuild it with tools/ios_build.py --mac --bundle-id {args.bundle_id}")
+    pids = native_pids(args.app)
+    if pids:
+        sys.exit(f"{args.app} is already running (pid {', '.join(map(str, pids))}); a second copy would "
+                 f"share its data folder. Stop it, or wait for it to finish")
+    data = native_data_folder(bundle_id)
+    if not (data / SEED_MARKER).is_file():
+        seed_native_data(args, data)
+    prepare(args, data, rewrite=True)
+    limit = args.time_limit or args.exit_after + 120
+    environment = validation_environment(args.metal_validation, args.metal_shader_validation)
+    if "MTL_DEBUG_LAYER_WARNING_MODE" in environment:
+        # an open-launched app's NSLog lands in stderr.log, which check-metal greps for validation errors,
+        # while the Xcode-launched iPad runner's goes to the unified log. Both runners get the same warnings
+        # (unused bindings, redundant sets), so ignore them here (Metal's default): any validation line
+        # left in the native stderr.log is then an error
+        environment["MTL_DEBUG_LAYER_WARNING_MODE"] = "ignore"
+    finished = launch_native(args.app, data, args.out, environment, limit)
+    collect(data, args.out)
+    if not finished:
+        sys.exit(f"the native app was still running {limit} seconds after launch and was killed; "
+                 f"logs are in {args.out}")
+    log = args.out / "ios-runtime.log"
+    status = game_exit(log.read_text(errors="replace")) if log.is_file() else None
+    if status != 0:
+        sys.exit(f"the game did not exit cleanly (game exit {status}); logs are in {args.out}")
+    print(f"results: {args.out}")
+
+
 def run(args):
     if args.simulator:
+        if args.runner == "native":
+            sys.exit("--simulator runs the simulator app; drop --runner native")
         run_simulator(args)
         return
+    if args.runner == "native":
+        if args.team or args.xiso:
+            sys.exit("--runner native needs no --team, and seeds its data folder from --maps, not --xiso")
+        run_native(args)
+        return
+    args.bundle_id = args.bundle_id or "org.haloce.macrunner"
     if not args.team:
-        sys.exit("--team is required, except with --simulator")
+        sys.exit("--runner ipad needs --team")
     args.app = args.app or ROOT / "build/ios/app-device/Release-iphoneos/HaloCE.app"
     if not (args.app / "HaloCE").is_file():
         sys.exit(f"no CMake-built app at {args.app}; run tools/ios_build.py --team ... first")
     build_wrapper(args)
     documents = container_documents(args)
-    prepare(args, documents)
+    prepare(args, documents, rewrite=args.fresh_config)
     launch(documents)
     limit = args.time_limit or args.exit_after + 120
     finished = wait_for(lambda: not running(), limit)
@@ -590,16 +882,21 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
     run_parser = commands.add_parser("run", help="run the game once and collect its results")
-    run_parser.add_argument("--team", help="Apple development team ID (not needed with --simulator)")
-    run_parser.add_argument("--bundle-id", default="org.haloce.macrunner")
+    run_parser.add_argument("--team", help="Apple development team ID (--runner ipad only)")
+    run_parser.add_argument("--runner", choices=("ipad", "native"), default="native",
+                            help="native: the Mac Catalyst app (tools/ios_build.py --mac), started with open (the default); "
+                                 'ipad: the "Designed for iPad" app, installed and started by Xcode, which needs --team')
+    run_parser.add_argument("--bundle-id",
+                            help="ipad: the runner's bundle ID (default org.haloce.macrunner); "
+                                 "native: checked against the app's own")
     run_parser.add_argument("--app", type=Path,
                             help="the CMake-built device app (tools/ios_build.py --team ...; the default), or "
                                  "with --simulator the simulator app (default: the visionOS one)")
     run_parser.add_argument("--simulator", metavar="UDID",
                             help="run the simulator app in this simulator (xcrun simctl list devices)")
     run_parser.add_argument("--maps", type=Path,
-                            help="with --simulator: a folder of imported maps to copy into a new container, "
-                                 "in place of importing --xiso")
+                            help="a folder of extracted maps: with --simulator, copied into a new container; "
+                                 "with --runner native, cloned into a new data folder, in place of importing --xiso")
     run_parser.add_argument("--out", type=Path, required=True, help="folder to copy the results to")
     run_parser.add_argument("--xiso", type=Path, help="the player's XISO, imported on the first run")
     run_parser.add_argument("--exit-after", type=float, default=60.0, help="seconds before the game quits")
@@ -617,6 +914,11 @@ def main():
                             help="turn on Metal's API validation (for display.renderer=\"metal\" runs)")
     run_parser.add_argument("--metal-shader-validation", action="store_true",
                             help="turn on Metal's shader validation too (slow: a10 needs a longer --time-limit)")
+    run_parser.add_argument("--fresh-config", action="store_true", default=os.environ.get("HALO_FRESH_CONFIG") == "1",
+                            help="iPad runner: write config.toml from the defaults and this run's settings instead of "
+                                 "merging into the container's file (parity: a container shared with other branches "
+                                 "carries their settings); the native runner always does. "
+                                 "HALO_FRESH_CONFIG=1 turns it on")
     compare_parser = commands.add_parser("compare", help="compare two result folders")
     compare_parser.add_argument("a", type=Path)
     compare_parser.add_argument("b", type=Path)
@@ -629,9 +931,18 @@ def main():
                                 help="compare gpu_stats without the GL call totals")
     compare_parser.add_argument("--across-backends", action="store_true",
                                 help="a GL run against a Metal run: shader inputs, not sources; capabilities; no GL calls")
+    inputs_parser = commands.add_parser("compare-inputs",
+                                        help="compare what two runs were given: the log lines that name their "
+                                             "inputs, and config.toml (the native runner's parity runs)")
+    inputs_parser.add_argument("a", type=Path)
+    inputs_parser.add_argument("b", type=Path)
     args = parser.parse_args()
     if args.command == "run":
         run(args)
+    elif args.command == "compare-inputs":
+        problems = compare_inputs(args.a, args.b)
+        print("\n".join(problems) if problems else "match")
+        sys.exit(1 if problems else 0)
     else:
         problems = compare(args.a, args.b, args.tolerance, args.ignore_gl_calls, args.channel_tolerance,
                            args.fraction, args.across_backends)

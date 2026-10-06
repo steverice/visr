@@ -216,6 +216,22 @@ void halo_screen_ui_offset(unsigned char centered)
 	ui_offset = centered ? (halo_screen_width() - 640) / 2 : 0;
 }
 
+/* render_window calls this once for each view it draws (each player's, and
+the mirror's, whose rasterizer_target says which), after the world, its fog
+and lens flares, and before interface_draw_screen draws the HUD: a
+post-process pass over a player's view (anti-aliasing for the upscaler's
+input, an upscale beneath the HUD) belongs here, so that the HUD, the menus
+and other views stay as drawn. viewport_bounds is the view's rectangle in the
+game's units. Nothing uses it yet. pfista/halo-og runs its FXAA from the same
+spot. */
+void halo_render_before_hud(short local_player_index, short rasterizer_target,
+	union rectangle2d const *viewport_bounds)
+{
+	(void)local_player_index;
+	(void)rasterizer_target;
+	(void)viewport_bounds;
+}
+
 /* ---------- state the XDK header's inline functions read and write */
 
 DWORD D3D__RenderState[D3DRS_MAX];

@@ -142,6 +142,14 @@ void *host_sdl_metal_layer(void)
 	return metal_view ? SDL_Metal_GetLayer(metal_view) : NULL;
 }
 
+static int pinned_width, pinned_height;
+
+void host_sdl_pin_window_pixels(int width, int height)
+{
+	pinned_width = width;
+	pinned_height = height;
+}
+
 void host_sdl_window_size_in_pixels(uint32_t window, int *width, int *height)
 {
 	SDL_Window *object = handle_get(window, _handle_window);
@@ -157,6 +165,12 @@ void host_sdl_window_size_in_pixels(uint32_t window, int *width, int *height)
 		return;
 	}
 #endif
+	if (object && pinned_width)
+	{
+		*width = pinned_width;
+		*height = pinned_height;
+		return;
+	}
 	if (object)
 		SDL_GetWindowSizeInPixels(object, width, height);
 }
@@ -382,6 +396,15 @@ uint32_t host_sdl_open_audio_stream(uint32_t device, const void *spec, uint32_t 
 		pthread_mutex_destroy(&binding->lock);
 		SDL_free(binding);
 		return 0;
+	}
+	/* the host's audio device, one of the host inputs that reaches game state (the guest mixes
+	on its callback's cadence): compared between runners by tools/mac_run.py compare-inputs */
+	{
+		SDL_AudioSpec device_spec;
+		int device_frames = 0;
+		if (SDL_GetAudioDeviceFormat(SDL_GetAudioStreamDevice(stream), &device_spec, &device_frames))
+			host_logf(HOST_LOG_INFO, "audio device: %d Hz, %d channels, format 0x%x, %d sample frames",
+				device_spec.freq, device_spec.channels, (unsigned)device_spec.format, device_frames);
 	}
 	/* the device starts paused, so no callback can run before this */
 	binding->handle = handle_new(_handle_audio, stream);

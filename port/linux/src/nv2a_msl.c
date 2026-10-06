@@ -12,7 +12,11 @@ Bindings, which the Metal backend (port/ios/host/gpu_metal.m) follows:
 - vertex: buffer 0 the vertex constants c[192], buffer 1 struct Uniforms,
   buffer 2 struct AttributeTable, buffers 10-25 the vertex buffer each of the
   16 attributes reads (see fetch_attribute);
-- fragment: buffer 0 struct Uniforms, textures and samplers 0-3 the stages.
+- fragment: buffer 0 struct Uniforms, textures and samplers 0-3 the stages;
+  compiled with EXACT_BORDERS (exact border colors, nv2a_msl_fragment_main),
+  also buffer 3 the stages' border colors (buffers 1 and 2 are
+  phase3-stereo's rate map and foveation sizes) and samplers 4-7 opaque
+  white borders.
 */
 
 #include "xgpu.h"
@@ -227,6 +231,27 @@ void nv2a_msl_fragment_main(struct xgpu_text *text, const struct nv2a_dialect *d
 	unsigned long index;
 	int stage;
 
+	/* exact border colors: EXACT_BORDERS, which the Metal backend defines
+	only when it compiles a shader again for a draw that needs it, has bit n
+	set for each stage n whose BORDER addressing has a color Metal's samplers
+	lack. Such a stage samples twice, with a transparent black border (its own
+	sampler) and an opaque white one (sampler 4 + n): their difference is the
+	border's weight in the filtered sample, the same in every channel, so
+	black + color * (white - black) is the sample with the game's color
+	(borders, buffer 3). Without it, the text compiles as it always has. */
+	xgpu_text_append(text,
+		"#ifndef EXACT_BORDERS\n"
+		"#define EXACT_BORDERS 0\n"
+		"#endif\n"
+		"#if EXACT_BORDERS\n"
+		"struct Borders\n{\n\tfloat4 tex0, tex1, tex2, tex3;\n};\n"
+		"template <typename T, typename C>\n"
+		"static inline float4 border_sample(T t, sampler black, sampler white, float4 color, C coordinates, bias b)\n"
+		"{\n"
+		"\tfloat4 plain = t.sample(black, coordinates, b);\n"
+		"\treturn plain + color * (t.sample(white, coordinates, b) - plain);\n"
+		"}\n"
+		"#endif\n");
 	xgpu_text_append(text, "fragment float4 fragment_main(FragmentIn in [[stage_in]], constant Uniforms &u [[buffer(0)]]");
 	for (stage = 0; stage < 4; stage++)
 	{
@@ -236,10 +261,27 @@ void nv2a_msl_fragment_main(struct xgpu_text *text, const struct nv2a_dialect *d
 		xgpu_text_append(text, ",\n\t%s tex%d [[texture(%d)]], sampler tex%d_sampler [[sampler(%d)]]",
 			type, stage, stage, stage, stage);
 	}
+	xgpu_text_append(text, "\n#if EXACT_BORDERS\n\t, constant Borders &borders [[buffer(3)]]\n#endif\n");
+	for (stage = 0; stage < 4; stage++)
+		xgpu_text_append(text, "#if EXACT_BORDERS & %d\n\t, sampler tex%d_white [[sampler(%d)]]\n#endif\n",
+			1 << stage, stage, 4 + stage);
 	xgpu_text_append(text, ")\n{\n");
 	/* after the signature: defined before it, this would also replace the
 	[[texture(n)]] attributes. Every lookup has a bias (shader_lod_bias). */
-	xgpu_text_append(text, "#define texture(t, coordinates, b) (t).sample(t##_sampler, coordinates, bias(b))\n");
+	xgpu_text_append(text, "#if EXACT_BORDERS\n");
+	for (stage = 0; stage < 4; stage++)
+		xgpu_text_append(text,
+			"#if EXACT_BORDERS & %d\n"
+			"#define tex%d_lookup(coordinates, b) border_sample(tex%d, tex%d_sampler, tex%d_white, borders.tex%d, coordinates, b)\n"
+			"#else\n"
+			"#define tex%d_lookup(coordinates, b) tex%d.sample(tex%d_sampler, coordinates, b)\n"
+			"#endif\n",
+			1 << stage, stage, stage, stage, stage, stage, stage, stage, stage);
+	xgpu_text_append(text,
+		"#define texture(t, coordinates, b) t##_lookup(coordinates, bias(b))\n"
+		"#else\n"
+		"#define texture(t, coordinates, b) (t).sample(t##_sampler, coordinates, bias(b))\n"
+		"#endif\n");
 	for (index = 0; index < VARYING_COUNT; index++)
 		xgpu_text_append(text, "\tvec4 %s = in.%s;\n", varyings[index], varyings[index]);
 	xgpu_text_append(text, "\tfloat xFog = in.xFog;\n");
