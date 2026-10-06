@@ -197,6 +197,20 @@ run('xcrun', 'clang', '-O2', '-fsanitize=address,undefined', '-Iport/linux/src',
 run(BUILD/'stereo-far-probe')
 if 'halo_stereo_far_matrices(' not in (ROOT / 'source/render/render_objects.c').read_text():
     raise SystemExit('render_objects.c: objects must pass their node matrices through halo_stereo_far_matrices')
+# HEAD mode's help text: a10's look-only prompts hidden, tutorial_moving_1's look line dropped, and
+# every message whole with stereo off (the probe includes port/linux/game/stereo_help_text.c)
+run('xcrun', 'clang', '-O2', '-fsanitize=address,undefined', '-Iport/linux/src',
+    'port/ios/tests/stereo_help_text_probe.c', '-o', BUILD/'stereo-help-text-probe')
+run(BUILD/'stereo-help-text-probe')
+# and the call site the probe can't see: the help text's draw asks which part to show
+messaging_source = (ROOT / 'source/interface/hud_messaging.c').read_text()
+if 'halo_stereo_help_text_part(hud_messaging_globals->help_message->name)' not in messaging_source or \
+        'halo_stereo_help_text_line_end(' not in messaging_source:
+    raise SystemExit('hud_messaging.c: the help text must pass through halo_stereo_help_text_part and _line_end')
+if '_port_help_text_all,\n\t_port_help_text_none,\n\t_port_help_text_first_line\n' not in messaging_source or \
+        'HALO_HELP_TEXT_ALL,\n\tHALO_HELP_TEXT_NONE,\n\tHALO_HELP_TEXT_FIRST_LINE\n' not in \
+        (ROOT / 'port/linux/src/halo_stereo.h').read_text():
+    raise SystemExit("hud_messaging.c: its _port_help_text_* values must follow halo_stereo.h's HALO_HELP_TEXT_*")
 # the head-tracked presenter's shaders, compiled from its source string at run time: compile
 # them here, as the visionOS build's preprocessor leaves them (host_stereo_vignette.h's mask is
 # macro text, which a math macro could otherwise rewrite unseen)

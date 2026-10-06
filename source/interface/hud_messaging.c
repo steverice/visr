@@ -471,6 +471,18 @@ static void render_state_bitmap(
 	pixel32 color,
 	struct icon_hud_element_definition const *icon);
 
+/* port: HEAD mode's help text (port/linux/game/stereo_help_text.c,
+halo_stereo.h): how much of a help message to draw, in HALO_HELP_TEXT_*'s
+order */
+enum
+{
+	_port_help_text_all,
+	_port_help_text_none,
+	_port_help_text_first_line
+};
+int halo_stereo_help_text_part(char const *message_name);
+int halo_stereo_help_text_line_end(unsigned short const *text, int length);
+
 /* ---------- globals */
 
 static struct hud_messaging_globals_definition *hud_messaging_globals;
@@ -1378,6 +1390,7 @@ void hud_messaging_update(
 		boolean help_active;
 		boolean state_active;
 		short message_index;
+		short help_part = _port_help_text_all; /* port */
 
 		hud_calculate_point(
 			local_player_index,
@@ -1407,6 +1420,17 @@ void hud_messaging_update(
 			hud_messaging_globals->objective.uptime;
 		help_active = hud_scripted_globals->show_hud_help_text &&
 			hud_messaging_globals->help_message;
+		/* port: in HEAD mode a10's look prompts don't show, as if no help
+		text were up, and its moving prompt shows only its first line
+		(stereo_help_text.c); the script's help message itself stays */
+		if (help_active)
+		{
+			help_part = halo_stereo_help_text_part(hud_messaging_globals->help_message->name);
+			if (help_part == _port_help_text_none)
+			{
+				help_active = FALSE;
+			}
+		}
 		state_active = datum->state_message.valid &&
 			(datum->state_message.state_message || datum->state_message.message_buffer[0]);
 
@@ -1501,6 +1525,8 @@ void hud_messaging_update(
 				struct hud_state_message_definition *message;
 				word text_position;
 				short element_index;
+				boolean first_line_only = FALSE; /* port */
+				boolean line_ended = FALSE; /* port */
 
 				if (objective_active)
 				{
@@ -1527,6 +1553,7 @@ void hud_messaging_update(
 					hud_messages = HUD_MESSAGE_TEXT_DEFINITION_GET(
 						scenario->hud_messages.index);
 					message = hud_messaging_globals->help_message;
+					first_line_only = help_part == _port_help_text_first_line; /* port */
 				}
 				else
 				{
@@ -1542,7 +1569,7 @@ void hud_messaging_update(
 
 				text_position = message->text_start_index;
 				for (element_index = 0;
-					element_index < message->element_count;
+					element_index < message->element_count && !line_ended; /* port: && !line_ended */
 					element_index++)
 				{
 					struct hud_state_message_element *element = TAG_BLOCK_GET_ELEMENT(
@@ -1559,7 +1586,30 @@ void hud_messaging_update(
 								text_position * sizeof(wchar_t),
 								element->data * sizeof(wchar_t));
 							rectangle2d text_bounds;
+							wchar_t first_line[64]; /* port */
 
+							/* port: the first line alone (help_part): this
+							text up to its line break, and no element after */
+							if (first_line_only)
+							{
+								int line_end = halo_stereo_help_text_line_end(
+									(unsigned short const *)text,
+									element->data);
+
+								if (line_end < element->data)
+								{
+									short character_count = (short)MIN(line_end, NUMBEROF(first_line) - 1);
+									short character_index;
+
+									for (character_index = 0; character_index < character_count; character_index++)
+									{
+										first_line[character_index] = text[character_index];
+									}
+									first_line[character_count] = 0;
+									text = first_line;
+									line_ended = TRUE;
+								}
+							}
 							draw_string_set_indents(line_cursor.x0 - line_bounds.x0, 0);
 							draw_unicode_string_compute_bounds(
 								&line_bounds,

@@ -456,5 +456,21 @@ int halo_screen_fade(float tick_fraction, float rgb_intensity[4]);
 /* source/cutscene/cinematics.c: 0..1, how far the bars are in, following
 the active title's fades */
 float halo_cinematic_title_bars(void);
+/* HEAD mode's help text (port/linux/game/stereo_help_text.c): how much of
+the help message named message_name hud_messaging.c draws. In HEAD mode and
+the side-by-side view, a10's look-only prompts not at all and its moving
+lesson's first line alone; otherwise, and for every other message, all of
+it. hud_messaging.c declares these itself (source/ includes no port header) */
+enum
+{
+	HALO_HELP_TEXT_ALL,
+	HALO_HELP_TEXT_NONE,
+	HALO_HELP_TEXT_FIRST_LINE
+};
+int halo_stereo_help_text_part(const char *message_name);
+/* the characters of a help text element (length of them, its terminator
+counted, as the tag's elements count them) before its first line break
+("|n"); length if it has none */
+int halo_stereo_help_text_line_end(const unsigned short *text, int length);
 
 #endif
