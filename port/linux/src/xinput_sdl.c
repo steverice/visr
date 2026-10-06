@@ -538,11 +538,13 @@ whether they stand); "walklook:<seed>" holds the right stick fully down
 throughout (head-tracked stereo's first-person body, looking at the feet),
 standing still for its first WALKLOOK_STAND_POLLS polls and then walking,
 strafing, firing and jumping as "bot:" with the same seed, without its turn
-or grenades; "zoom:<start>,<swaps>,<clicks>[,<lights>]" stands still and,
-from poll <start> on, presses Y <swaps> times (the next weapon), then clicks
-the right stick <clicks> times (each a zoom level), then presses the
-flashlight (White) <lights> times (zoomed: the sniper's night vision), and
-holds still after: the zoom's checks on the Mac and in the simulator */
+or grenades; "zoom:<start>,<swaps>,<clicks>[,<lights>[,<unclicks>]]" stands
+still and, from poll <start> on, presses Y <swaps> times (the next weapon),
+then clicks the right stick <clicks> times (each a zoom level), then presses
+the flashlight (White) <lights> times (zoomed: the sniper's night vision),
+then clicks the right stick <unclicks> times more (past the last level: out
+of the zoom), and holds still after: the zoom's checks on the Mac and in the
+simulator */
 static int test_input_holding_action;
 static Uint64 test_input_holding_action_since;
 
@@ -575,7 +577,7 @@ static void test_input_gamepad(XINPUT_GAMEPAD *pad)
 	static int walklooking;
 	static unsigned long walklook_polls;
 	static int zooming;
-	static long zoom_start, zoom_swaps, zoom_clicks, zoom_lights;
+	static long zoom_start, zoom_swaps, zoom_clicks, zoom_lights, zoom_unclicks;
 	static unsigned long zoom_polls;
 	double t;
 
@@ -601,21 +603,26 @@ static void test_input_gamepad(XINPUT_GAMEPAD *pad)
 		else if (!strncmp(setting, "zoom:", 5))
 		{
 			zooming = 1;
-			int fields = sscanf(setting + 5, "%ld,%ld,%ld,%ld", &zoom_start, &zoom_swaps, &zoom_clicks, &zoom_lights);
+			int fields = sscanf(setting + 5, "%ld,%ld,%ld,%ld,%ld", &zoom_start, &zoom_swaps, &zoom_clicks,
+				&zoom_lights, &zoom_unclicks);
 
 			if (fields < 3)
 				zoom_start = zoom_swaps = zoom_clicks = 0;
 			if (fields < 4)
 				zoom_lights = 0;
+			if (fields < 5)
+				zoom_unclicks = 0;
 		}
 	}
 	if (zooming)
 	{
 		/* counted by polls, as "walklook:"; the swaps' presses, then the
-		clicks', then the lights', each ZOOM_PRESS_POLLS long */
+		clicks', then the lights', then the unclicks', each ZOOM_PRESS_POLLS
+		long */
 		long since = (long)zoom_polls++ - zoom_start;
 		long swaps_end = zoom_swaps * ZOOM_SWAP_POLLS;
 		long clicks_end = swaps_end + zoom_clicks * (ZOOM_PRESS_POLLS + ZOOM_GAP_POLLS);
+		long lights_end = clicks_end + zoom_lights * (ZOOM_PRESS_POLLS + ZOOM_GAP_POLLS);
 
 		if (since < 0)
 			return;
@@ -633,6 +640,11 @@ static void test_input_gamepad(XINPUT_GAMEPAD *pad)
 		{
 			if ((since - clicks_end) % (ZOOM_PRESS_POLLS + ZOOM_GAP_POLLS) < ZOOM_PRESS_POLLS)
 				pad->bAnalogButtons[XINPUT_GAMEPAD_WHITE] = 255;
+		}
+		else if (since - lights_end < zoom_unclicks * (ZOOM_PRESS_POLLS + ZOOM_GAP_POLLS))
+		{
+			if ((since - lights_end) % (ZOOM_PRESS_POLLS + ZOOM_GAP_POLLS) < ZOOM_PRESS_POLLS)
+				pad->wButtons |= XINPUT_GAMEPAD_RIGHT_THUMB;
 		}
 		return;
 	}
