@@ -546,10 +546,43 @@ static void offscreen_target_scale(unsigned long width, unsigned long height, DW
 	}
 }
 
+/* the targets render_target_get found last, by what it found them from:
+each draw asks again for the same two (the color and depth targets), and
+finding them again costs a texture description and a scale decision each
+(upstream 197c1994). The entries are never freed, so a remembered one stays
+valid; everything the scale depends on but the settings read once
+(offscreen_target_scale) is in the key. */
+#define RECENT_RENDER_TARGET_COUNT 4
+
+static struct
+{
+	DWORD data, format, size;
+	long screen_width;
+	float scale[2];
+	struct render_target_entry *entry;
+} recent_render_targets[RECENT_RENDER_TARGET_COUNT];
+static unsigned long recent_render_target_next;
+
+static struct render_target_entry *render_target_remember(const D3DSurface *surface, long screen,
+	struct render_target_entry *entry)
+{
+	unsigned long slot = recent_render_target_next++ % RECENT_RENDER_TARGET_COUNT;
+
+	recent_render_targets[slot].data = surface->Data;
+	recent_render_targets[slot].format = surface->Format;
+	recent_render_targets[slot].size = surface->Size;
+	recent_render_targets[slot].screen_width = screen;
+	recent_render_targets[slot].scale[0] = screen_scale[0];
+	recent_render_targets[slot].scale[1] = screen_scale[1];
+	recent_render_targets[slot].entry = entry;
+	return entry;
+}
+
 static struct render_target_entry *render_target_get(const D3DSurface *surface)
 {
 	struct render_target_entry *entry;
-	unsigned long width, height;
+	unsigned long width, height, slot;
+	long screen;
 	BOOL depth;
 	DWORD format;
 
@@ -557,9 +590,20 @@ static struct render_target_entry *render_target_get(const D3DSurface *surface)
 		return NULL;
 	float scale[2] = { 1.0f, 1.0f };
 
+	screen = halo_screen_width();
+	for (slot = 0; slot < RECENT_RENDER_TARGET_COUNT; slot++)
+	{
+		if (recent_render_targets[slot].entry && recent_render_targets[slot].data == surface->Data &&
+			recent_render_targets[slot].format == surface->Format && recent_render_targets[slot].size == surface->Size &&
+			recent_render_targets[slot].screen_width == screen && recent_render_targets[slot].scale[0] == screen_scale[0] &&
+			recent_render_targets[slot].scale[1] == screen_scale[1])
+		{
+			return recent_render_targets[slot].entry;
+		}
+	}
 	format = surface_dimensions(surface, &width, &height, &depth);
 	/* the screen's targets are drawn at the screen's scale */
-	if (width == (unsigned long)halo_screen_width() && height == SCREEN_HEIGHT)
+	if (width == (unsigned long)screen && height == SCREEN_HEIGHT)
 	{
 		scale[0] = screen_scale[0];
 		scale[1] = screen_scale[1];
@@ -572,7 +616,7 @@ static struct render_target_entry *render_target_get(const D3DSurface *surface)
 			entry->target.height == height && entry->target.depth == depth &&
 			entry->target.scale[0] == scale[0] && entry->target.scale[1] == scale[1])
 		{
-			return entry;
+			return render_target_remember(surface, screen, entry);
 		}
 	}
 	entry = calloc(1, sizeof(*entry));
@@ -600,7 +644,7 @@ static struct render_target_entry *render_target_get(const D3DSurface *surface)
 	render_targets = entry;
 	entry->next_in_bucket = *render_target_bucket(entry->target.data);
 	*render_target_bucket(entry->target.data) = entry;
-	return entry;
+	return render_target_remember(surface, screen, entry);
 }
 
 struct xgpu_render_target *xgpu_render_target_find(unsigned long data)
