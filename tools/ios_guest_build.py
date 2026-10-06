@@ -28,6 +28,13 @@ EXPAT_SOURCES = ("xmlparse.c", "xmlrole.c", "xmltok.c")
 KCP_DIR = Path("port/third_party/kcp")
 # internet play's signatures, for public games' listings (port/linux/src/p2p_crypto.c)
 MONOCYPHER_DIR = Path("port/third_party/monocypher")
+# the port's zlib (port/third_party/zlib/zlib_prefixed.h), which inflates the
+# HUD's PNGs (hud_hires.c), as upstream's Linux and Windows builds
+ZLIB_DIR = Path("port/third_party/zlib")
+ZLIB_SOURCES = ("adler32.c", "crc32.c", "inffast.c", "inflate.c", "inftrees.c", "uncompr.c", "zutil.c")
+# (its names prefixed, and the one Z_PREFIX leaves, its error messages, which
+# the game's zlib names the same)
+ZLIB_DEFINES = ("-DZ_PREFIX", "-Dz_errmsg=z_port_errmsg")
 MUSL_VERSION = "1.2.5"
 MUSL_DIR = THIRD_PARTY / f"musl-{MUSL_VERSION}"
 MUSL_URL = f"https://musl.libc.org/releases/musl-{MUSL_VERSION}.tar.gz"
@@ -339,7 +346,7 @@ def generate_ios_guest_build(n: Writer, sln: Any) -> None:
         f"-include {prefix_header}", f"-include {platform_semantics_header}",
         f"-I{LINUX_DIR}/src", f"-I{LINUX_DIR}/include", f"-I{PORT_DIR}/guest/runtime",
         f"-I{PORT_DIR}/include", f"-I{TOML_DIR}", f"-I{EXPAT_DIR}", f"-I{KCP_DIR}", f"-I{MONOCYPHER_DIR}",
-        "-Isource -Isource/cseries",
+        f"-I{ZLIB_DIR}", "-Isource -Isource/cseries",
         f"-I{SDL_DIR}/include", *libc_includes, f"-idirafter {XDK_INCLUDE}",
     ])
     # memory_watch.c is replaced by guest_memory_watch.c; the GPU backend runs in the host (step 4)
@@ -366,6 +373,11 @@ def generate_ios_guest_build(n: Writer, sln: Any) -> None:
     # (port/third_party/monocypher; p2p_crypto.c)
     for name in ("monocypher.c", "monocypher-ed25519.c"):
         objects.append(guest_object(MONOCYPHER_DIR / name, platform_cflags))
+    # the port's zlib, without the ARM CRC instructions: the guest's assembly
+    # is assembled for plain aarch64, which does not take them
+    for name in ZLIB_SOURCES:
+        objects.append(guest_object(ZLIB_DIR / name, " ".join([platform_cflags, *ZLIB_DEFINES,
+                                                              "-U__ARM_FEATURE_CRC32"])))
     runtime_internal_cflags = " ".join([
         guest_abi, "-std=c99", "-ffreestanding", "-fno-common", "-D_XOPEN_SOURCE=700", "-D_GNU_SOURCE",
         # guest_host.h includes gpu.h (port/linux/src)
