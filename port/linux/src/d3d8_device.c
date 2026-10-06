@@ -2708,11 +2708,44 @@ static uint32_t packet_primitive(D3DPRIMITIVETYPE type)
 	}
 }
 
-/* quads become two triangles each */
+/* index lists a draw makes for itself (quad_indices, and the rebased copy
+in D3DDevice_DrawIndexedVertices), which go to gpu_stream at once: two
+buffers that grow as needed and are reused, rather than a malloc and free
+for nearly every indexed draw */
+enum
+{
+	_index_scratch_quads,
+	_index_scratch_rebased,
+	NUMBER_OF_INDEX_SCRATCHES
+};
+
+static struct
+{
+	WORD *indices;
+	unsigned long capacity;
+} index_scratches[NUMBER_OF_INDEX_SCRATCHES];
+
+/* room for count indices in a scratch, whose contents are then undefined */
+static WORD *index_scratch(int scratch, unsigned long count)
+{
+	if (index_scratches[scratch].capacity < count + 1)
+	{
+		unsigned long capacity = count + 1 > 4096 ? count + 1 : 4096;
+
+		while (capacity < count + 1)
+			capacity *= 2;
+		free(index_scratches[scratch].indices);
+		index_scratches[scratch].indices = malloc(capacity * sizeof(WORD));
+		index_scratches[scratch].capacity = capacity;
+	}
+	return index_scratches[scratch].indices;
+}
+
+/* quads become two triangles each, in the quads scratch (index_scratch) */
 static WORD *quad_indices(const WORD *indices, unsigned long count, unsigned long *out_count)
 {
 	unsigned long quads = count / 4;
-	WORD *result = malloc(quads * 6 * sizeof(WORD) + 2);
+	WORD *result = index_scratch(_index_scratch_quads, quads * 6);
 	unsigned long quad;
 
 	for (quad = 0; quad < quads; quad++)
@@ -2761,7 +2794,6 @@ void WINAPI D3DDevice_DrawVertices(D3DPRIMITIVETYPE primitive_type, UINT start_v
 		WORD *indices = quad_indices(NULL, vertex_count, &count);
 
 		draw->index_offset = index_upload(indices, count * sizeof(WORD), &draw->index_buffer);
-		free(indices);
 		draw->primitive = GPU_PRIMITIVE_TRIANGLES;
 		draw->count = (uint32_t)count;
 	}
@@ -2811,14 +2843,12 @@ void WINAPI D3DDevice_DrawIndexedVertices(D3DPRIMITIVETYPE primitive_type, UINT 
 	if (!device_capabilities.base_vertex)
 	{
 		/* the indices are copied anyway: rebase them */
-		WORD *rebased = malloc(count * sizeof(WORD) + 2);
+		WORD *rebased = index_scratch(_index_scratch_rebased, count);
 
 		for (index = 0; index < count; index++)
 			rebased[index] = (WORD)(source[index] - minimum);
 		draw->index_offset = index_upload(rebased, count * sizeof(WORD), &draw->index_buffer);
 		draw->count = (uint32_t)count;
-		free(rebased);
-		free(indices);
 		submit_draw(draw, FALSE);
 		return;
 	}
@@ -2826,7 +2856,6 @@ void WINAPI D3DDevice_DrawIndexedVertices(D3DPRIMITIVETYPE primitive_type, UINT 
 	draw->count = (uint32_t)count;
 	draw->base_vertex = -(int32_t)minimum;
 	submit_draw(draw, FALSE);
-	free(indices);
 }
 
 /* ---------- immediate mode */
@@ -2878,7 +2907,6 @@ void WINAPI D3DDevice_End(void)
 		WORD *indices = quad_indices(NULL, count, &index_count);
 
 		draw->index_offset = index_upload(indices, index_count * sizeof(WORD), &draw->index_buffer);
-		free(indices);
 		draw->primitive = GPU_PRIMITIVE_TRIANGLES;
 		draw->count = (uint32_t)index_count;
 	}
