@@ -1867,13 +1867,27 @@ static void bind_stages(const struct gpu_draw *draw, unsigned exact)
 }
 
 /* fans and loops, which Metal can't draw, as 32-bit indexed lists of the
-original vertices; returns the vertex count, 0 if there's nothing to draw */
+original vertices, written straight into the frame's stream memory; returns
+the vertex count, 0 if there's nothing to draw */
+/* room for count 32-bit indices in the frame's stream memory: its chunk's
+handle and offset, and where to write them */
+static uint32_t *stream_indices(uint32_t count, gpu_buffer *buffer, uint32_t *offset)
+{
+	struct transient *memory = &streams[frame_slot];
+	MetalBuffer *record = transient_room(memory, count * (uint32_t)sizeof(uint32_t), 4);
+	uint32_t *indices = (uint32_t *)((unsigned char *)record->buffer.contents + memory->offset);
+
+	*offset = (uint32_t)memory->offset;
+	*buffer = memory->chunks[memory->chunk];
+	memory->offset += count * sizeof(uint32_t);
+	return indices;
+}
+
 static uint32_t convert_primitive(const struct gpu_draw *draw, MTLPrimitiveType *type, gpu_buffer *buffer, uint32_t *offset)
 {
 	const uint16_t *source = NULL;
 	uint32_t count = draw->count, converted, index, *indices;
 	MetalBuffer *record;
-	NSMutableData *list;
 
 	if (draw->index_buffer)
 	{
@@ -1889,8 +1903,7 @@ static uint32_t convert_primitive(const struct gpu_draw *draw, MTLPrimitiveType 
 		if (count < 3)
 			return 0;
 		converted = (count - 2) * 3;
-		list = [NSMutableData dataWithLength:converted * sizeof(uint32_t)];
-		indices = list.mutableBytes;
+		indices = stream_indices(converted, buffer, offset);
 		for (index = 0; index + 2 < count; index++)
 		{
 			indices[index * 3] = VERTEX(0);
@@ -1904,15 +1917,13 @@ static uint32_t convert_primitive(const struct gpu_draw *draw, MTLPrimitiveType 
 		if (count < 2)
 			return 0;
 		converted = count + 1;
-		list = [NSMutableData dataWithLength:converted * sizeof(uint32_t)];
-		indices = list.mutableBytes;
+		indices = stream_indices(converted, buffer, offset);
 		for (index = 0; index < count; index++)
 			indices[index] = VERTEX(index);
 		indices[count] = VERTEX(0);
 		*type = MTLPrimitiveTypeLineStrip;
 	}
 #undef VERTEX
-	*offset = transient_copy(&streams[frame_slot], list.bytes, (uint32_t)list.length, 4, buffer);
 	record = buffer_record(*buffer);
 	use_buffer(record);
 	return converted;
