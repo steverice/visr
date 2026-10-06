@@ -244,6 +244,7 @@ static int head_eyes_frame(void)
 }
 
 static int foveated_eye_allocation(unsigned long *width, unsigned long *height);
+static int rate_map_test(void);
 
 /* the scale just taken, remembered for mono frames if this frame has no eyes */
 static void screen_scale_taken(void)
@@ -730,6 +731,15 @@ static struct render_target_entry *render_target_get_layer(const D3DSurface *sur
 		them through the drawable's map anyway, and more pixels gain nothing */
 		if ((layer == 0 || layer == 1) && foveated_eye_allocation(&allocated_width, &allocated_height))
 			foveated_eye = (unsigned char)(layer + 1);
+		/* debug.rate_map_test (the Mac's Metal backend): the mono screen's
+		targets through a synthetic map the size of the screen, which the
+		backend makes (gpu_metal.m) */
+		else if (layer == HALO_STEREO_LAYER_MONO && rate_map_test())
+		{
+			foveated_eye = 1;
+			allocated_width = (unsigned long)(width * scale[0] + 0.5f);
+			allocated_height = (unsigned long)(height * scale[1] + 0.5f);
+		}
 		else if (layer == HALO_STEREO_LAYER_HUD || layer == HALO_STEREO_LAYER_RETICLE ||
 			layer >= HALO_STEREO_LAYER_HUD_GROUP)
 			screen_scale_dense(scale);
@@ -942,6 +952,14 @@ static void foveation_audit_pass(const struct render_target_entry *color, const 
 		platform_log("foveation audit: frame %lu, the first gameplay frame whose eyes render through the rate maps "
 			"(allocated %lux%lu)", device.frame, width, height);
 	}
+	/* (and with the Mac's debug.rate_map_test, frame 1200, 40 seconds in,
+	in a30's gameplay with debug.fixed_timestep, to check the audit itself) */
+	else if (foveation_audit_state == 0 && debug_settings.statistics && rate_map_test() && device.frame >= 1200)
+	{
+		foveation_audit_state = 1;
+		foveation_audit_frame = device.frame;
+		platform_log("foveation audit: frame %lu, with debug.rate_map_test", device.frame);
+	}
 	if (foveation_audit_state != 1 || (color == foveation_audit_color && depth == foveation_audit_depth))
 		return;
 	foveation_audit_color = color;
@@ -1027,6 +1045,21 @@ static BOOL draw_targets(gpu_texture *color_texture, gpu_texture *depth_texture)
 
 /* what the shader translators emit for this context */
 static struct nv2a_dialect shader_dialect;
+
+/* debug.rate_map_test, on Metal outside a stereo frame */
+static int rate_map_test(void)
+{
+	static int wanted = -1;
+
+	if (wanted < 0)
+	{
+		wanted = config_boolean("debug.rate_map_test");
+		if (wanted)
+			platform_log("debug.rate_map_test: the mono screen's targets render through a synthetic rate map%s",
+				shader_dialect.msl ? "" : "; not with this renderer (Metal only)");
+	}
+	return wanted && shader_dialect.msl && halo_stereo_frame()->eye_count == 0;
+}
 
 /* foveated eye passes this frame (halo_stereo_frame's foveated_width, from
 host_stereo_foveated_size): the size the eyes' screen-sized targets are

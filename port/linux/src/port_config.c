@@ -555,7 +555,7 @@ static const struct config_setting config_settings[] =
 		"Metal renderer on the Mac: give the screen-sized targets a synthetic,\n"
 		"lopsided rate map (full rate in the middle third, half outside it, denser\n"
 		"at the top than the bottom), resolved at present, to check foveated\n"
-		"rendering off the headset. Not in this build yet." },
+		"rendering off the headset." },
 	{ "debug.update_answer", _config_string, "\"\"", "HALO_UPDATE_ANSWER", _environment_value, _platform_desktop,
 		"The answer to the new version question, for automated tests: \"yes\",\n"
 		"\"no\" or \"never\" (do not ask again, confirmed); empty asks." },

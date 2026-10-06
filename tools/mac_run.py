@@ -235,24 +235,36 @@ def read_bmp(data):
     return width, height, data[offset:offset + width * height * 4]
 
 
-def bmp_difference(a, b, channel_tolerance=0):
+def region_pixels(width, height, region):
+    """the pixel box (left, top, right, bottom) of region, fractions (x0, y0, x1, y1) of a
+    width x height frame from its top left; the whole frame without one"""
+    if region is None:
+        return 0, 0, width, height
+    x0, y0, x1, y1 = region
+    return (round(x0 * width), round(y0 * height), round(x1 * width), round(y1 * height))
+
+
+def bmp_difference(a, b, channel_tolerance=0, region=None):
     """(pixels whose color differs by more than channel_tolerance in some channel,
     largest channel difference, (x, y) of the first pixel that difference is at, or
-    None); alpha is ignored, since write_screenshot forces it opaque"""
+    None); alpha is ignored, since write_screenshot forces it opaque. With region
+    (fractions x0, y0, x1, y1 from the top left: write_screenshot's rows are top
+    down), only the pixels inside it count"""
     width_a, height_a, pixels_a = read_bmp(a)
     width_b, height_b, pixels_b = read_bmp(b)
     if (width_a, height_a) != (width_b, height_b):
         return max(width_a * height_a, width_b * height_b), 255, None
     if pixels_a == pixels_b:
         return 0, 0, None
+    left, top, right, bottom = region_pixels(width_a, height_a, region)
     differing = largest = 0
     where = None
     row = width_a * 4
-    for start in range(0, len(pixels_a), row):
+    for start in range(top * row, bottom * row, row):
         line_a, line_b = pixels_a[start:start + row], pixels_b[start:start + row]
         if line_a == line_b:
             continue
-        for pixel in range(0, row, 4):
+        for pixel in range(left * 4, right * 4, 4):
             delta = max(abs(line_a[pixel + channel] - line_b[pixel + channel]) for channel in range(3))
             if delta > channel_tolerance:
                 differing += 1
@@ -261,10 +273,23 @@ def bmp_difference(a, b, channel_tolerance=0):
     return differing, largest, where
 
 
-def bmp_pixels(data):
-    """the pixel count of a BMP"""
+def bmp_pixels(data, region=None):
+    """the pixel count of a BMP, or of region in it (region_pixels)"""
     width, height, _ = read_bmp(data)
-    return width * height
+    left, top, right, bottom = region_pixels(width, height, region)
+    return max(right - left, 0) * max(bottom - top, 0)
+
+
+def parse_region(text):
+    """--region's X0,Y0,X1,Y1: fractions of a frame from its top left, with X0 < X1 and Y0 < Y1"""
+    try:
+        values = tuple(float(part) for part in text.split(","))
+    except ValueError:
+        values = ()
+    if len(values) != 4 or not all(0.0 <= value <= 1.0 for value in values) or \
+            values[0] >= values[2] or values[1] >= values[3]:
+        raise argparse.ArgumentTypeError(f"{text!r} is not X0,Y0,X1,Y1 with 0 <= X0 < X1 <= 1 and 0 <= Y0 < Y1 <= 1")
+    return values
 
 
 def stats_lines(log):
@@ -373,11 +398,13 @@ def compare_inputs(a, b):
     return problems
 
 
-def compare(a, b, tolerance=0, ignore_gl_calls=False, channel_tolerance=0, fraction=0.0, across_backends=False):
+def compare(a, b, tolerance=0, ignore_gl_calls=False, channel_tolerance=0, fraction=0.0, across_backends=False,
+            region=None):
     """the differences between two result folders (empty: they match). A pixel
     differs when a channel differs by more than channel_tolerance, and a frame
     matches when no more than tolerance pixels, or fraction of its pixels,
-    differ. With ignore_gl_calls the gpu_stats lines are compared without their
+    differ. With region (fractions x0, y0, x1, y1 of each frame from its top
+    left) only the pixels inside it are compared, and fraction is of those. With ignore_gl_calls the gpu_stats lines are compared without their
     GL call totals. across_backends compares a GL run with a Metal run: the
     shaders' inputs (.vsh, .key) must be the same files and their sources the
     same names, whatever their language; GL calls are ignored; and the two
@@ -400,8 +427,8 @@ def compare(a, b, tolerance=0, ignore_gl_calls=False, channel_tolerance=0, fract
     for name in sorted(shots_a.keys() & shots_b.keys()):
         try:
             data_a = shots_a[name].read_bytes()
-            differing, largest, where = bmp_difference(data_a, shots_b[name].read_bytes(), channel_tolerance)
-            allowed = max(tolerance, int(fraction * bmp_pixels(data_a)))
+            differing, largest, where = bmp_difference(data_a, shots_b[name].read_bytes(), channel_tolerance, region)
+            allowed = max(tolerance, int(fraction * bmp_pixels(data_a, region)))
         except ValueError as error:
             problems.append(f"{name}: unreadable ({error})")
             continue
@@ -1185,6 +1212,8 @@ def main():
                                 help="compare gpu_stats without the GL call totals")
     compare_parser.add_argument("--across-backends", action="store_true",
                                 help="a GL run against a Metal run: shader inputs, not sources; capabilities; no GL calls")
+    compare_parser.add_argument("--region", type=parse_region, metavar="X0,Y0,X1,Y1",
+                                help="compare only this part of each frame, as fractions from its top left")
     inputs_parser = commands.add_parser("compare-inputs",
                                         help="compare what two runs were given: the log lines that name their "
                                              "inputs, and config.toml (the native runner's parity runs)")
@@ -1199,7 +1228,7 @@ def main():
         sys.exit(1 if problems else 0)
     else:
         problems = compare(args.a, args.b, args.tolerance, args.ignore_gl_calls, args.channel_tolerance,
-                           args.fraction, args.across_backends)
+                           args.fraction, args.across_backends, args.region)
         print("\n".join(problems) if problems else "match")
         sys.exit(1 if problems else 0)
 

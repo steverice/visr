@@ -118,6 +118,34 @@ def test_bmp_difference_different_sizes_counts_every_pixel():
     assert mac_run.bmp_difference(a, b) == (2, 255, None)
 
 
+def test_bmp_difference_region_counts_only_its_pixels():
+    # 2x2, top down: the top-left pixel differs, the bottom-right one more
+    a = _bmp(2, 2, bytes(16))
+    b = _bmp(2, 2, b"\x05\x00\x00\xff" + bytes(8) + b"\x09\x00\x00\xff")
+    assert mac_run.bmp_difference(a, b) == (2, 9, (1, 1))
+    assert mac_run.bmp_difference(a, b, region=(0.0, 0.0, 0.5, 0.5)) == (1, 5, (0, 0))
+    assert mac_run.bmp_difference(a, b, region=(0.5, 0.0, 1.0, 0.5)) == (0, 0, None)
+    assert mac_run.bmp_pixels(a, (0.0, 0.0, 0.5, 1.0)) == 2
+
+
+def test_parse_region_accepts_fractions_and_rejects_the_rest():
+    assert mac_run.parse_region("0.34,0.34,0.66,0.66") == (0.34, 0.34, 0.66, 0.66)
+    for text in ("0.5,0.5,0.4,0.6", "0,0,1", "a,b,c,d", "0,0,1.5,1"):
+        try:
+            mac_run.parse_region(text)
+        except Exception as error:
+            assert "X0,Y0,X1,Y1" in str(error)
+        else:
+            raise AssertionError(text)
+
+
+def test_compare_region_ignores_differences_outside_it(tmp_path):
+    a = _result(tmp_path / "a", {}, {"frame00300.bmp": _bmp(2, 1, bytes(8))}, "")
+    b = _result(tmp_path / "b", {}, {"frame00300.bmp": _bmp(2, 1, bytes(4) + b"\x30\x00\x00\xff")}, "")
+    assert any("1 pixels differ" in p for p in mac_run.compare(a, b))
+    assert not any("differ" in p for p in mac_run.compare(a, b, region=(0.0, 0.0, 0.5, 1.0)))
+
+
 def test_stats_lines_strip_prefix_and_frame_number():
     log = "halo-linux: frame 60: 812 draws, 3 immediate, 4 GL calls\nother\nhalo-linux: frame 120: 800 draws, 3 immediate, 4 GL calls\n"
     assert mac_run.stats_lines(log) == ["812 draws, 3 immediate, 4 GL calls", "800 draws, 3 immediate, 4 GL calls"]

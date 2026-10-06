@@ -243,7 +243,6 @@ int host_sdl_poll_event(void *event)
 
 	host_extra_scene_poll();
 #if TARGET_OS_VISION
-	/* (host_config.c is visionOS's) */
 	if (test_extra_scene < 0)
 	{
 		char value[16];

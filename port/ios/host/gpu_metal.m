@@ -1146,32 +1146,131 @@ reads them maps each screen point to where the map put it: the presenter
 foveation_resolve here, which draws a picture at its screen shape for the
 film's paths, the screenshots and the depth reads. */
 
+/* debug.rate_map_test (the Mac's runner): the mono screen's targets, which
+the front end marks as eye 1's, render through a synthetic map the size of
+the screen, made here (test_map) since there's no Compositor: full rate in
+the middle third each way, half outside it, except the top band at three
+quarters, so a flip shows as the dense band at the bottom. Each map with its
+parameter data, by screen size */
+static BOOL rate_map_test;
+static NSMutableDictionary<NSString *, NSArray *> *test_maps;
+
+static NSArray *test_map(NSUInteger width, NSUInteger height)
+{
+	NSString *key = [NSString stringWithFormat:@"%lux%lu", (unsigned long)width, (unsigned long)height];
+	NSArray *entry = test_maps[key];
+
+	if (!entry)
+	{
+		/* The samples are points from edge to edge, the rate between them
+		interpolated: 31 a side put samples 10 to 20 on the middle third's
+		edges and inside it, so it is all at 1.0. The sides' rates are
+		nudged until the middle third's offset from the screen is even each
+		way: the GPU takes derivatives over 2x2 quads in physical pixels, and
+		an odd offset pairs other rows or columns than the reference does,
+		which changes the texture level of detail a little on detailed
+		surfaces (a10's ship, by up to 22 levels) though the remap is exact */
+		enum { SAMPLES = 31 };
+		static const float sides[] = { 0.5f, 0.55f, 0.45f, 0.6f, 0.4f };
+		static const float tops[] = { 0.75f, 0.7f, 0.8f, 0.65f, 0.85f };
+		float horizontal[SAMPLES], vertical[SAMPLES];
+		id<MTLRasterizationRateMap> map = nil;
+		id<MTLBuffer> parameters;
+		MTLSize physical;
+		MTLCoordinate2D middle = { 0.0f, 0.0f };
+		float side = sides[0], top = tops[0];
+		int index, tried;
+
+		if (![device supportsRasterizationRateMapWithLayerCount:1])
+		{
+			platform_log("Metal: debug.rate_map_test: this GPU has no rate maps");
+			rate_map_test = NO;
+			return nil;
+		}
+		for (tried = 0; tried < 25; tried++)
+		{
+			MTLRasterizationRateLayerDescriptor *layer;
+			float screen_x = (float)(width / 2) + 0.5f, screen_y = (float)(height / 2) + 0.5f;
+
+			side = sides[tried % 5];
+			top = tops[tried / 5];
+			for (index = 0; index < SAMPLES; index++)
+			{
+				BOOL inside = index >= 10 && index <= 20;
+
+				horizontal[index] = inside ? 1.0f : side;
+				vertical[index] = inside ? 1.0f : index < 10 ? top : 0.5f;
+			}
+			layer = [[MTLRasterizationRateLayerDescriptor alloc] initWithSampleCount:MTLSizeMake(SAMPLES, SAMPLES, 0)
+				horizontal:horizontal vertical:vertical];
+			map = [device newRasterizationRateMapWithDescriptor:[MTLRasterizationRateMapDescriptor
+				rasterizationRateMapDescriptorWithScreenSize:MTLSizeMake(width, height, 0) layer:layer]];
+			if (!map)
+				return nil;
+			middle = [map mapScreenToPhysicalCoordinates:MTLCoordinate2DMake(screen_x, screen_y) forLayer:0];
+			middle.x = screen_x - middle.x;
+			middle.y = screen_y - middle.y;
+			if (fmodf(middle.x, 2.0f) == 0.0f && fmodf(middle.y, 2.0f) == 0.0f)
+				break;
+		}
+		parameters = [device newBufferWithLength:map.parameterBufferSizeAndAlign.size options:MTLResourceStorageModeShared];
+		[map copyParameterDataToBuffer:parameters offset:0];
+		physical = [map physicalSizeForLayer:0];
+		platform_log("Metal: debug.rate_map_test: a %lux%lu screen renders through a synthetic map into %lux%lu "
+			"(granularity %lux%lu; the sides at %.2f, the top at %.2f, the bottom at 0.50): the middle third is "
+			"1:1, %.2f, %.2f pixels from the screen's", (unsigned long)width, (unsigned long)height,
+			(unsigned long)physical.width, (unsigned long)physical.height, (unsigned long)map.physicalGranularity.width,
+			(unsigned long)map.physicalGranularity.height, side, top, middle.x, middle.y);
+		entry = @[ map, parameters ];
+		test_maps[key] = entry;
+	}
+	return entry;
+}
+
 /* the eye's map for a foveated target this frame, or nil */
 static id<MTLRasterizationRateMap> foveation_map(MetalTexture *record)
 {
+	id<MTLRasterizationRateMap> map;
+
 	if (!record || !record->description.foveated_eye)
 		return nil;
-	return host_stereo_rate_map(record->description.foveated_eye - 1);
+	map = host_stereo_rate_map(record->description.foveated_eye - 1);
+	if (!map && rate_map_test)
+		map = test_map(record->description.width, record->description.height).firstObject;
+	return map;
 }
 
 /* the map's parameter data, for a shader's rasterization_rate_map_decoder */
 static id<MTLBuffer> foveation_parameters(MetalTexture *record)
 {
-	return record && record->description.foveated_eye ?
-		host_stereo_rate_map_parameters(record->description.foveated_eye - 1) : nil;
+	id<MTLBuffer> parameters;
+
+	if (!record || !record->description.foveated_eye)
+		return nil;
+	parameters = host_stereo_rate_map_parameters(record->description.foveated_eye - 1);
+	if (!parameters && rate_map_test)
+		parameters = test_map(record->description.width, record->description.height).lastObject;
+	return parameters;
 }
 
 /* a foveated target's screen size (the eye's logical size, which the game's
-viewports cover) and its map's physical size; NO if it isn't foveated this
-frame */
+viewports cover; a test map's, the target's) and its map's physical size;
+NO if it isn't foveated this frame */
 static BOOL foveation_sizes(MetalTexture *record, MTLSize *screen, MTLSize *physical)
 {
 	id<MTLRasterizationRateMap> map = foveation_map(record);
 	int screen_width, screen_height, allocated_width, allocated_height;
 
-	if (!map || !host_stereo_foveated_size(&screen_width, &screen_height, &allocated_width, &allocated_height))
+	if (!map)
 		return NO;
-	*screen = MTLSizeMake((NSUInteger)screen_width, (NSUInteger)screen_height, 1);
+	if (host_stereo_rate_map(record->description.foveated_eye - 1))
+	{
+		if (!host_stereo_foveated_size(&screen_width, &screen_height, &allocated_width, &allocated_height))
+			return NO;
+		*screen = MTLSizeMake((NSUInteger)screen_width, (NSUInteger)screen_height, 1);
+	}
+	else
+		*screen = MTLSizeMake(record->description.width, record->description.height, 1);
 	*physical = [map physicalSizeForLayer:0];
 	return YES;
 }
@@ -3404,7 +3503,6 @@ static id<MTLTexture> foveation_resolve(MetalTexture *record, NSUInteger width, 
 	return output;
 }
 
-#if TARGET_OS_VISION
 /* a foveated target resolved at its screen shape inside its allocated size,
 for a picture drawn whole somewhere else (the film's screen, the UI's
 quad); an unfoveated one as it is */
@@ -3426,7 +3524,6 @@ static id<MTLTexture> foveation_picture(MetalTexture *record)
 	resolved = foveation_resolve(record, width, height);
 	return resolved ? resolved : record->texture;
 }
-#endif
 
 static uint32_t gpu_metal_present(gpu_texture back_buffer)
 {
@@ -3473,7 +3570,7 @@ static uint32_t gpu_metal_present(gpu_texture back_buffer)
 				height = window_height;
 				width = window_height * (long)record->description.width / (long)record->description.height;
 			}
-			picture = upscale(record->texture, width, height);
+			picture = upscale(foveation_picture(record), width, height);
 			use_texture(record);
 			commit(YES);
 			host_theater_present(queue, picture);
@@ -3500,7 +3597,8 @@ static uint32_t gpu_metal_present(gpu_texture back_buffer)
 				height = window_height;
 				width = window_height * (long)record->description.width / (long)record->description.height;
 			}
-			picture = upscale(record->texture, width, height);
+			/* (debug.rate_map_test: the back buffer resolved first) */
+			picture = upscale(foveation_picture(record), width, height);
 			pass.colorAttachments[0].texture = drawable.texture;
 			pass.colorAttachments[0].loadAction = MTLLoadActionClear;
 			pass.colorAttachments[0].storeAction = MTLStoreActionStore;
@@ -3887,6 +3985,13 @@ static void gpu_metal_initialize(uint32_t flags, struct gpu_capabilities *capabi
 		depth_states = [NSMutableDictionary dictionary];
 		samplers = [NSMutableDictionary dictionary];
 		scratch_colors = [NSMutableDictionary dictionary];
+		test_maps = [NSMutableDictionary dictionary];
+		{
+			char value[16];
+
+			host_config_string("debug.rate_map_test", "false", value, sizeof(value));
+			rate_map_test = !strcmp(value, "true");
+		}
 		compile_options = [MTLCompileOptions new];
 		/* vertex shaders: no fast math. The GLSL is highp, and the compiler
 		mustn't reorder its arithmetic; invariance keeps a position computed in
