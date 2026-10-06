@@ -260,6 +260,22 @@ void scripted_camera_set_dead(
 	return;
 }
 
+/* port: the scripted camera's mode (point, animation, first person, dead),
+for stereo's cutscene screen (port/linux/game/cinematic_screen.c): a scripted
+camera in first-person mode is a first-person cutscene camera */
+short scripted_camera_mode(
+	void)
+{
+	return camera_script_globals.mode;
+}
+
+/* port: whether that mode is first person */
+boolean scripted_camera_first_person(
+	void)
+{
+	return camera_script_globals.mode == _camera_script_mode_first_person;
+}
+
 boolean scripted_camera_object_is_first_person_camera(
 	long object_index)
 {

@@ -199,6 +199,9 @@ int halo_cinematic_screen(void) { return 0; }
 int halo_scripted_camera(void) { return 0; }
 int halo_scripted_director_camera(void) { return 0; }
 int halo_third_person_camera(void) { return 0; }
+int halo_cutscene_camera_first_person(void) { return 0; }
+int halo_look_disabled_first_person(void) { return 0; }
+void halo_cutscene_state(struct halo_cutscene_state *state) { memset(state, 0, sizeof(*state)); }
 int platform_fixed_timestep(void) { return 1; }
 unsigned long platform_clock_frames(void) { return 0; }
 double halo_frame_trace_milliseconds(void) { return 0.0; }

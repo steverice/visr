@@ -23,7 +23,12 @@ Cutscenes, in any stereo mode, are the 3D film while the letterbox is in
 (halo_stereo_film), and so are moments with a director's scripted camera
 (camera_control, the scripted perspective). In HEAD mode so is the
 player's own camera while a script holds its look: a camera the head doesn't
-steer is easier to watch on a screen. HEAD mode asks the host for SCREEN
+steer is easier to watch on a screen. But in HEAD mode (and the side-by-side
+view) only a camera that isn't first person goes on the film: a cutscene
+stays immersive until its first such camera, then on the film until it ends
+(the stereo spec's session 4 "Cutscenes"). A first-person camera without
+the look (halo_look_disabled_first_person) turns its picture by the head, as
+a third-person one does. HEAD mode asks the host for SCREEN
 eyes meanwhile, so the frame is SCREEN for everyone downstream: the host
 draws it on the screen, and the head's turn stays out of the look and the
 camera. The film has display.film_depth_share and display.film_convergence,
@@ -287,6 +292,10 @@ ticks between two cutscenes (under a white fade), which would otherwise flip
 the view to the full view and back */
 #define FILM_HOLD_FRAMES 10
 static int film_hold;
+/* HEAD mode's cutscene (one letterbox or scripted-camera stretch, through
+the film's hold) has shown a camera that isn't first person: it stays on the
+film from that camera to its end (the stereo spec's session 4 "Cutscenes") */
+static int cutscene_third_person;
 /* the zoom's inset this frame (halo_stereo_inset_begin): whether the
 frame is zoomed in the full view, which keeps the zoom's screen effects out
 of the eyes and routes the crosshairs out of the HUD layer, and whether the
@@ -312,6 +321,42 @@ static float clamped_setting(const char *name, float value, float minimum, float
 			unit, clamped);
 	}
 	return clamped;
+}
+
+/* debug.gpu_stats: a line each frame while a cutscene, a scripted camera or
+the film is up, and for CUTSCENE_LOG_SECONDS after, with what decides the
+film (halo_cutscene_state) and how the film stands; the seconds still to log */
+#define CUTSCENE_LOG_SECONDS 3.0f
+static float cutscene_log_left;
+/* the last frame's script fade intensity (halo_stereo_set_fade) */
+static float cutscene_log_fade;
+
+static void cutscene_log(float time_delta)
+{
+	static const char *const perspectives[] = {"first person", "third person", "scripted", "neutral"};
+	static const char *const script_modes[] = {"point", "animation", "first person", "dead"};
+	struct halo_cutscene_state state;
+
+	if (!stereo_stats || stereo_mode == HALO_STEREO_OFF)
+		return;
+	halo_cutscene_state(&state);
+	if (state.letterbox || state.director_scripted || state.look_disabled ||
+		state.perspective == 2 || film_reason != 0)
+		cutscene_log_left = CUTSCENE_LOG_SECONDS;
+	else if (cutscene_log_left > 0.0f)
+		cutscene_log_left -= time_delta;
+	else
+		return;
+	platform_log("stereo: cutscene: frame %lu: letterbox %d, director scripted %d, perspective %s, script mode %s, "
+		"look %s, last frame's fade %.2f; film %s, hold %d, a third-person shot %d, "
+		"observer finished %d, orientation settled %d, %.3f units from the eyes",
+		head_log_frame, state.letterbox, state.director_scripted,
+		state.perspective >= 0 && state.perspective < 4 ? perspectives[state.perspective] : "?",
+		state.script_mode >= 0 && state.script_mode < 4 ? script_modes[state.script_mode] : "none",
+		state.look_disabled ? "disabled" : "enabled", cutscene_log_fade, film_reasons[film_reason],
+		film_hold,
+		cutscene_third_person,
+		state.observer_finished, state.orientation_settled, state.distance);
 }
 
 /* reads input.turn and its companions, once */
@@ -555,14 +600,20 @@ first-person frame keeps the view where it was: the look takes the head's
 turn in the seat once (third_person_handover), then follows the head */
 static void third_person_begin(void)
 {
-	int third_person = stereo_frame.mode == HALO_STEREO_HEAD && stereo_frame.eye_count == 2 &&
-		!vehicle_screen && halo_third_person_camera();
+	int head_frame = stereo_frame.mode == HALO_STEREO_HEAD && stereo_frame.eye_count == 2;
+	/* a first-person camera the player can't look around in (the player's
+	own with the script holding its look, or a scripted one in first-person
+	mode) takes the same path: the head turns its picture, never the look */
+	int look_disabled = head_frame && halo_look_disabled_first_person();
+	int third_person = head_frame && ((!vehicle_screen && halo_third_person_camera()) || look_disabled);
 
 	if (third_person && !third_person_head) {
 		third_person_yaw = head_pitch_known ? head_pending_yaw + stereo_frame.head_yaw : 0.0f;
 		third_person_pitch_from = fmaxf(-PITCH_LIMIT, fminf(PITCH_LIMIT,
 			head_pitch_known ? head_pitch_now : stereo_frame.head_pitch));
-		platform_log("stereo: a third-person camera, head-tracked: the head turns the picture, the sticks drive");
+		platform_log(look_disabled ? "stereo: a first-person camera with the look taken away, head-tracked: the "
+			"head turns the picture only" : "stereo: a third-person camera, head-tracked: the head turns the picture, "
+			"the sticks drive");
 	} else if (third_person) {
 		third_person_yaw = remainderf(third_person_yaw + stereo_frame.head_yaw, TWO_PI);
 	}
@@ -570,7 +621,8 @@ static void third_person_begin(void)
 	if (!third_person && third_person_head) {
 		if (stereo_frame.mode == HALO_STEREO_HEAD && stereo_frame.eye_count == 2)
 			third_person_handover = third_person_yaw;
-		platform_log("stereo: the head-tracked third-person camera ended; the look takes the head's %.1f degrees",
+		platform_log("stereo: the head-tracked third-person or look-less camera ended; the look takes the head's %.1f "
+			"degrees",
 			third_person_handover * 180.0f / 3.14159265f);
 	}
 	/* a snap armed in third person (the stick swings the boom there) doesn't
@@ -650,7 +702,7 @@ void halo_stereo_reticle(float direction[3])
 
 void halo_stereo_frame_begin(void)
 {
-	int film, screen, on_screen, head_look_frame;
+	int film, screen, on_screen, head_look_frame, cutscene;
 	float time_delta;
 
 	if (stereo_mode < 0) {
@@ -688,6 +740,7 @@ void halo_stereo_frame_begin(void)
 	reticle_drawn = 0;
 	reticle_set(NULL, NULL, NULL);
 	hud_tangents[0] = hud_tangents[1] = 0.0f;
+	cutscene_log_fade = frame_fade[3];
 	memset(frame_fade, 0, sizeof(frame_fade));
 	/* why the view is the film. In SCREEN mode everything is on the screen
 	already, so only the director's own cameras are the film: the player's
@@ -703,13 +756,30 @@ void halo_stereo_frame_begin(void)
 		else if (!screen && vehicle_screen && halo_third_person_camera())
 			film_reason = 3;
 	}
-	if (film_reason != 0)
+	cutscene = film_reason == 1 || film_reason == 2;
+	/* HEAD mode (and the side-by-side view): a cutscene's camera is the
+	film only if it isn't first person, from the cutscene's first such camera
+	to its end, never back; a cutscene first person throughout stays
+	immersive. SCREEN mode has everything on the screen already */
+	if (!screen && cutscene) {
+		if (!cutscene_third_person && !halo_cutscene_camera_first_person()) {
+			cutscene_third_person = 1;
+			if (stereo_stats)
+				platform_log("stereo: the cutscene's first third-person camera: on the film until it ends");
+		}
+		if (!cutscene_third_person)
+			film_reason = 0;
+	}
+	if (film_reason != 0) {
 		film_hold = FILM_HOLD_FRAMES;
-	else if (film_hold > 0) {
+	} else if (film_hold > 0) {
 		film_hold--;
 		film_reason = film_reason_logged;
 	}
+	if (film_reason == 0 && !cutscene)
+		cutscene_third_person = 0;
 	film = film_reason != 0;
+	cutscene_log(time_delta);
 	film_last = film_frame;
 	gameplay_last = gameplay_frame;
 	film_frame = gameplay_frame = 0;

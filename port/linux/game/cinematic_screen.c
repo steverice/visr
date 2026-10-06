@@ -16,7 +16,9 @@ picture.
 */
 
 #include "cseries.h"
+#include "camera/camera_scripting.h"
 #include "camera/director.h"
+#include "camera/observer.h"
 #include "cutscene/cinematics.h"
 #include "game/players.h"
 #include "items/weapons.h"
@@ -26,6 +28,7 @@ picture.
 #include "main/console.h"
 #include "math/periodic_functions.h"
 #include "math/real_math.h"
+#include "../src/halo_stereo.h"
 
 int halo_cinematic_screen(void)
 {
@@ -59,6 +62,60 @@ seat whose camera isn't first person */
 int halo_third_person_camera(void)
 {
 	return director_peek_perspective(0) == _director_perspective_third_person;
+}
+
+/* A first-person cutscene camera (the stereo spec's session 4 "Cutscenes"):
+the director's own first person, with the look on or off, or a scripted
+camera in first-person mode (scripted_camera_set_first_person). In HEAD mode
+the film is only for the other cameras (stereo.c) */
+int halo_cutscene_camera_first_person(void)
+{
+	director_perspective perspective = director_peek_perspective(0);
+
+	return perspective == _director_perspective_first_person ||
+		(perspective == _director_perspective_scripted && scripted_camera_first_person());
+}
+
+/* A first-person camera the player can't look around in: the player's own
+with its look taken away (player_camera_control false: a10's cryo pod and its
+climb-out), or a scripted camera in first-person mode. HEAD mode turns the
+picture by the head and never the look there (stereo.c) */
+int halo_look_disabled_first_person(void)
+{
+	director_perspective perspective = director_peek_perspective(0);
+
+	return (perspective == _director_perspective_first_person && player_control_camera_control_disabled()) ||
+		(perspective == _director_perspective_scripted && scripted_camera_first_person());
+}
+
+/* the observer's camera's distance from the player's unit's camera position
+(world units), negative without a unit */
+static float camera_distance_from_eyes(void)
+{
+	long unit_index = player_control_get_unit_index(0);
+	struct observer_result const *camera = observer_get_camera(0);
+	real_point3d eyes;
+	real dx, dy, dz;
+
+	if (unit_index == NONE || !camera)
+		return -1.0f;
+	unit_get_camera_position(unit_index, &eyes);
+	dx = camera->position.x - eyes.x;
+	dy = camera->position.y - eyes.y;
+	dz = camera->position.z - eyes.z;
+	return (float)sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+void halo_cutscene_state(struct halo_cutscene_state *state)
+{
+	state->letterbox = halo_cinematic_screen();
+	state->director_scripted = director_camera_scripted && *director_camera_scripted;
+	state->perspective = director_peek_perspective(0);
+	state->script_mode = scripted_camera_mode();
+	state->look_disabled = player_control_camera_control_disabled();
+	state->observer_finished = observer_command_has_finished(0);
+	state->orientation_settled = observer_orientation_settled(0);
+	state->distance = camera_distance_from_eyes();
 }
 
 /* The intensity player_effect_get_screen_flash gives the script fade (a

@@ -35,6 +35,11 @@ void scripted_camera_set_first_person(
 	long object_index);
 void scripted_camera_set_dead(
 	long object_index);
+/* port: stereo's cutscene screen (port/linux/game/cinematic_screen.c) */
+short scripted_camera_mode(
+	void);
+boolean scripted_camera_first_person(
+	void);
 boolean scripted_camera_object_is_first_person_camera(
 	long object_index);
 void scripted_camera_set(

@@ -49,6 +49,10 @@ static char last_log[256];
 camera */
 static double setting_film_depth_share = 0.25, setting_film_convergence = 1.75;
 static int game_letterbox, game_scripted_camera, game_third_person;
+/* the cutscene's camera: first person (the director's or a scripted one in
+first-person mode), the look taken away in it, and whether the camera has
+reached the player's eyes (the observer settled) */
+static int game_first_person, game_look_disabled, game_settled = 1;
 
 /* stereo.c's imports */
 const char *config_string(const char *name)
@@ -95,9 +99,22 @@ int halo_cinematic_screen(void) { return game_letterbox; }
 int halo_scripted_camera(void) { return game_scripted_camera; }
 int halo_scripted_director_camera(void) { return 0; }
 int platform_fixed_timestep(void) { return 1; }
-unsigned long platform_clock_frames(void) { return 0; }
+/* the frame clock (debug.fixed_timestep: 1/30 s a frame), which only the
+cutscene checks move */
+static unsigned long probe_clock;
+unsigned long platform_clock_frames(void) { return probe_clock; }
 double halo_frame_trace_milliseconds(void) { return 0.0; }
 int halo_third_person_camera(void) { return game_third_person; }
+int halo_cutscene_camera_first_person(void) { return game_first_person; }
+int halo_look_disabled_first_person(void) { return game_look_disabled; }
+void halo_cutscene_state(struct halo_cutscene_state *state)
+{
+	memset(state, 0, sizeof(*state));
+	state->letterbox = game_letterbox;
+	state->look_disabled = game_look_disabled;
+	state->observer_finished = game_settled;
+	state->distance = game_settled ? 0.0f : 1.0f;
+}
 void halo_screen_commit_stereo_scale(void) {}
 
 #include "../../linux/game/stereo.c"
@@ -1135,6 +1152,169 @@ static void interpolated_turns(void)
 	blended_turn("a turn with the stick turning the body", 1.0f, 0.6f, 3);
 }
 
+/* one frame of a cutscene check: the clock moves a thirtieth of a second */
+static void cutscene_frame(void)
+{
+	probe_clock++;
+	halo_stereo_frame_begin();
+}
+
+static int immersive(void)
+{
+	return !halo_stereo_film() && halo_stereo_frame()->mode == HALO_STEREO_HEAD;
+}
+
+static int on_film(void)
+{
+	return halo_stereo_film() && halo_stereo_frame()->mode == HALO_STEREO_SCREEN;
+}
+
+/* frames until the film is gone (at most limit) */
+static int frames_to_full_view(int limit)
+{
+	int frame;
+
+	for (frame = 0; frame < limit && halo_stereo_film(); frame++)
+		cutscene_frame();
+	return frame;
+}
+
+/* the session-4 rule: in HEAD mode the film is only for a cutscene's camera
+that isn't first person, from the cutscene's first such camera to its end */
+static void first_person_cutscenes(void)
+{
+	int frame, passed;
+
+	printf("first-person cutscene cameras:\n");
+	restart("snap", 30.0, 120.0, 0);
+	game_first_person = 0;
+	game_settled = 1;
+	/* a letterbox with a third-person scripted camera: the film */
+	game_letterbox = 1;
+	cutscene_frame();
+	check(on_film(), "a cutscene's third-person camera is on the film");
+	game_letterbox = 0;
+	frames_to_full_view(4 * FILM_HOLD_FRAMES);
+	for (frame = 0; frame < 40; frame++)
+		cutscene_frame();
+
+	/* a letterbox with a first-person camera, throughout: immersive throughout */
+	game_letterbox = 1;
+	game_first_person = 1;
+	passed = 1;
+	for (frame = 0; frame < 60; frame++) {
+		cutscene_frame();
+		passed &= immersive();
+	}
+	game_letterbox = 0;
+	for (frame = 0; frame < 2 * FILM_HOLD_FRAMES; frame++) {
+		cutscene_frame();
+		passed &= immersive();
+	}
+	check(passed, "a cutscene first person throughout stays immersive throughout");
+
+	/* a scripted first-person camera without the letterbox: immersive too */
+	game_scripted_camera = 1;
+	cutscene_frame();
+	check(immersive(), "a scripted camera in first person stays immersive");
+	game_scripted_camera = 0;
+	for (frame = 0; frame < 2 * FILM_HOLD_FRAMES; frame++)
+		cutscene_frame();
+
+	/* b30's intro, in the other order too: first person, then a third-person
+	shot, then first person again; the film from the first third-person shot
+	to the cutscene's end, never back */
+	game_letterbox = 1;
+	game_first_person = 1;
+	for (frame = 0; frame < 10; frame++)
+		cutscene_frame();
+	check(immersive(), "a cutscene that begins first person begins immersive");
+	game_first_person = 0;
+	cutscene_frame();
+	check(on_film(), "its first third-person shot puts it on the film");
+	game_first_person = 1;
+	passed = 1;
+	for (frame = 0; frame < 60; frame++) {
+		cutscene_frame();
+		passed &= on_film();
+	}
+	game_first_person = 0;
+	cutscene_frame();
+	game_first_person = 1;
+	for (frame = 0; frame < 60; frame++) {
+		cutscene_frame();
+		passed &= on_film();
+	}
+	check(passed, "a first-person shot after it stays on the film: no flip back");
+	/* a10's two-frame gap in the letterbox, then a first-person stretch:
+	still the same cutscene */
+	game_letterbox = 0;
+	cutscene_frame();
+	cutscene_frame();
+	game_letterbox = 1;
+	cutscene_frame();
+	check(on_film(), "a two-frame gap in the letterbox keeps one cutscene on the film");
+	game_letterbox = 0;
+	frame = frames_to_full_view(4 * FILM_HOLD_FRAMES);
+	/* (the frame that ends it counted) */
+	check(frame == FILM_HOLD_FRAMES + 1, "the cutscene's end: the film through its hold, then the full view");
+	for (frame = 0; frame < 40; frame++)
+		cutscene_frame();
+	/* the next cutscene starts afresh */
+	game_letterbox = 1;
+	cutscene_frame();
+	check(immersive(), "the next cutscene, first person, is immersive again");
+	game_letterbox = 0;
+	game_first_person = 0;
+	for (frame = 0; frame < 2 * FILM_HOLD_FRAMES; frame++)
+		cutscene_frame();
+}
+
+/* a first-person moment with the look taken away (a10's cryo pod, as the
+spec has it): immersive, the head turning the picture only, its turn handed
+to the look on the way out */
+static void look_disabled(void)
+{
+	float facing_yaw = 0.0f, facing_pitch = 0.0f, entry_yaw, worst_facing = 0.0f, last_view_yaw;
+	struct loop_frame f;
+	int frame, turned = 0, passed = 1;
+
+	printf("a first-person camera with the look taken away:\n");
+	restart("snap", 30.0, 120.0, 0);
+	game_first_person = 1;
+	for (frame = 1; frame <= 10; frame++)
+		loop(&facing_yaw, &facing_pitch, 1.0f * frame, 0.0f, 0.0f);
+	/* (the look takes the last frame's turn) */
+	loop(&facing_yaw, &facing_pitch, 10.0f, 0.0f, 0.0f);
+	game_scripted_camera = 1;
+	game_look_disabled = 1;
+	entry_yaw = facing_yaw;
+	f = loop(&facing_yaw, &facing_pitch, 10.0f, 0.0f, 0.0f);
+	check(immersive(), "the look taken away in first person: immersive, not the film");
+	check(degrees_apart(f.view_yaw, entry_yaw / DEGREES) < 0.01f, "its first frame doesn't move the view");
+	for (frame = 1; frame <= 30; frame++) {
+		f = loop(&facing_yaw, &facing_pitch, 10.0f + frame, 0.0f, 0.0f);
+		turned |= f.look_turned;
+		worst_facing = fmaxf(worst_facing, fabsf(facing_yaw - entry_yaw));
+		passed &= immersive();
+	}
+	printf("  the head 30 deg left: the view %.4f deg from the camera's, the facing moved %.6f deg\n",
+		f.view_yaw - entry_yaw / DEGREES, worst_facing / DEGREES);
+	check(passed && fabsf(f.view_yaw - entry_yaw / DEGREES - 30.0f) < 0.01f,
+		"the head turns the picture: 30 degrees for 30");
+	check(!turned && worst_facing == 0.0f, "halo_stereo_head_look returns no turn: the look takes none of it");
+	/* the look back: the view holds, and the look takes the 30 degrees once */
+	game_scripted_camera = 0;
+	game_look_disabled = 0;
+	last_view_yaw = f.view_yaw;
+	f = loop(&facing_yaw, &facing_pitch, 40.0f, 0.0f, 0.0f);
+	check(degrees_apart(f.view_yaw, last_view_yaw) < 0.01f, "the look back: the view doesn't jump");
+	f = loop(&facing_yaw, &facing_pitch, 40.0f, 0.0f, 0.0f);
+	check(f.look_turned && degrees_apart(facing_yaw / DEGREES, entry_yaw / DEGREES + 30.0f) < 0.01f &&
+		degrees_apart(f.view_yaw, last_view_yaw) < 0.01f, "the look takes the moment's head turn once, as a seat's");
+	game_first_person = 0;
+}
+
 int main(void)
 {
 	pole_crossing();
@@ -1155,6 +1335,8 @@ int main(void)
 	paused();
 	interpolated_turns();
 	glide();
+	first_person_cutscenes();
+	look_disabled();
 	if (failures)
 	{
 		printf("stereo head probe: %d failed\n", failures);

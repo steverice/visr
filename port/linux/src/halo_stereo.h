@@ -351,7 +351,8 @@ film on a 16:9 screen (stereo.c): the cinematic camera rendered twice,
 framed on the letterbox's inside with no bars except while a title shows.
 A director's scripted camera goes on the screen the same way, and in HEAD
 mode the player's camera under a script, and a third-person camera with
-display.stereo_vehicle_screen. In
+display.stereo_vehicle_screen; in HEAD mode a cutscene's camera only once it
+isn't first person (stereo.c). In
 SCREEN mode the rest is gameplay as a 3D TV: the player's camera rendered
 twice, by the same mapping with gameplay's own depth, leaning with the
 head. */
@@ -447,6 +448,27 @@ int halo_cinematic_screen(void);
 int halo_scripted_camera(void);
 int halo_scripted_director_camera(void);
 int halo_third_person_camera(void);
+/* A first-person cutscene camera: the director's own first person (the
+look on or off) or a scripted camera in first-person mode. HEAD mode's film
+is only for the others (stereo.c) */
+int halo_cutscene_camera_first_person(void);
+/* A first-person camera the player can't look around in: the player's own
+with the script holding its look (a10's cryo pod), or a scripted camera in
+first-person mode. HEAD mode turns its picture by the head, never the look */
+int halo_look_disabled_first_person(void);
+/* debug.gpu_stats's cutscene line (stereo.c): what decides the film */
+struct halo_cutscene_state
+{
+	int letterbox;             /* cinematic_globals->show_letterbox */
+	int director_scripted;     /* director_camera_scripted */
+	int perspective;           /* director_peek_perspective: first person, third, scripted, neutral */
+	int script_mode;           /* the scripted camera's mode: point, animation, first person, dead */
+	int look_disabled;         /* player_control_camera_control_disabled */
+	int observer_finished;     /* observer_command_has_finished */
+	int orientation_settled;   /* observer_orientation_settled */
+	float distance;            /* the observer's camera from the unit's camera position (world units; -1 none) */
+};
+void halo_cutscene_state(struct halo_cutscene_state *state);
 /* the script fade (fade_in, fade_out; never a screen flash) at the picture's
 time: the game's tick before this one plus tick_fraction (the render's
 interpolation fraction; 1.0 gives the game's own whole-tick intensity). Its
