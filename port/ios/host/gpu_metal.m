@@ -2141,8 +2141,11 @@ static uint32_t gpu_metal_draw(const struct gpu_draw *draw, const struct gpu_con
 					pipeline_changes.same_shaders++;
 			}
 		}
-		pipeline_changes.vertex_shader = draw->vertex_shader;
-		pipeline_changes.pixel_shader = draw->pixel_shader;
+		if (metal_debug)
+		{
+			pipeline_changes.vertex_shader = draw->vertex_shader;
+			pipeline_changes.pixel_shader = draw->pixel_shader;
+		}
 		{
 			__unsafe_unretained id<MTLDepthStencilState> depth_stencil = depth_state(&draw->depth_stencil);
 			uint32_t reference = draw->depth_stencil.stencil_reference & 0xff;
