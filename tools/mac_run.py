@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Run the iPad build on this Mac as a "Designed for iPad" app, and compare runs.
+"""Run the game on this Mac, and compare runs. The native Mac Catalyst runner is the default;
+`run --runner ipad` runs the iPad build as a "Designed for iPad" app instead.
 
-macOS launches an iPad app only if Xcode installed it. It also kills the app
+For the iPad runner: macOS launches an iPad app only if Xcode installed it. It also kills the app
 that port/ios's CMake project builds ("Code Signature Invalid"), although the
 same executable runs when a plain Xcode project signs it. So `run` generates a
 small wrapper project around the CMake-built HaloCE executable and Info.plist,
@@ -15,7 +16,7 @@ such result folders against each other.
 tools/ios_build.py --simulator) in that simulator instead, with the same
 config.toml, init.txt and result folders, so its runs compare with the Mac's.
 
-`run --runner native` runs the Mac Catalyst build (tools/ios_build.py --mac) instead: no Xcode,
+`run` (`--runner native`, the default) runs the Mac Catalyst build (tools/ios_build.py --mac): no Xcode,
 no device registration, started with `open` on a persistent data folder per host, with the
 display pinned to what the iPad runner sees, so its results compare with the iPad runner's.
 """
@@ -858,7 +859,7 @@ def run(args):
         return
     args.bundle_id = args.bundle_id or "org.haloce.macrunner"
     if not args.team:
-        sys.exit("--team is required, except with --simulator or --runner native")
+        sys.exit("--runner ipad needs --team")
     args.app = args.app or ROOT / "build/ios/app-device/Release-iphoneos/HaloCE.app"
     if not (args.app / "HaloCE").is_file():
         sys.exit(f"no CMake-built app at {args.app}; run tools/ios_build.py --team ... first")
@@ -881,10 +882,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
     run_parser = commands.add_parser("run", help="run the game once and collect its results")
-    run_parser.add_argument("--team", help="Apple development team ID (not needed with --simulator)")
-    run_parser.add_argument("--runner", choices=("ipad", "native"), default="ipad",
-                            help='ipad: the "Designed for iPad" app, installed and started by Xcode (the default); '
-                                 "native: the Mac Catalyst app (tools/ios_build.py --mac), started with open")
+    run_parser.add_argument("--team", help="Apple development team ID (--runner ipad only)")
+    run_parser.add_argument("--runner", choices=("ipad", "native"), default="native",
+                            help="native: the Mac Catalyst app (tools/ios_build.py --mac), started with open (the default); "
+                                 'ipad: the "Designed for iPad" app, installed and started by Xcode, which needs --team')
     run_parser.add_argument("--bundle-id",
                             help="ipad: the runner's bundle ID (default org.haloce.macrunner); "
                                  "native: checked against the app's own")

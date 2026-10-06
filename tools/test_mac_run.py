@@ -826,6 +826,15 @@ def test_fresh_config_flag_and_environment_default(monkeypatch):
     assert parsed_fresh_config(monkeypatch, []) is False
 
 
+def test_the_native_runner_is_the_default_and_ipad_is_asked_for(monkeypatch):
+    seen = []
+    monkeypatch.setattr(mac_run, "run", lambda args: seen.append(args.runner))
+    for argv in ([], ["--runner", "ipad"], ["--runner", "native"]):
+        monkeypatch.setattr("sys.argv", ["mac_run.py", "run", "--out", "out"] + argv)
+        mac_run.main()
+    assert seen == ["native", "ipad", "native"]
+
+
 def test_native_run_ignores_warnings_but_the_ipad_scheme_keeps_them(tmp_path, monkeypatch, native):
     launches = []
     monkeypatch.setattr(mac_run, "launch_native", fake_launches(launches))
