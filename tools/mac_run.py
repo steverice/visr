@@ -5,7 +5,7 @@
 For the iPad runner: macOS launches an iPad app only if Xcode installed it. It also kills the app
 that port/ios's CMake project builds ("Code Signature Invalid"), although the
 same executable runs when a plain Xcode project signs it. So `run` generates a
-small wrapper project around the CMake-built HaloCE executable and Info.plist,
+small wrapper project around the CMake-built VISR executable and Info.plist,
 installs and launches it through Xcode with the debugger off (memory_watch.c
 write-protects pages and expects their faults, which would stop a debugger),
 waits for the game to quit (debug.exit_after), and copies the logs,
@@ -374,10 +374,10 @@ targets:
       MARKETING_VERSION: "1.0"
       ENABLE_DEBUG_DYLIB: NO
     postBuildScripts:
-      - name: Use the CMake-built HaloCE
+      - name: Use the CMake-built VISR
         basedOnDependencyAnalysis: false
         script: |
-          cp "{app}/HaloCE" "$TARGET_BUILD_DIR/$EXECUTABLE_PATH"
+          cp "{app}/VISR" "$TARGET_BUILD_DIR/$EXECUTABLE_PATH"
           cp "{app}/Info.plist" "$TARGET_BUILD_DIR/$INFOPLIST_PATH"
           plutil -replace CFBundleExecutable -string "$EXECUTABLE_NAME" "$TARGET_BUILD_DIR/$INFOPLIST_PATH"
           plutil -replace CFBundleIdentifier -string "$PRODUCT_BUNDLE_IDENTIFIER" "$TARGET_BUILD_DIR/$INFOPLIST_PATH"
@@ -763,7 +763,7 @@ def collect(documents, out):
 
 def simulator_pattern(udid):
     """a pgrep -f pattern matching the game's executable in simulator udid"""
-    return f"CoreSimulator/Devices/{udid}/.*/HaloCE.app/HaloCE"
+    return f"CoreSimulator/Devices/{udid}/.*/VISR.app/VISR"
 
 
 def simulator_running(udid):
@@ -773,8 +773,8 @@ def simulator_running(udid):
 
 def run_simulator(args):
     udid = args.simulator
-    app = args.app or ROOT / "build/visionos/app-simulator/Release-xrsimulator/HaloCE.app"
-    if not (app / "HaloCE").is_file():
+    app = args.app or ROOT / "build/visionos/app-simulator/Release-xrsimulator/VISR.app"
+    if not (app / "VISR").is_file():
         sys.exit(f"no simulator app at {app}; run tools/ios_build.py --simulator (--visionos) first")
     with (app / "Info.plist").open("rb") as file:
         bundle_id = plistlib.load(file)["CFBundleIdentifier"]
@@ -808,11 +808,11 @@ def native_app_default(environment=None):
     that runs developer-built apps only from one folder: the MacBook's Santa)"""
     environment = os.environ if environment is None else environment
     if environment.get("HALO_MAC_BUILD"):
-        return Path(environment["HALO_MAC_BUILD"]) / ROOT.name / "app/Release-maccatalyst/HaloCE.app"
-    return ROOT / "build/mac/app/Release-maccatalyst/HaloCE.app"
+        return Path(environment["HALO_MAC_BUILD"]) / ROOT.name / "app/Release-maccatalyst/VISR.app"
+    return ROOT / "build/mac/app/Release-maccatalyst/VISR.app"
 
 
-NATIVE_EXECUTABLE = "Contents/MacOS/HaloCE"
+NATIVE_EXECUTABLE = "Contents/MacOS/VISR"
 # what the iPad runner's SDL reports on a 2x screen, pinned for the native app (host_main.m)
 NATIVE_DISPLAY = "1366x1024@2"
 # the game's exit (host_exit, host_main.m) in ios-runtime.log: open --wait-apps returns 0 whatever it was
@@ -1014,8 +1014,8 @@ def run(args):
     args.bundle_id = args.bundle_id or "org.haloce.macrunner"
     if not args.team:
         sys.exit("--runner ipad needs --team")
-    args.app = args.app or ROOT / "build/ios/app-device/Release-iphoneos/HaloCE.app"
-    if not (args.app / "HaloCE").is_file():
+    args.app = args.app or ROOT / "build/ios/app-device/Release-iphoneos/VISR.app"
+    if not (args.app / "VISR").is_file():
         sys.exit(f"no CMake-built app at {args.app}; run tools/ios_build.py --team ... first")
     build_wrapper(args)
     documents = container_documents(args)

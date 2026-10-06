@@ -368,15 +368,15 @@ def test_simulator_pattern_matches_only_that_simulators_game():
     import re
     udid = "3BA81FB2-1A04-49EF-BF13-5B2598B8FBF9"
     path = (f"/Users/x/Library/Developer/CoreSimulator/Devices/{udid}/data/Containers/Bundle/Application/"
-            "47C658A7-DADC-45F2-969B-7E6A4FB5CB5C/HaloCE.app/HaloCE")
+            "47C658A7-DADC-45F2-969B-7E6A4FB5CB5C/VISR.app/VISR")
     assert re.search(mac_run.simulator_pattern(udid), path)
     assert not re.search(mac_run.simulator_pattern("00000000-0000-0000-0000-000000000000"), path)
-    assert not re.search(mac_run.simulator_pattern(udid), path.replace("HaloCE.app/HaloCE", "Other.app/Other"))
+    assert not re.search(mac_run.simulator_pattern(udid), path.replace("VISR.app/VISR", "Other.app/Other"))
 
 
 def test_simulator_run_refuses_a_missing_app(tmp_path):
     import argparse
-    args = argparse.Namespace(simulator="3BA81FB2-1A04-49EF-BF13-5B2598B8FBF9", app=tmp_path / "HaloCE.app")
+    args = argparse.Namespace(simulator="3BA81FB2-1A04-49EF-BF13-5B2598B8FBF9", app=tmp_path / "VISR.app")
     try:
         mac_run.run_simulator(args)
     except SystemExit as stop:
@@ -387,9 +387,9 @@ def test_simulator_run_refuses_a_missing_app(tmp_path):
 
 def make_native_app(root, bundle_id):
     """a stand-in for the Catalyst app: its executable and Info.plist"""
-    app = root / "build/HaloCE.app"
+    app = root / "build/VISR.app"
     (app / "Contents/MacOS").mkdir(parents=True)
-    (app / "Contents/MacOS/HaloCE").write_text("")
+    (app / "Contents/MacOS/VISR").write_text("")
     with (app / "Contents/Info.plist").open("wb") as file:
         plistlib.dump({"CFBundleIdentifier": bundle_id}, file)
     return app
@@ -440,7 +440,7 @@ def test_native_data_folder_takes_a_remote_host_s_folder_from_the_environment(tm
 
 def test_native_command_pins_the_display_and_passes_the_data_folder(tmp_path):
     data = tmp_path / "Application Support/runner-data"
-    command = mac_run.native_command(Path("/b/HaloCE.app"), data, tmp_path / "out", {"MTL_DEBUG_LAYER": "1"})
+    command = mac_run.native_command(Path("/b/VISR.app"), data, tmp_path / "out", {"MTL_DEBUG_LAYER": "1"})
     assert command[:3] == ["open", "--new", "--wait-apps"]
     variables = [command[i + 1] for i, part in enumerate(command) if part == "--env"]
     assert f"HALO_DATA_ROOT={data}" in variables
@@ -450,7 +450,7 @@ def test_native_command_pins_the_display_and_passes_the_data_folder(tmp_path):
     # the logs go to the data folder (internal disk), not --out, which may be on a removable volume
     assert command[command.index("--stdout") + 1] == str(data / "open-stdout.log")
     assert command[command.index("--stderr") + 1] == str(data / "open-stderr.log")
-    assert command[-1] == "/b/HaloCE.app"
+    assert command[-1] == "/b/VISR.app"
 
 
 def fake_open(monkeypatch, stdout, stderr, status=0):
@@ -472,7 +472,7 @@ def test_launch_native_copies_the_open_logs_into_out_and_replaces_the_old_ones(t
     (data / "open-stdout.log").write_text("stale stdout\n")
     (data / "open-stderr.log").write_text("stale stderr\n")
     fake_open(monkeypatch, "fresh stdout\n", "fresh stderr\n")
-    assert mac_run.launch_native(Path("/b/HaloCE.app"), data, out, {}, 10)
+    assert mac_run.launch_native(Path("/b/VISR.app"), data, out, {}, 10)
     assert (out / "open-stdout.log").read_text() == "fresh stdout\n"
     assert (out / "open-stderr.log").read_text() == "fresh stderr\n"
     # the data folder's copies hold this launch's content, not the stale files or an append
@@ -485,13 +485,13 @@ def test_launch_native_copies_the_open_logs_when_open_fails(tmp_path, monkeypatc
     data.mkdir()
     fake_open(monkeypatch, "", "open: -10810\n", status=1)
     with pytest.raises(SystemExit):
-        mac_run.launch_native(Path("/b/HaloCE.app"), data, out, {}, 10)
+        mac_run.launch_native(Path("/b/VISR.app"), data, out, {}, 10)
     assert (out / "open-stderr.log").read_text() == "open: -10810\n"
     assert (data / "open-stderr.log").read_text() == "open: -10810\n"
 
 
 def test_native_pattern_escapes_the_app_path():
-    assert mac_run.native_pattern(Path("/a.b/Halo (1).app")) == r"/a\.b/Halo \(1\)\.app/Contents/MacOS/HaloCE"
+    assert mac_run.native_pattern(Path("/a.b/Halo (1).app")) == r"/a\.b/Halo \(1\)\.app/Contents/MacOS/VISR"
 
 
 def test_game_exit_reads_the_game_s_last_exit_line():
@@ -788,7 +788,7 @@ def ipad_args(root, **overrides):
 
 def ipad_run_rewrite(tmp_path, monkeypatch, **overrides):
     """what rewrite the iPad path hands to prepare"""
-    (tmp_path / "HaloCE").write_text("")
+    (tmp_path / "VISR").write_text("")
     seen = []
     monkeypatch.setattr(mac_run, "build_wrapper", lambda args: None)
     monkeypatch.setattr(mac_run, "container_documents", lambda args: tmp_path)
@@ -846,12 +846,12 @@ def test_native_run_ignores_warnings_but_the_ipad_scheme_keeps_them(tmp_path, mo
 
 
 def test_the_native_app_comes_from_the_checkout_by_default():
-    assert mac_run.native_app_default({}) == mac_run.ROOT / "build/mac/app/Release-maccatalyst/HaloCE.app"
+    assert mac_run.native_app_default({}) == mac_run.ROOT / "build/mac/app/Release-maccatalyst/VISR.app"
 
 
 def test_the_native_app_comes_from_a_host_s_designated_folder(tmp_path):
     assert mac_run.native_app_default({"HALO_MAC_BUILD": str(tmp_path)}) == \
-        tmp_path / mac_run.ROOT.name / "app/Release-maccatalyst/HaloCE.app"
+        tmp_path / mac_run.ROOT.name / "app/Release-maccatalyst/VISR.app"
 
 
 def test_build_wrapper_closes_the_runner_projects_before_xcodegen_rewrites_them(tmp_path, monkeypatch):
@@ -867,7 +867,7 @@ def test_build_wrapper_closes_the_runner_projects_before_xcodegen_rewrites_them(
         calls.append((args, options.get("input")))
         return mac_run.subprocess.CompletedProcess(args, 0, stdout="0\n", stderr="")
     monkeypatch.setattr(mac_run, "run_command", run_command)
-    args = mac_run.argparse.Namespace(team="T", bundle_id="org.example.runner", app=tmp_path / "HaloCE.app")
+    args = mac_run.argparse.Namespace(team="T", bundle_id="org.example.runner", app=tmp_path / "VISR.app")
     mac_run.build_wrapper(args)
     programs = [call[0][0] for call in calls]
     assert programs.index("osascript") < programs.index("xcodegen")
@@ -882,7 +882,7 @@ def test_build_wrapper_does_not_start_xcode_to_close_projects(tmp_path, monkeypa
     monkeypatch.setattr(mac_run, "xcode_app", lambda: "/Applications/Xcode.app")
     monkeypatch.setattr(mac_run, "xcode_running", lambda xcode: False)
     monkeypatch.setattr(mac_run, "run_command", lambda *args, **options: calls.append(args[0]))
-    args = mac_run.argparse.Namespace(team="T", bundle_id="org.example.runner", app=tmp_path / "HaloCE.app")
+    args = mac_run.argparse.Namespace(team="T", bundle_id="org.example.runner", app=tmp_path / "VISR.app")
     mac_run.build_wrapper(args)
     assert "osascript" not in calls
 
@@ -1029,7 +1029,7 @@ def wrapper(tmp_path, monkeypatch):
 
 
 def _wrapper_args(tmp_path, **overrides):
-    values = dict(team="T", bundle_id="org.example.runner", app=tmp_path / "HaloCE.app")
+    values = dict(team="T", bundle_id="org.example.runner", app=tmp_path / "VISR.app")
     values.update(overrides)
     return mac_run.argparse.Namespace(**values)
 
