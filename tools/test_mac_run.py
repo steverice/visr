@@ -348,12 +348,28 @@ def test_reset_settings_return_to_the_gl_renderer(tmp_path):
 
 
 def test_project_turns_on_metal_validation_only_when_asked():
-    plain = mac_run.PROJECT.format(target="T", team="X", bundle_id="b", app="/a", environment=mac_run.scheme_environment({}))
-    validated = mac_run.PROJECT.format(target="T", team="X", bundle_id="b", app="/a",
+    plain = mac_run.PROJECT.format(target="T", team="X", bundle_id="b", app="/a", executable="VISR",
+                                   environment=mac_run.scheme_environment({}))
+    validated = mac_run.PROJECT.format(target="T", team="X", bundle_id="b", app="/a", executable="VISR",
                                        environment=mac_run.scheme_environment(mac_run.METAL_VALIDATION))
     assert "environmentVariables" not in plain
     assert '        MTL_DEBUG_LAYER: "1"\n' in validated
     assert validated.index("debugEnabled: false") < validated.index("environmentVariables")
+
+
+def test_project_copies_the_apps_own_executable():
+    project = mac_run.PROJECT.format(target="T", team="X", bundle_id="b", app="/a", executable="HaloCE",
+                                     environment=mac_run.scheme_environment({}))
+    assert 'cp "/a/HaloCE" "$TARGET_BUILD_DIR/$EXECUTABLE_PATH"' in project
+
+
+def test_app_executable_reads_the_plist_and_defaults_to_visr(tmp_path):
+    old = tmp_path / "HaloCE.app"
+    old.mkdir()
+    with (old / "Info.plist").open("wb") as file:
+        plistlib.dump({"CFBundleExecutable": "HaloCE"}, file)
+    assert mac_run.app_executable(old) == "HaloCE"
+    assert mac_run.app_executable(tmp_path / "VISR.app") == "VISR"
 
 
 def test_shader_validation_is_its_own_flag():

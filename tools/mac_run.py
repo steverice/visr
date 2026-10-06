@@ -374,10 +374,10 @@ targets:
       MARKETING_VERSION: "1.0"
       ENABLE_DEBUG_DYLIB: NO
     postBuildScripts:
-      - name: Use the CMake-built VISR
+      - name: Use the CMake-built app
         basedOnDependencyAnalysis: false
         script: |
-          cp "{app}/VISR" "$TARGET_BUILD_DIR/$EXECUTABLE_PATH"
+          cp "{app}/{executable}" "$TARGET_BUILD_DIR/$EXECUTABLE_PATH"
           cp "{app}/Info.plist" "$TARGET_BUILD_DIR/$INFOPLIST_PATH"
           plutil -replace CFBundleExecutable -string "$EXECUTABLE_NAME" "$TARGET_BUILD_DIR/$INFOPLIST_PATH"
           plutil -replace CFBundleIdentifier -string "$PRODUCT_BUNDLE_IDENTIFIER" "$TARGET_BUILD_DIR/$INFOPLIST_PATH"
@@ -634,11 +634,22 @@ def wait_for(condition, seconds):
     return False
 
 
+def app_executable(app):
+    """the CMake-built device app's executable name, from its Info.plist: VISR, or HaloCE in an app built before
+    the VISR rename (VISR when the plist can't be read)"""
+    try:
+        with (Path(app) / "Info.plist").open("rb") as file:
+            return plistlib.load(file).get("CFBundleExecutable") or "VISR"
+    except (OSError, plistlib.InvalidFileException):
+        return "VISR"
+
+
 def build_wrapper(args):
     RUNNER.mkdir(parents=True, exist_ok=True)
     (RUNNER / "stub.c").write_text("int main(void) { return 0; }\n")
     (RUNNER / "project.yml").write_text(PROJECT.format(
         target=TARGET, team=args.team, bundle_id=args.bundle_id, app=args.app.resolve(),
+        executable=app_executable(args.app),
         environment=scheme_environment(validation_environment(getattr(args, "metal_validation", False),
                                                              getattr(args, "metal_shader_validation", False)))))
     regenerate_project()
@@ -1015,7 +1026,7 @@ def run(args):
     if not args.team:
         sys.exit("--runner ipad needs --team")
     args.app = args.app or ROOT / "build/ios/app-device/Release-iphoneos/VISR.app"
-    if not (args.app / "VISR").is_file():
+    if not (args.app / app_executable(args.app)).is_file():
         sys.exit(f"no CMake-built app at {args.app}; run tools/ios_build.py --team ... first")
     build_wrapper(args)
     documents = container_documents(args)
