@@ -950,12 +950,14 @@ static gpu_shader gpu_metal_shader_create(uint32_t stage, const char *source)
 		/* a vertex shader's attribute kinds are function constants, which the
 		unspecialized function leaves undefined: its fetches read the kinds
 		from the attribute table (nv2a_msl.c) */
+		error = nil;
 		record->function = stage == GPU_SHADER_VERTEX ?
-			[library newFunctionWithName:@"vertex_main" constantValues:[MTLFunctionConstantValues new] error:nil] :
+			[library newFunctionWithName:@"vertex_main" constantValues:[MTLFunctionConstantValues new] error:&error] :
 			[library newFunctionWithName:@"fragment_main"];
 		if (!record->function)
 		{
-			platform_log("the %s shader has no entry point", stage == GPU_SHADER_VERTEX ? "vertex" : "pixel");
+			platform_log("cannot make the %s shader's function: %s", stage == GPU_SHADER_VERTEX ? "vertex" : "pixel",
+				error ? error.localizedDescription.UTF8String : "no entry point");
 			return 0;
 		}
 		if (stage != GPU_SHADER_VERTEX)
@@ -1606,12 +1608,10 @@ static id<MTLFunction> vertex_function(MetalShader *vertex, const uint8_t kinds[
 		compile_count(COMPILE_SPECIALIZE, started);
 		if (!function)
 		{
-			static int logged;
-
-			if (!logged)
-				platform_log("Metal: cannot specialize a vertex shader for its attributes: %s",
-					error.localizedDescription.UTF8String);
-			logged = 1;
+			/* (once for each shader and set of kinds, which the dictionary
+			then keeps with the fallback) */
+			platform_log("Metal: cannot specialize vertex shader %p for its attributes, which it then reads per draw: %s",
+				(__bridge void *)vertex, error.localizedDescription.UTF8String);
 			function = vertex->function;
 		}
 		vertex->specialized[name] = function;
