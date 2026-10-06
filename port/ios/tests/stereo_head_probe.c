@@ -107,6 +107,7 @@ double halo_frame_trace_milliseconds(void) { return 0.0; }
 int halo_third_person_camera(void) { return game_third_person; }
 int halo_cutscene_camera_first_person(void) { return game_first_person; }
 int halo_look_disabled_first_person(void) { return game_look_disabled; }
+int halo_cutscene_camera_settled(void) { return game_settled; }
 void halo_cutscene_state(struct halo_cutscene_state *state)
 {
 	memset(state, 0, sizeof(*state));
@@ -1315,6 +1316,46 @@ static void look_disabled(void)
 	game_first_person = 0;
 }
 
+/* the cutscene's end: the film holds until the camera reaches the eyes,
+at most 2.5 s */
+static void cutscene_end(void)
+{
+	int frame, held;
+
+	printf("a cutscene's end:\n");
+	restart("snap", 30.0, 120.0, 0);
+	game_first_person = 0;
+	/* the observer still gliding to the eyes when the letterbox goes */
+	game_letterbox = 1;
+	game_settled = 1;
+	cutscene_frame();
+	game_letterbox = 0;
+	game_settled = 0;
+	for (held = 0; held < 40 && halo_stereo_film(); held++)
+		cutscene_frame();
+	printf("  the camera away from the eyes: the film held %d frames\n", held);
+	check(held == 40 && on_film() && halo_stereo_film_letterbox(),
+		"the film holds while the camera hasn't reached the eyes, past the 10-frame hold");
+	game_settled = 1;
+	cutscene_frame();
+	check(immersive(), "then the full view, once it has");
+	for (frame = 0; frame < 40; frame++)
+		cutscene_frame();
+
+	/* a camera that never reaches the eyes: the hold gives up after 2.5 s,
+	and the film ends through black, as before */
+	game_letterbox = 1;
+	cutscene_frame();
+	game_letterbox = 0;
+	game_settled = 0;
+	held = frames_to_full_view(200);
+	printf("  never settling: the film held %d frames\n", held);
+	check(held == 75, "a camera that never reaches the eyes: the film holds 2.5 s, no longer");
+	game_settled = 1;
+	for (frame = 0; frame < 40; frame++)
+		cutscene_frame();
+}
+
 int main(void)
 {
 	pole_crossing();
@@ -1337,6 +1378,7 @@ int main(void)
 	glide();
 	first_person_cutscenes();
 	look_disabled();
+	cutscene_end();
 	if (failures)
 	{
 		printf("stereo head probe: %d failed\n", failures);

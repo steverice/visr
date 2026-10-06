@@ -456,6 +456,12 @@ int halo_cutscene_camera_first_person(void);
 with the script holding its look (a10's cryo pod), or a scripted camera in
 first-person mode. HEAD mode turns its picture by the head, never the look */
 int halo_look_disabled_first_person(void);
+/* the camera has reached the player's eyes after a cutscene: the observer's
+command finished, or the camera within this many world units of the unit's
+camera position with its orientation settled. The film holds until it has
+(stereo.c) */
+#define HALO_CUTSCENE_SETTLED_DISTANCE 0.05f
+int halo_cutscene_camera_settled(void);
 /* debug.gpu_stats's cutscene line (stereo.c): what decides the film */
 struct halo_cutscene_state
 {

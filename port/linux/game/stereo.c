@@ -28,7 +28,8 @@ view) only a camera that isn't first person goes on the film: a cutscene
 stays immersive until its first such camera, then on the film until it ends
 (the stereo spec's session 4 "Cutscenes"). A first-person camera without
 the look (halo_look_disabled_first_person) turns its picture by the head, as
-a third-person one does. HEAD mode asks the host for SCREEN
+a third-person one does. At a cutscene's end the film holds until the camera
+reaches the player's eyes. HEAD mode asks the host for SCREEN
 eyes meanwhile, so the frame is SCREEN for everyone downstream: the host
 draws it on the screen, and the head's turn stays out of the look and the
 camera. The film has display.film_depth_share and display.film_convergence,
@@ -296,6 +297,15 @@ static int film_hold;
 the film's hold) has shown a camera that isn't first person: it stays on the
 film from that camera to its end (the stereo spec's session 4 "Cutscenes") */
 static int cutscene_third_person;
+/* after a cutscene's film in HEAD mode, the film also holds until the
+camera reaches the player's eyes (halo_cutscene_camera_settled), at most
+FILM_SETTLE_SECONDS from the cutscene's end: the observer glides from the
+cutscene camera's last pose for at most 2 s (observer_update_command), so a
+camera still away by then isn't coming. The seconds since the end, and
+whether the last wait gave up (the film then ends through black) */
+#define FILM_SETTLE_SECONDS 2.5f
+static float settle_elapsed;
+static int settle_gave_up;
 /* the zoom's inset this frame (halo_stereo_inset_begin): whether the
 frame is zoomed in the full view, which keeps the zoom's screen effects out
 of the eyes and routes the crosshairs out of the HUD layer, and whether the
@@ -348,13 +358,13 @@ static void cutscene_log(float time_delta)
 	else
 		return;
 	platform_log("stereo: cutscene: frame %lu: letterbox %d, director scripted %d, perspective %s, script mode %s, "
-		"look %s, last frame's fade %.2f; film %s, hold %d, a third-person shot %d, "
+		"look %s, last frame's fade %.2f; film %s, hold %d, waited %.2f s, a third-person shot %d, "
 		"observer finished %d, orientation settled %d, %.3f units from the eyes",
 		head_log_frame, state.letterbox, state.director_scripted,
 		state.perspective >= 0 && state.perspective < 4 ? perspectives[state.perspective] : "?",
 		state.script_mode >= 0 && state.script_mode < 4 ? script_modes[state.script_mode] : "none",
 		state.look_disabled ? "disabled" : "enabled", cutscene_log_fade, film_reasons[film_reason],
-		film_hold,
+		film_hold, settle_elapsed,
 		cutscene_third_person,
 		state.observer_finished, state.orientation_settled, state.distance);
 }
@@ -772,6 +782,25 @@ void halo_stereo_frame_begin(void)
 	}
 	if (film_reason != 0) {
 		film_hold = FILM_HOLD_FRAMES;
+		settle_elapsed = 0.0f;
+		settle_gave_up = 0;
+	} else if (film_frame && !screen && (film_reason_logged == 1 || film_reason_logged == 2) &&
+		(film_hold > 0 || !halo_cutscene_camera_settled())) {
+		/* a cutscene's film holds its hold, then until the camera reaches
+		the eyes: otherwise the full view would begin on a camera still
+		gliding from the cutscene's (the jump at a cutscene's end) */
+		settle_elapsed += time_delta;
+		/* (frame times summed in floats fall a hair short of the whole) */
+		if (settle_elapsed < FILM_SETTLE_SECONDS - 1e-4f) {
+			if (film_hold > 0)
+				film_hold--;
+			film_reason = film_reason_logged;
+		} else {
+			film_hold = 0;
+			settle_gave_up = 1;
+			platform_log("stereo: the camera didn't reach the player's eyes within %.1f s of the cutscene; the film "
+				"ends through black", FILM_SETTLE_SECONDS);
+		}
 	} else if (film_hold > 0) {
 		film_hold--;
 		film_reason = film_reason_logged;

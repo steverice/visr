@@ -34,6 +34,7 @@ int halo_scripted_director_camera(void) { return game_director_camera; }
 int halo_third_person_camera(void) { return game_third_person; }
 int halo_cutscene_camera_first_person(void) { return 0; }
 int halo_look_disabled_first_person(void) { return 0; }
+int halo_cutscene_camera_settled(void) { return 1; }
 void halo_cutscene_state(struct halo_cutscene_state *state) { memset(state, 0, sizeof(*state)); }
 void halo_screen_commit_stereo_scale(void) {}
 void platform_video_drawable_size(int *width, int *height) { *width = 1920; *height = 1080; }

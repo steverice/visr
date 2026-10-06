@@ -106,6 +106,22 @@ static float camera_distance_from_eyes(void)
 	return (float)sqrt(dx * dx + dy * dy + dz * dz);
 }
 
+/* The camera has come to the player's eyes after a cutscene: the observer's
+command finished (director_script_camera(FALSE) leaves it gliding from the
+cutscene camera's last pose for up to 2 s, observer_update_command), or the
+camera within HALO_CUTSCENE_SETTLED_DISTANCE of the unit's camera position
+with its orientation at its command (observer_orientation_settled, which
+render_interpolation.c's facing-posed cameras need too) */
+int halo_cutscene_camera_settled(void)
+{
+	float distance;
+
+	if (observer_command_has_finished(0))
+		return 1;
+	distance = camera_distance_from_eyes();
+	return distance >= 0.0f && distance <= HALO_CUTSCENE_SETTLED_DISTANCE && observer_orientation_settled(0);
+}
+
 void halo_cutscene_state(struct halo_cutscene_state *state)
 {
 	state->letterbox = halo_cinematic_screen();
