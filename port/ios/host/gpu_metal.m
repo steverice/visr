@@ -1341,9 +1341,18 @@ static unsigned long front_cache_index(const void *key, size_t length)
 	uint32_t hash = 2166136261u;
 	size_t index;
 
-	for (index = 0; index < length; index++)
+	/* FNV-1a over 32-bit words (and any bytes after the last whole one) */
+	for (index = 0; index + 4 <= length; index += 4)
+	{
+		uint32_t word;
+
+		memcpy(&word, bytes + index, sizeof(word));
+		hash = (hash ^ word) * 16777619u;
+	}
+	for (; index < length; index++)
 		hash = (hash ^ bytes[index]) * 16777619u;
-	return (hash ^ (hash >> 16)) & (FRONT_CACHE_ENTRIES - 1);
+	hash ^= hash >> 16;
+	return (hash ^ (hash >> 8)) & (FRONT_CACHE_ENTRIES - 1);
 }
 
 /* the object cached for key, or nil */
