@@ -34,6 +34,7 @@ Elsewhere host_stereo_frame leaves the frame mono. */
 #if TARGET_OS_VISION
 #import <CompositorServices/CompositorServices.h>
 #import <Metal/Metal.h>
+#include <os/proc.h>
 #include <simd/simd.h>
 #include "host_theater.h"
 #include "host_stereo_head.h"
@@ -62,6 +63,15 @@ static int foveated_allocated_width, foveated_allocated_height;
 /* what foveated_eyes last logged, to log again only on a change */
 static int foveated_eyes_logged = -1;
 static unsigned long foveated_eyes_key;
+/* the memory left to the app (os_proc_available_memory) is logged at the
+first foveated frame since the space opened, and at the first stereo frame
+after a level loads: a load stalls the game's loop, so that is the first
+frame after MEMORY_LOAD_GAP_SECONDS without one (and the first since the
+space opened). The render quality is chosen against it (the stereo spec's
+"Foveation and render quality": under 500 MB, the next lower quality) */
+#define MEMORY_LOAD_GAP_SECONDS 1.0
+static int memory_foveated_logged;
+static NSTimeInterval memory_last_frame_at;
 /* the head's last pose, while ARKit places it */
 static struct host_stereo_head head;
 static unsigned long stereo_frames;
@@ -871,6 +881,19 @@ static void foveated_eyes(struct halo_stereo_frame *frame, cp_drawable_t drawabl
 	}
 }
 
+/* "stereo: available memory N MB at WHEN (foveation ...)" */
+static void log_available_memory(const char *when)
+{
+	float quality = 0.0f, runtime = 0.0f;
+	unsigned long long megabytes = (unsigned long long)os_proc_available_memory() / (1024 * 1024);
+
+	if (host_theater_foveation_state(&quality, &runtime, NULL, NULL, NULL))
+		host_logf(HOST_LOG_INFO, "stereo: available memory %llu MB %s (foveation at quality %.3f, runtime %.3f)",
+			megabytes, when, quality, runtime);
+	else
+		host_logf(HOST_LOG_INFO, "stereo: available memory %llu MB %s (unfoveated)", megabytes, when);
+}
+
 static void stereo_frame(struct halo_stereo_frame *frame) API_AVAILABLE(visionos(26.0))
 {
 	simd_float4x4 origin_from_device;
@@ -886,6 +909,21 @@ static void stereo_frame(struct halo_stereo_frame *frame) API_AVAILABLE(visionos
 	}
 	cp_drawable_t drawable = host_theater_drawable(0, &origin_from_device, &anchored);
 	head_frame_open = head_configured();
+	{
+		NSTimeInterval now = NSProcessInfo.processInfo.systemUptime;
+
+		if (memory_last_frame_at == 0.0)
+			log_available_memory("at the first stereo frame since the space opened (a level loaded)");
+		else if (now - memory_last_frame_at >= MEMORY_LOAD_GAP_SECONDS)
+		{
+			char when[128];
+
+			snprintf(when, sizeof(when), "at the first stereo frame after %.1f s without one (a level load)",
+				now - memory_last_frame_at);
+			log_available_memory(when);
+		}
+		memory_last_frame_at = now;
+	}
 	/* the rate maps, whatever this frame shows: a10 opens on a film */
 	foveation_measure(drawable);
 	/* on the screen, the head moves only the eyes: no turn, and the game
@@ -953,6 +991,11 @@ static void stereo_frame(struct halo_stereo_frame *frame) API_AVAILABLE(visionos
 					"view's logical viewport %.0fx%.0f)", frame->eye_width, frame->eye_height, viewport.width,
 					viewport.height);
 			foveated_eyes(frame, drawable, views);
+			if (!memory_foveated_logged)
+			{
+				memory_foveated_logged = 1;
+				log_available_memory("at the first foveated frame");
+			}
 		}
 		else
 		{
@@ -1026,6 +1069,8 @@ void host_stereo_space_opened(void *layer_renderer)
 	foveation_frames = 0;
 	foveation_easing_logged = 0;
 	foveated_eyes_logged = -1;
+	memory_foveated_logged = 0;
+	memory_last_frame_at = 0.0;
 #else
 	(void)layer_renderer;
 #endif
