@@ -436,6 +436,14 @@ boolean observer_command_has_finished(
 	return TRUE;
 }
 
+/* port: see observer.h */
+boolean observer_orientation_settled(
+	short local_player_index)
+{
+	return observer_get(local_player_index)->last_command.parameter_timers[
+		_observer_command_parameter_orientation] == 0.f;
+}
+
 void observer_reconnect_to_structure_bsp(
 	void)
 {

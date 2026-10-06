@@ -107,6 +107,10 @@ struct observer_result const *observer_get_camera(
 	short local_player_index);
 boolean observer_command_has_finished(
 	short local_player_index);
+/* port: the observer's orientation is its command's, with no transition
+under way, for stereo's head yaw (port/linux/game/render_interpolation.c) */
+boolean observer_orientation_settled(
+	short local_player_index);
 
 void observer_up_from_forward(
 	real_vector3d const *forward,
