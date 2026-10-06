@@ -863,7 +863,10 @@ def test_build_wrapper_closes_the_runner_projects_before_xcodegen_rewrites_them(
     monkeypatch.setattr(mac_run, "RUNNER", tmp_path / "build/mac-runner")
     monkeypatch.setattr(mac_run, "xcode_app", lambda: "/Applications/Xcode.app")
     monkeypatch.setattr(mac_run, "xcode_running", lambda xcode: True)
-    monkeypatch.setattr(mac_run, "run_command", lambda *args, **options: calls.append((args, options.get("input"))))
+    def run_command(*args, **options):
+        calls.append((args, options.get("input")))
+        return mac_run.subprocess.CompletedProcess(args, 0, stdout="0\n", stderr="")
+    monkeypatch.setattr(mac_run, "run_command", run_command)
     args = mac_run.argparse.Namespace(team="T", bundle_id="org.example.runner", app=tmp_path / "HaloCE.app")
     mac_run.build_wrapper(args)
     programs = [call[0][0] for call in calls]
@@ -954,3 +957,20 @@ def test_launch_script_does_not_ask_again_over_a_pending_run():
     script = mac_run.LAUNCH.format(xcode="/Applications/Xcode.app", target="HaloRunner", project="/p/HaloRunner.xcodeproj")
     assert 'if run_status is "not yet started"' not in script
     assert 'else if run_status is not "error occurred" then' in script
+
+
+def test_close_runner_projects_fails_when_a_project_stays_open(monkeypatch):
+    """CLOSE_RUNNER_PROJECTS closes inside a try: a close that fails quietly must not let xcodegen
+    rewrite a project Xcode still has open"""
+    monkeypatch.setattr(mac_run, "xcode_app", lambda: "/Applications/Xcode.app")
+    monkeypatch.setattr(mac_run, "xcode_running", lambda xcode: True)
+    monkeypatch.setattr(mac_run, "run_command",
+                        lambda *args, **options: mac_run.subprocess.CompletedProcess(args, 0, stdout="1\n", stderr=""))
+    with pytest.raises(SystemExit, match="still has 1 HaloRunner projects open"):
+        mac_run.close_runner_projects()
+
+
+def test_close_script_reports_the_runner_projects_left_open():
+    close = mac_run.CLOSE_RUNNER_PROJECTS.format(xcode="/Applications/Xcode.app", target="HaloRunner")
+    assert close.index('return count of (every workspace document whose path contains "/HaloRunner.xcodeproj")') > \
+        close.index("close runner saving no")

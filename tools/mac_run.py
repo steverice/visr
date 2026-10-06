@@ -456,6 +456,8 @@ CLOSE_RUNNER_PROJECTS = """with timeout of 30 seconds
 				close runner saving no
 			end try
 		end repeat
+		-- a close can fail quietly (inside the try): report what is still open
+		return count of (every workspace document whose path contains "/{target}.xcodeproj")
 	end tell
 end timeout
 """
@@ -585,10 +587,15 @@ def close_runner_projects():
     if not xcode_running(xcode):
         return
     try:
-        run_command("osascript", input=CLOSE_RUNNER_PROJECTS.format(xcode=xcode, target=TARGET), text=True)
+        closed = run_command("osascript", input=CLOSE_RUNNER_PROJECTS.format(xcode=xcode, target=TARGET), text=True,
+                             capture_output=True)
     except subprocess.CalledProcessError:
         sys.exit(f"Xcode ({xcode}) did not close its {TARGET} projects within 30 seconds: "
                  "a dialog is probably open in it on this Mac's screen; answer it, then run again")
+    still_open = closed.stdout.strip()
+    if still_open != "0":
+        sys.exit(f"Xcode ({xcode}) still has {still_open or 'an unknown number of'} {TARGET} projects open after "
+                 f"closing them, and xcodegen would rewrite one under it; close them in Xcode, then run again")
 
 
 def running():
