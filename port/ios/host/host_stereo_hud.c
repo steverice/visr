@@ -9,63 +9,76 @@
 /* past this pitch the level frame's yaw comes from the head's right */
 #define LEVEL_YAW_PITCH_LIMIT (85.0f * DEGREES)
 
-/* The bands' slots: where each HUD group's quad goes, as Task 7c placed its
-pieces, with the group's own rectangle in place of a measured one. The
-weapon's counters and icon (with the grenades) left and the unit's meters
-right sit next to the reticle in the top band; a vehicle driver's seat
-labels, which CE anchors top left, share the weapon's slot, each where CE
-puts it relative to the other, so a Scorpion driver's rider labels stay
-under the cannon's counters as on the Xbox; the prompts and the
-messages, which CE draws under the counters, sit above them, centered, in
-CE's own arrangement (the prompt over the messages); the motion tracker,
-at the bottom of Halo's HUD, hangs centered in the bottom band. */
+/* The corners: where each HUD group's quad goes (the stereo spec's "The
+HUD in the periphery"), in the corner where CE puts it, moved outward. The
+weapon's counters and icon (with the grenades) top left, with a vehicle
+driver's seat labels, which CE anchors top left too, each where CE puts it
+relative to the other, so a Scorpion driver's rider labels stay under the
+cannon's counters as on the Xbox; the unit's meters top right; the prompt
+and the messages, which CE draws from the top left under the counters, from
+display.hud_messages_up down, the prompt over the messages as CE draws
+them; the motion tracker bottom left. A corner's groups share one plane, so
+they keep CE's arrangement exactly. */
+enum
+{
+	HEIGHT_CORNER_UP,                  /* display.hud_corner_up */
+	HEIGHT_MESSAGES_UP,                /* display.hud_messages_up */
+	HEIGHT_TRACKER_DOWN                /* display.hud_tracker_down, below the center */
+};
 struct slot
 {
-	/* its band (1 the top, -1 the bottom), row in the band (0 next to the
-	reticle, then outward) and side (-1 left of the center, 1 right, 0
-	centered) */
-	int band, row, side;
+	/* its outer corner's side, across (-1 left, 1 right) and up (1 the top,
+	-1 the bottom), and which setting sets that corner's height */
+	int x, y, height;
 	/* the groups in it, which keep their places relative to each other */
 	int groups[2], group_count;
 };
 
 static const struct slot slots[] = {
-	{ 1, 0, -1, { HALO_HUD_GROUP_WEAPON, HALO_HUD_GROUP_SEATS }, 2 },
-	{ 1, 0, 1, { HALO_HUD_GROUP_UNIT }, 1 },
-	{ 1, 1, 0, { HALO_HUD_GROUP_PROMPT, HALO_HUD_GROUP_MESSAGES }, 2 },
-	{ -1, 0, 0, { HALO_HUD_GROUP_TRACKER }, 1 },
+	{ -1, 1, HEIGHT_CORNER_UP, { HALO_HUD_GROUP_WEAPON, HALO_HUD_GROUP_SEATS }, 2 },
+	{ 1, 1, HEIGHT_CORNER_UP, { HALO_HUD_GROUP_UNIT }, 1 },
+	{ -1, 1, HEIGHT_MESSAGES_UP, { HALO_HUD_GROUP_PROMPT, HALO_HUD_GROUP_MESSAGES }, 2 },
+	{ -1, -1, HEIGHT_TRACKER_DOWN, { HALO_HUD_GROUP_TRACKER }, 1 },
 };
 #define SLOT_COUNT (sizeof(slots) / sizeof(slots[0]))
 
-/* the gap between a band's inner edge and the reticle's square, and between
-a band's left and right slots, in lines at the natural scale; the reticle's
-square, which the bands stay clear of, as Task 7c's (every crosshair on the
-combined reticle sheet is at most 66 lines across) */
-#define BAND_GAP_LINES 8.0f
-#define RETICLE_LINES 100.0f
+static const struct host_stereo_hud_placement default_placement = HOST_STEREO_HUD_PLACEMENT_DEFAULT;
 
-/* a group's rectangle in the layout with its margin, clipped to the
-layout: x0, y0, x1, y1 in lines; 0 if it has none */
-static int group_rectangle(const float (*group_extent)[4], int group, float layout_width, float rectangle[4])
+/* a group's drawn rectangle in the layout, clipped to it: x0, y0, x1, y1
+in lines; 0 if it has none */
+static int group_content(const float (*group_extent)[4], int group, float layout_width, float content[4])
 {
 	const float *extent;
 
 	if (!group_extent || group < 0 || group >= HALO_HUD_GROUP_COUNT)
 		return 0;
 	extent = group_extent[group];
-	if (!(extent[2] > extent[0]) || !(extent[3] > extent[1]))
-		return 0;
-	rectangle[0] = fmaxf(extent[0] - HOST_STEREO_HUD_GROUP_MARGIN_LINES, 0.0f);
-	rectangle[1] = fmaxf(extent[1] - HOST_STEREO_HUD_GROUP_MARGIN_LINES, 0.0f);
-	rectangle[2] = fminf(extent[2] + HOST_STEREO_HUD_GROUP_MARGIN_LINES, layout_width);
-	rectangle[3] = fminf(extent[3] + HOST_STEREO_HUD_GROUP_MARGIN_LINES, HOST_STEREO_HUD_LINES);
-	return rectangle[2] > rectangle[0] && rectangle[3] > rectangle[1];
+	content[0] = fmaxf(extent[0], 0.0f);
+	content[1] = fmaxf(extent[1], 0.0f);
+	content[2] = fminf(extent[2], layout_width);
+	content[3] = fminf(extent[3], HOST_STEREO_HUD_LINES);
+	return content[2] > content[0] && content[3] > content[1];
 }
 
-/* a slot's rectangle in the layout: the union of its groups'; 0 if none
-of them drew */
-static int slot_rectangle(const struct slot *slot, const float (*group_extent)[4], float layout_width,
-	float rectangle[4])
+/* a group's rectangle in the layout with its margin, clipped to the
+layout: x0, y0, x1, y1 in lines; 0 if it has none */
+static int group_rectangle(const float (*group_extent)[4], int group, float layout_width, float rectangle[4])
+{
+	float content[4];
+
+	if (!group_content(group_extent, group, layout_width, content))
+		return 0;
+	rectangle[0] = fmaxf(content[0] - HOST_STEREO_HUD_GROUP_MARGIN_LINES, 0.0f);
+	rectangle[1] = fmaxf(content[1] - HOST_STEREO_HUD_GROUP_MARGIN_LINES, 0.0f);
+	rectangle[2] = fminf(content[2] + HOST_STEREO_HUD_GROUP_MARGIN_LINES, layout_width);
+	rectangle[3] = fminf(content[3] + HOST_STEREO_HUD_GROUP_MARGIN_LINES, HOST_STEREO_HUD_LINES);
+	return 1;
+}
+
+/* a slot's drawn rectangle in the layout: the union of its groups'; 0 if
+none of them drew */
+static int slot_content(const struct slot *slot, const float (*group_extent)[4], float layout_width,
+	float content[4])
 {
 	int index, found = 0;
 
@@ -73,16 +86,16 @@ static int slot_rectangle(const struct slot *slot, const float (*group_extent)[4
 	{
 		float group[4];
 
-		if (!group_rectangle(group_extent, slot->groups[index], layout_width, group))
+		if (!group_content(group_extent, slot->groups[index], layout_width, group))
 			continue;
 		if (!found)
-			memcpy(rectangle, group, sizeof(group));
+			memcpy(content, group, sizeof(group));
 		else
 		{
-			rectangle[0] = fminf(rectangle[0], group[0]);
-			rectangle[1] = fminf(rectangle[1], group[1]);
-			rectangle[2] = fmaxf(rectangle[2], group[2]);
-			rectangle[3] = fmaxf(rectangle[3], group[3]);
+			content[0] = fminf(content[0], group[0]);
+			content[1] = fminf(content[1], group[1]);
+			content[2] = fmaxf(content[2], group[2]);
+			content[3] = fmaxf(content[3], group[3]);
 		}
 		found = 1;
 	}
@@ -97,67 +110,75 @@ static void source_of(const float rectangle[4], float layout_width, float source
 	source[3] = rectangle[3] / HOST_STEREO_HUD_LINES;
 }
 
-/* where a slot goes on the level plane at HOST_STEREO_HUD_DISTANCE, in lines
-from the view's center (x right, y up): x0, y0 (bottom), x1, y1 (top), for
-the natural scale. The top band's slots sit on a line just above the
-reticle's square, the bottom band's hang from one just below it; the left
-ones end just left of the center, the right ones start just right of it,
-the centered ones are centered. A band's rows stack outward from the
-reticle, each as tall as its tallest slot; a row with nothing in it takes
-no room */
-static void slot_place(size_t index, const float rectangle[4], const float (*group_extent)[4], float layout_width,
-	float placed[4])
+/* the plane HOST_STEREO_HUD_DISTANCE out along the direction at yaw (right
+positive) and pitch (up positive), facing the eyes, upright: its center on
+the sphere, and its right (level) and up, unit length */
+static void plane_at(float yaw, float pitch, float center[3], float right[3], float up[3])
 {
-	const struct slot *slot = &slots[index];
-	float width = rectangle[2] - rectangle[0], height = rectangle[3] - rectangle[1];
-	float inner = RETICLE_LINES / 2.0f + BAND_GAP_LINES;
-	size_t earlier;
-	int row;
-
-	/* outward past its band's nearer rows */
-	for (row = 0; row < slot->row; row++)
-	{
-		float tallest = 0.0f;
-
-		for (earlier = 0; earlier < SLOT_COUNT; earlier++)
-		{
-			float other[4];
-
-			if (slots[earlier].band != slot->band || slots[earlier].row != row ||
-				!slot_rectangle(&slots[earlier], group_extent, layout_width, other))
-				continue;
-			tallest = fmaxf(tallest, other[3] - other[1]);
-		}
-		if (tallest > 0.0f)
-			inner += tallest + BAND_GAP_LINES;
-	}
-	placed[0] = slot->side < 0 ? -BAND_GAP_LINES / 2.0f - width : slot->side > 0 ? BAND_GAP_LINES / 2.0f :
-		-width / 2.0f;
-	placed[2] = placed[0] + width;
-	placed[1] = slot->band > 0 ? inner : -inner - height;
-	placed[3] = placed[1] + height;
+	right[0] = cosf(yaw);
+	right[1] = 0.0f;
+	right[2] = sinf(yaw);
+	/* right across forward */
+	up[0] = -sinf(yaw) * sinf(pitch);
+	up[1] = cosf(pitch);
+	up[2] = cosf(yaw) * sinf(pitch);
+	center[0] = HOST_STEREO_HUD_DISTANCE * sinf(yaw) * cosf(pitch);
+	center[1] = HOST_STEREO_HUD_DISTANCE * sinf(pitch);
+	center[2] = -HOST_STEREO_HUD_DISTANCE * cosf(yaw) * cosf(pitch);
 }
 
-float host_stereo_hud_band_scale(float layout_width, const float (*group_extent)[4])
+/* The plane of a rectangle half_width by half_height meters whose corner on
+side x, y (as struct slot's) lies along the direction across, up (radians)
+in the level frame: the plane facing the eyes from the HUD's sphere, its
+center found by stepping the center's angles by the corner's miss until
+the corner is there (each step's miss is a small fraction of the last). */
+static void corner_plane(float across, float up, int x, int y, float half_width, float half_height, float center[3],
+	float right[3], float upward[3])
 {
-	/* the largest distance from the center either way, in lines, at the
-	natural scale; the sharp region's edge on the plane, in meters */
-	float reach = 0.0f;
-	float limit = HOST_STEREO_HUD_DISTANCE * tanf(HUD_SHARP_RADIUS_DEGREES * DEGREES);
-	size_t index;
+	float yaw = across - (float)x * atanf(half_width / HOST_STEREO_HUD_DISTANCE);
+	float pitch = up - (float)y * atanf(half_height / HOST_STEREO_HUD_DISTANCE);
+	int step, axis;
 
-	for (index = 0; index < SLOT_COUNT; index++)
+	for (step = 0; step < 32; step++)
 	{
-		float rectangle[4], placed[4];
+		float corner[3], miss_across, miss_up;
 
-		if (!slot_rectangle(&slots[index], group_extent, layout_width, rectangle))
-			continue;
-		slot_place(index, rectangle, group_extent, layout_width, placed);
-		reach = fmaxf(reach, fmaxf(fmaxf(fabsf(placed[0]), fabsf(placed[2])), fmaxf(fabsf(placed[1]), fabsf(placed[3]))));
+		plane_at(yaw, pitch, center, right, upward);
+		for (axis = 0; axis < 3; axis++)
+			corner[axis] = center[axis] + (float)x * half_width * right[axis] + (float)y * half_height * upward[axis];
+		miss_across = across - atan2f(corner[0], -corner[2]);
+		miss_up = up - atan2f(corner[1], hypotf(corner[0], corner[2]));
+		if (fabsf(miss_across) < 1e-7f && fabsf(miss_up) < 1e-7f)
+			return;
+		yaw += miss_across;
+		pitch += miss_up;
 	}
-	if (reach * HOST_STEREO_HUD_METERS_PER_LINE <= limit || reach <= 0.0f)
-		return HOST_STEREO_HUD_METERS_PER_LINE;
-	return limit / reach;
+	plane_at(yaw, pitch, center, right, upward);
+}
+
+static int clamp_setting(float *value, float minimum, float maximum, float fallback)
+{
+	float clamped = *value != *value ? fallback : fmaxf(minimum, fminf(maximum, *value));
+
+	if (clamped == *value)
+		return 0;
+	*value = clamped;
+	return 1;
+}
+
+int host_stereo_hud_placement_clamp(struct host_stereo_hud_placement *placement)
+{
+	int changed = 0;
+
+	changed |= clamp_setting(&placement->across, 0.0f, HOST_STEREO_HUD_SHARED_DEGREES, default_placement.across);
+	changed |= clamp_setting(&placement->up, 0.0f, HOST_STEREO_HUD_SHARED_DEGREES, default_placement.up);
+	changed |= clamp_setting(&placement->tracker_down, 0.0f, HOST_STEREO_HUD_SHARED_DEGREES,
+		default_placement.tracker_down);
+	changed |= clamp_setting(&placement->messages_up, 0.0f, HOST_STEREO_HUD_SHARED_DEGREES,
+		default_placement.messages_up);
+	changed |= clamp_setting(&placement->scale, HOST_STEREO_HUD_SCALE_MIN, HOST_STEREO_HUD_SCALE_MAX,
+		default_placement.scale);
+	return changed;
 }
 
 /* a quad showing the layer's rectangle (lines) at the given half extents
@@ -256,46 +277,57 @@ void host_stereo_hud_ui(float aspect, struct host_stereo_hud_quad *quad)
 }
 
 int host_stereo_hud_layout(float layout_width, int ui, const float reticle[3], const float hud_tangents[2],
-	const float (*group_extent)[4], struct host_stereo_hud_quad *quads)
+	const float (*group_extent)[4], const struct host_stereo_hud_placement *placement,
+	struct host_stereo_hud_quad *quads)
 {
 	float scale;
 	size_t index;
-	int count = 0, group;
+	int count = 0;
 
 	if (!(layout_width > 0.0f))
 		layout_width = 640.0f;
+	if (!placement)
+		placement = &default_placement;
 	if (host_stereo_hud_reticle(layout_width, NULL, reticle, &quads[count]))
 		count++;
-	scale = host_stereo_hud_band_scale(layout_width, group_extent);
+	/* meters a line on the HUD's sphere */
+	scale = HOST_STEREO_HUD_METERS_PER_LINE * placement->scale;
 	for (index = 0; index < SLOT_COUNT; index++)
 	{
-		float slot[4], placed[4];
+		const struct slot *slot = &slots[index];
+		float content[4], center[3], right[3], upward[3], across, up;
 		int member;
 
-		if (!slot_rectangle(&slots[index], group_extent, layout_width, slot))
+		if (!slot_content(slot, group_extent, layout_width, content))
 			continue;
-		slot_place(index, slot, group_extent, layout_width, placed);
-		/* each group at its place in the slot: as far from the slot's left
-		and top edges as in the layout */
-		for (member = 0; member < slots[index].group_count && count < HOST_STEREO_HUD_MAXIMUM_QUADS; member++)
+		across = (float)slot->x * placement->across;
+		up = slot->height == HEIGHT_CORNER_UP ? placement->up : slot->height == HEIGHT_MESSAGES_UP ?
+			placement->messages_up : -placement->tracker_down;
+		/* the slot's drawn rectangle with its outer corner at the angles */
+		corner_plane(across * DEGREES, up * DEGREES, slot->x, slot->y, (content[2] - content[0]) / 2.0f * scale,
+			(content[3] - content[1]) / 2.0f * scale, center, right, upward);
+		/* each group, with its margin, where it is in the slot's rectangle,
+		on the slot's plane */
+		for (member = 0; member < slot->group_count && count < HOST_STEREO_HUD_MAXIMUM_QUADS; member++)
 		{
 			struct host_stereo_hud_quad *quad = &quads[count];
-			float rectangle[4], x0, x1, top, bottom;
+			int group = slot->groups[member], axis;
+			float rectangle[4], offset_right, offset_up, half_width, half_height;
 
-			group = slots[index].groups[member];
 			if (!group_rectangle(group_extent, group, layout_width, rectangle))
 				continue;
-			x0 = placed[0] + (rectangle[0] - slot[0]);
-			x1 = x0 + (rectangle[2] - rectangle[0]);
-			top = placed[3] - (rectangle[1] - slot[1]);
-			bottom = top - (rectangle[3] - rectangle[1]);
+			offset_right = ((rectangle[0] + rectangle[2]) - (content[0] + content[2])) / 2.0f * scale;
+			offset_up = -((rectangle[1] + rectangle[3]) - (content[1] + content[3])) / 2.0f * scale;
+			half_width = (rectangle[2] - rectangle[0]) / 2.0f * scale;
+			half_height = (rectangle[3] - rectangle[1]) / 2.0f * scale;
 			memset(quad, 0, sizeof(*quad));
 			source_of(rectangle, layout_width, quad->source);
-			quad->center[0] = (x0 + x1) / 2.0f * scale;
-			quad->center[1] = (bottom + top) / 2.0f * scale;
-			quad->center[2] = -HOST_STEREO_HUD_DISTANCE;
-			quad->x_axis[0] = (x1 - x0) / 2.0f * scale;
-			quad->y_axis[1] = (top - bottom) / 2.0f * scale;
+			for (axis = 0; axis < 3; axis++)
+			{
+				quad->center[axis] = center[axis] + offset_right * right[axis] + offset_up * upward[axis];
+				quad->x_axis[axis] = half_width * right[axis];
+				quad->y_axis[axis] = half_height * upward[axis];
+			}
 			quad->frame = HOST_STEREO_HUD_LEVEL;
 			quad->layer = HOST_STEREO_HUD_LAYER_GROUP + group;
 			count++;

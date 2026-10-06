@@ -262,6 +262,12 @@ on the pixel size the game picks model detail by (halo_stereo_lod_scale) */
 #define LOD_SCALE_MIN 0.5f
 #define LOD_SCALE_MAX 4.0f
 static float lod_scale_setting = 1.0f;
+/* display.hud_resolution, read once (mapping_settings): the HUD's targets'
+pixels per axis against the view's, in HEAD mode and the side-by-side view
+(halo_stereo_hud_resolution) */
+#define HUD_RESOLUTION_MIN 0.5f
+#define HUD_RESOLUTION_MAX 1.0f
+static float hud_resolution_setting = 1.0f;
 /* the culling camera's distance back, logged under debug.gpu_stats once
 for each mode and mapping (halo_stereo_log_culling) */
 static unsigned culling_logged;
@@ -479,6 +485,8 @@ static void mapping_settings(void)
 	head_yaw_log = config_boolean("debug.head_yaw_log") != 0;
 	lod_scale_setting = clamped_setting("display.lod_scale", (float)config_real("display.lod_scale"),
 		LOD_SCALE_MIN, LOD_SCALE_MAX, "times the Xbox's pixel scale");
+	hud_resolution_setting = clamped_setting("display.hud_resolution", (float)config_real("display.hud_resolution"),
+		HUD_RESOLUTION_MIN, HUD_RESOLUTION_MAX, "of the view's pixels per axis");
 }
 
 /* SCREEN gameplay's eyes rather than HEAD-like ones: SCREEN mode, or the
@@ -1406,6 +1414,11 @@ const union real_point3d *halo_stereo_eye_position(void)
 float halo_stereo_lod_scale(void)
 {
 	return stereo_mode == HALO_STEREO_HEAD || stereo_mode == HALO_STEREO_SIDE_BY_SIDE ? lod_scale_setting : 1.0f;
+}
+
+float halo_stereo_hud_resolution(void)
+{
+	return stereo_mode == HALO_STEREO_HEAD || stereo_mode == HALO_STEREO_SIDE_BY_SIDE ? hud_resolution_setting : 1.0f;
 }
 
 float halo_stereo_vignette(void)

@@ -12,7 +12,8 @@ asks halo_stereo_lod_projection to fix the first: a 0.1-unit sphere 10 units
 ahead must then measure mono's pixels times halo_stereo_lod_scale (within
 0.1%), sprites' scale (.i) must stay mono's, and nothing else in the frustum (its planes above all) may change.
 And display.lod_scale itself: 1.0 by default, clamped to 0.5 to 4, in HEAD
-mode and the side-by-side view only.
+mode and the side-by-side view only; display.hud_resolution likewise, 1.0
+by default, clamped to 0.5 to 1.
 
 The game's projection math (render_cameras.c: render_camera_build_frustum's
 bounds and scales, render_camera_build_frustum_bounds and
@@ -150,8 +151,8 @@ static real render_frustum_sphere_diameter_in_pixels(const struct render_frustum
 
 /* stereo.c's imports */
 static const char *setting_stereo = "head";
-static double setting_lod_scale = 1.0;
-static int lod_logs, clamp_logs;
+static double setting_lod_scale = 1.0, setting_hud_resolution = 1.0;
+static int lod_logs, clamp_logs, hud_resolution_logs;
 static char last_log[256];
 const char *config_string(const char *name)
 {
@@ -167,6 +168,8 @@ double config_real(const char *name)
 {
 	if (!strcmp(name, "display.lod_scale"))
 		return setting_lod_scale;
+	if (!strcmp(name, "display.hud_resolution"))
+		return setting_hud_resolution;
 	if (!strcmp(name, "display.film_depth_share"))
 		return 0.25;
 	if (!strcmp(name, "display.film_convergence"))
@@ -194,6 +197,8 @@ void platform_log(const char *format, ...)
 		lod_logs++;
 	if (strstr(last_log, "display.lod_scale"))
 		clamp_logs++;
+	if (strstr(last_log, "display.hud_resolution"))
+		hud_resolution_logs++;
 }
 int halo_cinematic_screen(void) { return 0; }
 int halo_scripted_camera(void) { return 0; }
@@ -230,6 +235,7 @@ static void restart(const char *stereo, double lod_scale)
 	turn_mode = -1;
 	film_mapping.depth_share = -1.0f;
 	clamp_logs = 0;
+	hud_resolution_logs = 0;
 	halo_stereo_frame_begin();
 }
 
@@ -343,6 +349,32 @@ static void lod_scale_setting_check(void)
 	check(halo_stereo_lod_scale() == 0.5f && clamp_logs == 1, "clamped to 0.5, and logged");
 }
 
+/* display.hud_resolution: the HUD's targets' pixels per axis against the
+view's (d3d8_device.c scales every HUD target by it) */
+static void hud_resolution_setting_check(void)
+{
+	printf("display.hud_resolution:\n");
+	restart("head", 1.0);
+	check(halo_stereo_hud_resolution() == 1.0f && hud_resolution_logs == 0, "1.0 in HEAD mode by default");
+	setting_hud_resolution = 0.5;
+	restart("head", 1.0);
+	check(halo_stereo_hud_resolution() == 0.5f && hud_resolution_logs == 0, "HEAD mode takes 0.5, the edge");
+	setting_hud_resolution = 0.75;
+	restart("side_by_side", 1.0);
+	check(halo_stereo_hud_resolution() == 0.75f, "the side-by-side view takes the setting");
+	restart("screen", 1.0);
+	check(halo_stereo_hud_resolution() == 1.0f, "SCREEN mode keeps 1.0");
+	restart("off", 1.0);
+	check(halo_stereo_hud_resolution() == 1.0f, "mono keeps 1.0");
+	setting_hud_resolution = 2.0;
+	restart("head", 1.0);
+	check(halo_stereo_hud_resolution() == 1.0f && hud_resolution_logs == 1, "clamped to 1, and logged");
+	setting_hud_resolution = 0.1;
+	restart("head", 1.0);
+	check(halo_stereo_hud_resolution() == 0.5f && hud_resolution_logs == 1, "clamped to 0.5, and logged");
+	setting_hud_resolution = 1.0;
+}
+
 int main(void)
 {
 	/* the headset's tangents (session-4 log), the eyes mirrored and 0.0105
@@ -359,6 +391,7 @@ int main(void)
 	};
 
 	lod_scale_setting_check();
+	hud_resolution_setting_check();
 	restart("head", 1.0);
 	pixel_scale("the headset's eyes", headset);
 	check(lod_logs == 1, "the scale is logged once a run");

@@ -204,6 +204,32 @@ static const struct config_setting config_settings[] =
 		"camera) on the theater screen, as cutscenes are. Off (default), they stay\n"
 		"around you: your head looks around from the camera, and the sticks drive\n"
 		"and aim. Read at start." },
+	{ "display.hud_corner_across", _config_real, "28.0", "HALO_HUD_CORNER_ACROSS", _environment_value, _platform_ios,
+		"With display.stereo = \"head\": how far out to the sides the HUD sits, in\n"
+		"degrees from the view's center: the outer corners of the weapon's counters\n"
+		"(top left), the shields and health (top right), the motion tracker (bottom\n"
+		"left) and the prompts and messages (left). Each piece grows toward the\n"
+		"center from there. 0 to 40 (both eyes see 40). Read at start." },
+	{ "display.hud_corner_up", _config_real, "20.0", "HALO_HUD_CORNER_UP", _environment_value, _platform_ios,
+		"With display.stereo = \"head\": how far up the HUD's top corners sit (the\n"
+		"weapon's counters, the shields and health), in degrees from the view's\n"
+		"center, 0 to 40. Read at start." },
+	{ "display.hud_tracker_down", _config_real, "22.0", "HALO_HUD_TRACKER_DOWN", _environment_value, _platform_ios,
+		"With display.stereo = \"head\": how far down the motion tracker's bottom\n"
+		"edge sits, in degrees below the view's center, 0 to 40. Read at start." },
+	{ "display.hud_messages_up", _config_real, "12.0", "HALO_HUD_MESSAGES_UP", _environment_value, _platform_ios,
+		"With display.stereo = \"head\": how far up the top of the help text,\n"
+		"prompts and messages sits, in degrees from the view's center; they run\n"
+		"down from there. 0 to 40. Read at start." },
+	{ "display.hud_scale", _config_real, "1.0", "HALO_HUD_SCALE", _environment_value, _platform_ios,
+		"With display.stereo = \"head\": the size of the HUD's pieces (not the\n"
+		"crosshair) against their natural 0.072 degrees a line, 0.5 to 2. Read at\n"
+		"start." },
+	{ "display.hud_resolution", _config_real, "1.0", "HALO_HUD_RESOLUTION", _environment_value, _platform_ios,
+		"HEAD mode and the side-by-side view: the pixels the HUD, the crosshair and\n"
+		"the menus are drawn with, as a fraction of the view's along each axis, 0.5\n"
+		"to 1. Less takes less memory (0.5: a quarter) and looks softer. Read at\n"
+		"start." },
 	{ "input.turn", _config_string, "\"snap\"", "HALO_TURN", _environment_value, _platform_ios,
 		"With display.stereo = \"head\": how the right stick turns the view: \"snap\"\n"
 		"(default; a flick turns input.snap_angle at once), \"smooth\" (steadily, at\n"

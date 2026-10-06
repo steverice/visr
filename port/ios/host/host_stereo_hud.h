@@ -13,10 +13,15 @@ into the HUD layer itself. Every one is laid out as the whole HUD. The
 presenter puts:
 - the reticle's layer whole, at its natural size, centered where the game's
   crosshair is (host_stereo_hud_reticle);
-- each group's rectangle of its own target on a quad in the top band above
-  the reticle or the bottom band below it, turning with the head's yaw only,
-  level with the room, where Task 7c's pieces sat (the counters left, the
-  meters right, the prompts and messages above them, the tracker below);
+- each group's rectangle of its own target on a quad in the periphery, in
+  the corner where CE puts it (the stereo spec's "The HUD in the
+  periphery"), turning with the head's yaw only, level with the room: the
+  weapon's counters (and a driver's seat labels) top left, the unit's
+  meters top right, the motion tracker bottom left, the prompts and the
+  messages top left under the counters. Each group's outer corner, its
+  edge nearest that corner, sits at the display.hud_* settings' angles
+  (struct host_stereo_hud_placement), so a wider element grows toward the
+  center;
 - the HUD layer whole, head-locked at the HUD pass's projection, the
   catch-all: nav points and the multiplayer score where the game projected
   them;
@@ -35,11 +40,11 @@ presenter puts:
 #define HOST_STEREO_HUD_DISTANCE 2.0f
 
 /* The radius, in degrees from the view's center with the head level, that
-every element of the bands and the UI stays inside, horizontally and
-vertically: foveation's sharp region. The research's one published
-measurement is about 40 degrees across, about 20 either side of the view's
-center (douevenknow.us, May 2024), less a 2 degree margin. Task 10 replaces
-it with the radius it measures from the rate map. */
+the UI stays inside, horizontally and vertically: foveation's sharp region
+(the HUD's groups no longer do: they sit in the periphery). The research's
+one published measurement is about 40 degrees across, about 20 either side
+of the view's center (douevenknow.us, May 2024), less a 2 degree margin.
+Task 10 replaces it with the radius it measures from the rate map. */
 #define HUD_SHARP_RADIUS_DEGREES 18.0f
 
 /* the HUD layer's height in the game's layout lines */
@@ -47,9 +52,9 @@ it with the radius it measures from the rate map. */
 
 /* the HUD's scale in meters per layout line at HOST_STEREO_HUD_DISTANCE: the
 first headset build's head-locked quad (1.6 m wide for a 4:3 layout, 640
-lines across, so 480 lines are 1.2 m, about 33 degrees, at 2 m). The reticle
-keeps it; the bands keep it unless they'd leave the sharp region, where they
-shrink to fit */
+lines across, so 480 lines are 1.2 m, about 33 degrees, at 2 m), about 0.072
+degrees a line. The reticle keeps it; the groups take it times
+display.hud_scale */
 #define HOST_STEREO_HUD_METERS_PER_LINE (1.6f / 640.0f)
 
 /* the margin, in layout lines, a group's quad shows around its rectangle,
@@ -99,6 +104,32 @@ struct host_stereo_hud_quad
 	int opaque;
 };
 
+/* Where the HUD's groups go (the stereo spec's "The HUD in the periphery"):
+the angles, in degrees from the view's center on the level, yaw-only frame,
+of each group's outer corner, and the groups' size against the natural one.
+The weapon's (and a driver's seat labels') top left corner is at -across,
++up; the unit's top right at +across, +up; the motion tracker's bottom left
+at -across, -tracker_down; the prompt's and the messages' top left at
+-across, +messages_up, growing down. The settings display.hud_corner_across,
+display.hud_corner_up, display.hud_tracker_down, display.hud_messages_up and
+display.hud_scale, read at start (host_stereo.m) */
+struct host_stereo_hud_placement
+{
+	float across, up, tracker_down, messages_up;
+	float scale;
+};
+#define HOST_STEREO_HUD_PLACEMENT_DEFAULT { 28.0f, 20.0f, 22.0f, 12.0f, 1.0f }
+/* the eyes' shared view, either way across and up from its center, in
+degrees: a corner at most this far out keeps its group inside both eyes'
+views, since the group grows from it toward the center */
+#define HOST_STEREO_HUD_SHARED_DEGREES 40.0f
+#define HOST_STEREO_HUD_SCALE_MIN 0.5f
+#define HOST_STEREO_HUD_SCALE_MAX 2.0f
+/* clamps each angle to 0 to HOST_STEREO_HUD_SHARED_DEGREES (the edge
+included) and the scale to HOST_STEREO_HUD_SCALE_MIN to _MAX; a value that
+isn't a number takes its default. Returns 1 if anything changed */
+int host_stereo_hud_placement_clamp(struct host_stereo_hud_placement *placement);
+
 /* most quads a layout makes: the reticle, the groups, the catch-all and
 the UI */
 #define HOST_STEREO_HUD_MAXIMUM_QUADS (HOST_STEREO_HUD_LAYER_COUNT)
@@ -131,13 +162,15 @@ given each HUD group's rectangle (group_extent: x0, y0, x1, y1 in layout
 lines, the guest's gpu_stereo_present hud_group_extent; an empty one, or
 NULL for all, draws no quad): the reticle's quad (reticle: its direction,
 as above; none when it's off the view) first, then one quad per group with
-a rectangle, in the bands, then, given the HUD pass's half tangents across
+a rectangle, where placement puts it (NULL: the defaults; clamped already,
+host_stereo_hud_placement_clamp), then, given the HUD pass's half tangents across
 and up (the guest's halo_stereo_hud_tangents; NULL or 0: none), the
 catch-all: the HUD layer whole, head-locked at that projection; and last,
 with ui, the UI layer whole on the UI's quad, over them. Returns the count;
 quads holds HOST_STEREO_HUD_MAXIMUM_QUADS */
 int host_stereo_hud_layout(float layout_width, int ui, const float reticle[3], const float hud_tangents[2],
-	const float (*group_extent)[4], struct host_stereo_hud_quad *quads);
+	const float (*group_extent)[4], const struct host_stereo_hud_placement *placement,
+	struct host_stereo_hud_quad *quads);
 
 /* the UI's quad for a picture of the given aspect (width over height): the
 whole picture, centered ahead, as large as fits inside the sharp region */
@@ -148,11 +181,6 @@ right, y up, z back), radians, left positive: its forward's, or past 85
 degrees of pitch its right's (host_stereo_head.c does the same). The frame
 sits at the device's position, turned by that yaw about the room's up */
 float host_stereo_hud_level_yaw(const float right[3], const float back[3]);
-
-/* the HUD's scale for the bands at a layout width with the groups'
-rectangles (as host_stereo_hud_layout), meters per line: the natural
-scale, or smaller if the bands would leave the sharp region */
-float host_stereo_hud_band_scale(float layout_width, const float (*group_extent)[4]);
 
 /* The fade through black when HEAD mode's view changes between the full
 view, the screen (the film, SCREEN gameplay) and the UI's quad (a menu over

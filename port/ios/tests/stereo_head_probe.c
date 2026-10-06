@@ -73,6 +73,8 @@ double config_real(const char *name)
 {
 	if (!strcmp(name, "display.lod_scale"))
 		return 1.0;
+	if (!strcmp(name, "display.hud_resolution"))
+		return 1.0;
 	if (!strcmp(name, "input.smooth_turn_speed"))
 		return setting_smooth_turn_speed;
 	if (!strcmp(name, "display.film_depth_share"))

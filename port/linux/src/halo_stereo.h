@@ -382,6 +382,11 @@ void halo_stereo_log_culling(float distance_back);
 a multiplier on the pixel size the game picks model detail and particle
 distance by, 1.0 the Xbox's, clamped to 0.5 to 4 */
 float halo_stereo_lod_scale(void);
+/* display.hud_resolution in HEAD mode and the side-by-side view (1.0
+otherwise): the pixels per axis of the HUD's targets (the HUD layer, its
+groups', the reticle's and the UI's, which share one depth and stencil)
+against the view's, clamped to 0.5 to 1 */
+float halo_stereo_hud_resolution(void);
 /* render.c's stereo frame, after it builds the culling frustum
 (port/linux/game/stereo_lod.c): sets that frustum's pixel scale
 (projection_world_to_screen) to mono's for the same camera, .j times

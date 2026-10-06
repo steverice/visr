@@ -138,8 +138,9 @@ if latch_calls != [ROOT / 'source/main/main.c'] or not re.search(
         (ROOT / 'source/main/main.c').read_text()):
     raise SystemExit('halo_stereo_frame_begin must be called once, in main.c just before the render\'s '
                      f'render_interpolation_frame_begin; found {[str(path.relative_to(ROOT)) for path in latch_calls]}')
-# HEAD mode's HUD and UI layout: the bands and the UI inside foveation's sharp region, the
-# reticle centered or along a seat's aim, the level frame's yaw
+# HEAD mode's HUD and UI layout: each group's outer corner at its CE corner's angles in the
+# periphery, the UI inside foveation's sharp region, the reticle centered or along a seat's aim,
+# the level frame's yaw
 run('xcrun', 'clang', '-O2', '-fsanitize=address,undefined', '-Iport/ios/host', '-Iport/linux/src',
     'port/ios/tests/stereo_hud_probe.c', 'port/ios/host/host_stereo_hud.c', '-o', BUILD/'stereo-hud-probe')
 run(BUILD/'stereo-hud-probe')

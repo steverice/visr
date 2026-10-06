@@ -739,7 +739,13 @@ static struct render_target_entry *render_target_get_layer(const D3DSurface *sur
 		}
 		else if (layer == HALO_STEREO_LAYER_HUD || layer == HALO_STEREO_LAYER_RETICLE ||
 			layer == HALO_STEREO_LAYER_UI || layer >= HALO_STEREO_LAYER_HUD_GROUP)
+		{
+			/* display.hud_resolution: fewer of them, every HUD target alike,
+			so the color targets keep the size of the depth they share */
 			screen_scale_dense(scale);
+			scale[0] *= halo_stereo_hud_resolution();
+			scale[1] *= halo_stereo_hud_resolution();
+		}
 	}
 	else
 		offscreen_target_scale(width, height, format, scale);
