@@ -280,9 +280,12 @@ float halo_stereo_vignette(void);
 120 degrees per second (0 to 1, more is full) and the time since, in seconds: it eases
 toward the share, in over 0.1 s and out over 0.2 s */
 float halo_stereo_vignette_ease(float strength, float turn_fraction, float time_delta);
-/* HEAD mode's render (source/render/render.c): turns a camera by the head's
-yaw the look hasn't taken in yet (it does next frame) and gives it the head's
-pitch and roll, so the camera's orientation is the head's this frame. In a
+/* HEAD mode's render (source/render/render.c): gives a camera the head's yaw
+at render time (the game camera's yaw less the head yaw it holds,
+halo_stereo_camera_head_yaw, plus the head's yaw now: what the look took
+since the camera was posed and what it hasn't taken yet, which it does next
+frame, or after a pause) and the head's pitch and roll, so the camera's
+orientation is the head's this frame, paused or not. In a
 third-person camera (unless display.stereo_vehicle_screen puts it on the
 screen) it turns the game's camera by the head's yaw and change of pitch
 since that camera began, and gives it the head's roll: the picture only */
@@ -293,7 +296,10 @@ yaw the look has taken so far, all told (radians, left positive, wrapped to
 And, as render_interpolation.c hands main.c player one's camera each frame,
 the head yaw that camera holds (as that sum read when it was posed), the
 blend between ticks it drew (0 to 1), and how it made the camera ("blended",
-"direct", "cut", "live"), for debug.head_yaw_log */
+"direct", "cut", "live"): halo_stereo_head_orient takes the head yaw the
+camera holds out of it, and debug.head_yaw_log logs all three. A frame
+without the call (no player camera) counts its camera as holding all the
+look took */
 float halo_stereo_head_yaw_taken(void);
 void halo_stereo_camera_head_yaw(float head_yaw, float fraction, const char *source);
 /* The first-person body (port/linux/game/first_person_body.c): nonzero

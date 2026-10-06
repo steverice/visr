@@ -831,12 +831,24 @@ struct observer_result const *render_interpolation_camera(
 	return result;
 }
 
+/* v turned about the world's up (k) by angle, left positive as the game's yaw */
+static void vector_turn_about_up(real_vector3d *v, real angle)
+{
+	real c = (real)cos(angle), s = (real)sin(angle);
+	real i = v->i, j = v->j;
+
+	v->i = i * c - j * s;
+	v->j = i * s + j * c;
+}
+
 static struct observer_result const *render_interpolation_blended_camera(
 	short local_player_index,
 	struct observer_result const *observer)
 {
 	struct interpolated_camera *camera;
 	real t = interpolation_fraction;
+	real_vector3d previous_forward, previous_up;
+	real head_turn;
 
 	if (!interpolation_rendering || !observer)
 	{
@@ -863,13 +875,27 @@ static struct observer_result const *render_interpolation_blended_camera(
 		camera->tick = interpolation_tick;
 		camera->valid = TRUE;
 	}
+	/* HEAD mode: the earlier camera turned about the world's up by the head
+	yaw the later holds and it doesn't, so the blend holds exactly the later
+	one's (rotations about one axis pass through the blend), and the head's
+	turn is neither blended a tick late nor taken for a cut: stereo.c adds
+	the head's yaw since (halo_stereo_head_orient). Elsewhere the two hold
+	the same (none), and nothing turns */
+	previous_forward = camera->previous.forward;
+	previous_up = camera->previous.up;
+	head_turn = (real)remainder(camera->latest_head_yaw - camera->previous_head_yaw, 2.0 * 3.14159265358979);
+	if (head_turn != 0.0f)
+	{
+		vector_turn_about_up(&previous_forward, head_turn);
+		vector_turn_about_up(&previous_up, head_turn);
+	}
 	/* (so written that a position or direction not a number cuts) */
 	if (!camera->has_previous ||
 		!(distance_squared(&camera->previous.position, &camera->latest.position) <=
 			CAMERA_CUT_DISTANCE * CAMERA_CUT_DISTANCE) ||
-		!(camera->previous.forward.i * camera->latest.forward.i +
-			camera->previous.forward.j * camera->latest.forward.j +
-			camera->previous.forward.k * camera->latest.forward.k >= CAMERA_CUT_COSINE))
+		!(previous_forward.i * camera->latest.forward.i +
+			previous_forward.j * camera->latest.forward.j +
+			previous_forward.k * camera->latest.forward.k >= CAMERA_CUT_COSINE))
 	{
 		if (local_player_index == 0 && halo_frame_trace_enabled())
 			trace_camera(camera, observer, camera->has_previous ? "cut" : "first");
@@ -888,8 +914,8 @@ static struct observer_result const *render_interpolation_blended_camera(
 		camera->blended.position.y += drawn.j;
 		camera->blended.position.z += drawn.k;
 	}
-	vector_nlerp(&camera->previous.forward, &camera->latest.forward, t, &camera->blended.forward);
-	vector_nlerp(&camera->previous.up, &camera->latest.up, t, &camera->blended.up);
+	vector_nlerp(&previous_forward, &camera->latest.forward, t, &camera->blended.forward);
+	vector_nlerp(&previous_up, &camera->latest.up, t, &camera->blended.up);
 	{
 		/* keep up perpendicular to forward */
 		real_vector3d *forward = &camera->blended.forward;
@@ -913,9 +939,7 @@ static struct observer_result const *render_interpolation_blended_camera(
 		}
 	}
 	camera->blended.field_of_view = lerp(camera->previous.field_of_view, camera->latest.field_of_view, t);
-	/* (about what the blend holds: the two's head yaws by the blend) */
-	camera_noted(camera->previous_head_yaw +
-		(real)remainder(camera->latest_head_yaw - camera->previous_head_yaw, 2.0 * 3.14159265358979) * t, "blended");
+	camera_noted(camera->latest_head_yaw, "blended");
 	if (local_player_index == 0 && halo_frame_trace_enabled())
 		trace_camera(camera, &camera->blended, "blended");
 	return &camera->blended;

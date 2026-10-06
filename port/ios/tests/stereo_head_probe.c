@@ -20,7 +20,13 @@ over the picture covers the cut.
 And a vehicle's third-person camera: the head turns the picture, relative
 to its pose when the camera began (no jump on taking a seat), and never the
 player's facing; the stick keeps the game's own turn and pitch. With
-display.stereo_vehicle_screen the camera goes on the screen instead. */
+display.stereo_vehicle_screen the camera goes on the screen instead.
+
+And the head's yaw at render time: paused (no look between frames) the eye
+cameras still turn with the head, and the look takes the whole turn when it
+runs again, without a jump; and with the game's camera blended between 30 Hz
+ticks (render_interpolation.c), the eye cameras' yaw is the head's every
+frame, plus the body's own. */
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -263,6 +269,8 @@ static void restart(const char *turn, double snap_angle, double smooth_turn_spee
 	vignette_strength = 0.0f;
 	unrecognized_logged = 0;
 	memset(&head, 0, sizeof(head));
+	head_pending_yaw = 0.0f;
+	head_yaw_now = head_yaw_taken = 0.0f;
 	set_pose(0.0f, 0.0f, 0.0f);
 	/* a frame with the Compositor's eyes: the head drives the view */
 	halo_stereo_frame_begin();
@@ -887,6 +895,154 @@ static void third_person_entries(void)
 		loop(&facing_yaw, &facing_pitch, 71.0f, -10.0f, 0.0f);
 }
 
+/* paused: three frames with the head turning 5 degrees each and no look
+between them (player_control's camera control is off while the game is
+paused, so halo_stereo_head_look doesn't run), then the look again */
+static void paused(void)
+{
+	float facing_yaw = 0.0f, facing_pitch = 0.0f, view_yaw, view_pitch, look_yaw, look_pitch, paused_view = 0.0f;
+	struct loop_frame f;
+	int frame, passed = 1;
+
+	printf("paused (no look between frames):\n");
+	restart("snap", 30.0, 120.0, 0);
+	for (frame = 0; frame < 3; frame++)
+		loop(&facing_yaw, &facing_pitch, 0.0f, 0.0f, 0.0f);
+	for (frame = 1; frame <= 3; frame++) {
+		set_pose(5.0f * frame * DEGREES, 0.0f, 0.0f);
+		halo_stereo_frame_begin();
+		oriented(facing_yaw, facing_pitch, &view_yaw, &view_pitch);
+		printf("  paused frame %d: the head %.1f deg, the eye cameras %.4f deg\n", frame, 5.0f * frame, view_yaw);
+		passed &= fabsf(view_yaw - 5.0f * frame) < 0.01f;
+		paused_view = view_yaw;
+	}
+	check(passed, "paused, the eye cameras turn with the head: 5, 10 and 15 degrees");
+	check(halo_stereo_head_look(0, facing_pitch, &look_yaw, &look_pitch) &&
+		fabsf(look_yaw / DEGREES - 15.0f) < 0.01f, "the look takes the paused frames' 15 degrees at once");
+	facing_yaw += look_yaw;
+	check(halo_stereo_head_look(0, facing_pitch, &look_yaw, &look_pitch) == 0 && look_yaw == 0.0f,
+		"and clears them");
+	set_pose(15.0f * DEGREES, 0.0f, 0.0f);
+	halo_stereo_frame_begin();
+	oriented(facing_yaw, facing_pitch, &view_yaw, &view_pitch);
+	printf("  unpaused: the facing %.4f deg, the eye cameras %.4f deg (paused last at %.4f)\n",
+		facing_yaw / DEGREES, view_yaw, paused_view);
+	check(fabsf(view_yaw - facing_yaw / DEGREES) < 0.01f && fabsf(view_yaw - paused_view) < 0.01f,
+		"the next frame's eye cameras match the look: unpausing doesn't jump the view");
+	f = loop(&facing_yaw, &facing_pitch, 17.0f, 0.0f, 0.0f);
+	check(fabsf(f.view_yaw - 17.0f) < 0.01f, "and the head turns it from there");
+
+	/* the film between the pause and the look: its turns are dropped, as
+	before (the film's hold ends on a head-tracked frame) */
+	restart("snap", 30.0, 120.0, 0);
+	facing_yaw = facing_pitch = 0.0f;
+	loop(&facing_yaw, &facing_pitch, 0.0f, 0.0f, 0.0f);
+	set_pose(10.0f * DEGREES, 0.0f, 0.0f);
+	halo_stereo_frame_begin();
+	game_letterbox = 1;
+	halo_stereo_frame_begin();
+	game_letterbox = 0;
+	for (frame = 0; frame < FILM_HOLD_FRAMES + 1; frame++)
+		halo_stereo_frame_begin();
+	check(halo_stereo_head_look(0, facing_pitch, &look_yaw, &look_pitch) == 0 && look_yaw == 0.0f,
+		"a film in between drops the paused turn");
+}
+
+/* the game's camera in the render with interpolation (render_interpolation.c):
+the facing is posed into the camera every frame (first_person_camera_update),
+kept after each tick with the head yaw the look had taken
+(halo_stereo_head_yaw_taken), and the frame draws the last two kept, blended
+by how far the clock is into the next tick (nlerp of the forward). The
+earlier one is first turned about the world's up by the head yaw the later
+holds and it doesn't, so the blend holds the later one's head yaw exactly
+(render_interpolation_blended_camera), and the render is told so
+(halo_stereo_camera_head_yaw) */
+struct ticked_camera
+{
+	float previous[3], latest[3];
+	float previous_head, latest_head;
+	int kept;
+};
+
+static void camera_keep(struct ticked_camera *camera, float facing_yaw)
+{
+	memcpy(camera->previous, camera->latest, sizeof(camera->latest));
+	camera->previous_head = camera->latest_head;
+	camera->latest[0] = cosf(facing_yaw);
+	camera->latest[1] = sinf(facing_yaw);
+	camera->latest[2] = 0.0f;
+	camera->latest_head = halo_stereo_head_yaw_taken();
+	if (!camera->kept++)
+		memcpy(camera->previous, camera->latest, sizeof(camera->latest));
+}
+
+static float camera_blended_yaw(const struct ticked_camera *camera, float t)
+{
+	float previous[3], blended[3];
+	int i;
+
+	memcpy(previous, camera->previous, sizeof(previous));
+	rotate_axis(previous, 2, remainderf(camera->latest_head - camera->previous_head, 2.0f * 3.14159265f));
+	for (i = 0; i < 3; i++)
+		blended[i] = previous[i] + (camera->latest[i] - previous[i]) * t;
+	halo_stereo_camera_head_yaw(camera->latest_head, t, "blended");
+	return atan2f(blended[1], blended[0]);
+}
+
+/* a steady head turn at 90 frames a second while the game ticks at 30 (three
+frames a tick, the blend 0, 1/3, 2/3), with the body turned by the stick too
+(smooth turning) in one case: the eye cameras' yaw must be the head's plus the
+body's own, which the game's camera shows blended a tick behind, every frame */
+static void blended_turn(const char *name, float head_degrees_per_frame, float stick, int frames_per_tick)
+{
+	struct ticked_camera camera = { { 0 }, { 0 }, 0.0f, 0.0f, 0 };
+	float facing_yaw = 0.0f, facing_pitch = 0.0f, look_yaw, look_pitch, head_yaw = 0.0f, worst = 0.0f;
+	/* the body's own yaw (the facing less the head's turn the look took) at
+	each tick kept, the first at the start */
+	float body[64] = { 0.0f };
+	int frame, ticks = 1;
+
+	restart("smooth", 30.0, 120.0, 0);
+	camera_keep(&camera, facing_yaw);
+	for (frame = 1; frame <= 60; frame++) {
+		float yaw_in = stick, pitch_in = 0.3f, t, view, expected, error, earlier, later;
+
+		/* player_control: the stick, then the look */
+		halo_stereo_stick_look(0, response(stick), 1.0f / 90.0f, &yaw_in, &pitch_in);
+		if (halo_stereo_head_look(0, facing_pitch, &look_yaw, &look_pitch))
+			facing_yaw += look_yaw;
+		/* the tick (game_time_update), then the frame, the blend that far
+		into the next tick */
+		if (frame % frames_per_tick == 0) {
+			camera_keep(&camera, facing_yaw);
+			body[ticks % 64] = remainderf(facing_yaw - halo_stereo_head_yaw_taken(), 2.0f * 3.14159265f);
+			ticks++;
+		}
+		t = (float)(frame % frames_per_tick) / (float)frames_per_tick;
+		head_yaw += head_degrees_per_frame * DEGREES;
+		set_pose(head_yaw, 0.0f, 0.0f);
+		halo_stereo_frame_begin();
+		oriented(camera_blended_yaw(&camera, t), 0.0f, &view, &look_pitch);
+		earlier = body[(ticks >= 2 ? ticks - 2 : 0) % 64];
+		later = body[(ticks - 1) % 64];
+		expected = (head_yaw + earlier + remainderf(later - earlier, 2.0f * 3.14159265f) * t) / DEGREES;
+		error = degrees_apart(view, expected);
+		if (error > worst)
+			worst = error;
+	}
+	printf("  %-44s the eye cameras %.4f deg at worst from the head's yaw plus the body's\n", name, worst);
+	check(worst < 0.02f, name);
+}
+
+static void interpolated_turns(void)
+{
+	printf("the head's yaw at render time, the game's camera blended between ticks:\n");
+	blended_turn("a steady turn, 1 deg a frame, 3 frames a tick", 1.0f, 0.0f, 3);
+	blended_turn("a fast turn, 3 deg a frame, 3 frames a tick", 3.0f, 0.0f, 3);
+	blended_turn("a turn, 2 frames a tick", 1.5f, 0.0f, 2);
+	blended_turn("a turn with the stick turning the body", 1.0f, 0.6f, 3);
+}
+
 int main(void)
 {
 	pole_crossing();
@@ -904,6 +1060,8 @@ int main(void)
 	film_hold_reason();
 	third_person();
 	third_person_entries();
+	paused();
+	interpolated_turns();
 	if (failures)
 	{
 		printf("stereo head probe: %d failed\n", failures);

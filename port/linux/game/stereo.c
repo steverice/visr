@@ -135,7 +135,8 @@ static int stereo_mode = -1; /* read once, on the first frame */
 
 static const char *const mode_names[] = {"off", "head", "screen", "side_by_side"};
 
-/* HEAD mode's look: the head's yaw the look hasn't taken in yet, the head's
+/* HEAD mode's look: the head's yaw the look hasn't taken in yet (all of it
+since the look last ran: none runs while the game is paused), the head's
 pitch (the look's pitch follows it), and the stick's turn: its snaps
 (input.turn = "snap"), or this frame's share of a smooth turn ("smooth") */
 static float head_pending_yaw, head_pitch_now;
@@ -558,7 +559,7 @@ static void third_person_begin(void)
 		!vehicle_screen && halo_third_person_camera();
 
 	if (third_person && !third_person_head) {
-		third_person_yaw = head_pitch_known ? stereo_frame.head_yaw : 0.0f;
+		third_person_yaw = head_pitch_known ? head_pending_yaw + stereo_frame.head_yaw : 0.0f;
 		third_person_pitch_from = fmaxf(-PITCH_LIMIT, fminf(PITCH_LIMIT,
 			head_pitch_known ? head_pitch_now : stereo_frame.head_pitch));
 		platform_log("stereo: a third-person camera, head-tracked: the head turns the picture, the sticks drive");
@@ -774,10 +775,14 @@ void halo_stereo_frame_begin(void)
 		else
 			head_log_last_known = 0;
 		/* HEAD mode: the look takes this frame's yaw in next frame
-		(player_control runs before the render), and a turn it never took is
-		dropped; the look's pitch follows the head's. SCREEN mode, the film
-		and HEAD mode's third person have neither */
-		head_pending_yaw = head_look_frame ? stereo_frame.head_yaw + third_person_handover : 0.0f;
+		(player_control runs before the render), with any the paused frames
+		before it gathered (the look doesn't run while the game is paused,
+		and the eye cameras turn by it meanwhile, halo_stereo_head_orient);
+		the look's pitch follows the head's. SCREEN mode, the film and HEAD
+		mode's third person have neither: a turn the look never took there is
+		dropped */
+		head_pending_yaw = head_look_frame ?
+			remainderf(head_pending_yaw + stereo_frame.head_yaw + third_person_handover, TWO_PI) : 0.0f;
 		head_pitch_known = head_look_frame;
 		head_pitch_now = stereo_frame.head_pitch;
 	} else
@@ -1263,13 +1268,20 @@ void halo_stereo_head_orient(float forward[3], float up[3])
 		pitch = asinf(fmaxf(-1.0f, fminf(1.0f, forward[2]))) + head_pitch_limited() - third_person_pitch_from;
 		pitch = fmaxf(-PITCH_LIMIT, fminf(PITCH_LIMIT, pitch));
 	} else {
-		/* the camera's yaw (the look's, which has the head's turns up to the
-		last frame) turned about the world's up by the turn it takes next
-		frame (this frame's, and the seat's on leaving one), left positive
-		as the game's yaw; then the head's own pitch, inside the
-		game's limit, so the camera is level when the head is, whatever the
-		look's pitch was */
-		yaw = atan2f(forward[1], forward[0]) + head_pending_yaw;
+		/* the head's yaw at render time: the game camera's yaw, less the
+		head yaw it holds, plus the head's yaw now, so the eye cameras are
+		exactly the head's every frame, whatever the game's camera lags by.
+		The camera holds the head yaw the look had taken when it was posed
+		(render_interpolation.c says how much, halo_stereo_camera_head_yaw:
+		as of the later tick it blends, or as of now); since then the look
+		took more (taken less held: none for a camera posed this frame), and
+		it hasn't taken the rest yet (pending: this frame's, the paused
+		frames', and the seat's on leaving one). Left positive, as the
+		game's yaw. Then the head's own pitch, inside the game's limit, so
+		the camera is level when the head is, whatever the look's pitch was */
+		float held = camera_noted ? camera_head_yaw : head_yaw_taken;
+
+		yaw = atan2f(forward[1], forward[0]) + remainderf(head_yaw_taken - held, TWO_PI) + head_pending_yaw;
 		pitch = head_pitch_limited();
 	}
 	forward[0] = cosf(pitch) * cosf(yaw);
