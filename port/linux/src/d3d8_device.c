@@ -65,11 +65,12 @@ static uint32_t frame_pacing_flags(void)
 The Xbox screen is 640x480. The native ports can draw a wider one: 480
 lines, and as many columns as the display's shape gives. On iOS that is
 display.screen_width (port_config.c; 640 keeps 4:3); on the desktop, the
-display's shape while the game is fullscreen, and 640 in a window. The
-game's camera derives its horizontal field of view from the viewport, so the
-3D view simply widens. The menus and full-screen overlays are laid out for
-640 columns; while they draw (halo_screen_ui_offset), everything shifts right
-to center them.
+shape of the window (of the display while the game is fullscreen, or of
+display.resolution), and 640 where display.resolution_scaling is "original".
+The game's camera derives its horizontal field of view from the viewport, so
+the 3D view simply widens. The menus and full-screen overlays are laid out
+for 640 columns; while they draw (halo_screen_ui_offset), everything shifts
+right to center them.
 
 The native ports also draw at the display's resolution: render
 targets the size of the screen get that many pixels (screen_scale), and
@@ -1646,22 +1647,28 @@ typedef char pixel_shader_key_size_assert[sizeof(struct nv2a_pixel_shader_key) %
 
 static gpu_shader fragment_shader_get(const struct nv2a_pixel_shader_key *key)
 {
-	/* consecutive draws mostly use the same pixel shader */
-	static struct fragment_entry *last;
-	unsigned long hash;
+	/* consecutive draws mostly use one of a few pixel shaders (an object's
+	parts take turns) */
+#define RECENT_FRAGMENT_COUNT 4
+	static struct fragment_entry *recent[RECENT_FRAGMENT_COUNT];
+	static unsigned long recent_next;
+	unsigned long hash, index;
 	struct fragment_entry **bucket;
 	struct fragment_entry *entry;
 	char *source;
 
-	if (last && !memcmp(&last->key, key, sizeof(*key)))
-		return last->shader;
+	for (index = 0; index < RECENT_FRAGMENT_COUNT; index++)
+	{
+		if (recent[index] && !memcmp(&recent[index]->key, key, sizeof(*key)))
+			return recent[index]->shader;
+	}
 	hash = hash_words(key, sizeof(*key));
 	bucket = &fragment_buckets[hash % FRAGMENT_BUCKETS];
 	for (entry = *bucket; entry; entry = entry->next)
 	{
 		if (entry->hash == hash && !memcmp(&entry->key, key, sizeof(*key)))
 		{
-			last = entry;
+			recent[recent_next++ % RECENT_FRAGMENT_COUNT] = entry;
 			return entry->shader;
 		}
 	}
@@ -1687,7 +1694,7 @@ static gpu_shader fragment_shader_get(const struct nv2a_pixel_shader_key *key)
 	free(source);
 	entry->next = *bucket;
 	*bucket = entry;
-	last = entry;
+	recent[recent_next++ % RECENT_FRAGMENT_COUNT] = entry;
 	return entry->shader;
 }
 

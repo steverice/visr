@@ -1356,7 +1356,8 @@ static id<MTLBuffer> empty_buffer;
 static struct
 {
 	unsigned long frame;
-	uint32_t constants_serial, uniforms_serial;
+	uint64_t constants_serial;
+	uint32_t uniforms_serial;
 	gpu_buffer buffer;
 	uint32_t offset;
 	BOOL valid;
