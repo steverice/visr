@@ -92,8 +92,8 @@ Handles index tables of these; 0 is none. */
 @end
 
 /* a handle table: index 0 holds NSNull. objects owns the records; lookup
-mirrors them as plain pointers, so get: (once or more per draw) is an array
-read rather than messages to the array */
+mirrors them as plain pointers, which table_get reads: a draw looks up 20 or
+more handles, and each was a message and an autoreleased return before */
 @interface MetalTable : NSObject
 {
 @public
@@ -143,10 +143,6 @@ read rather than messages to the array */
 	}
 	[self mirror:handle object:object];
 	return (uint32_t)handle;
-}
-- (id)get:(uint32_t)handle
-{
-	return handle < lookup_capacity ? lookup[handle] : nil;
 }
 - (void)remove:(uint32_t)handle
 {
@@ -278,14 +274,20 @@ struct transient
 
 static struct transient streams[FRAMES], snapshots[FRAMES];
 
-static MetalBuffer *buffer_record(gpu_buffer handle)
+/* a handle's record, or nil: an array read, inlined, with no message */
+static inline __attribute__((always_inline)) id table_get(MetalTable *table, uint32_t handle)
 {
-	return [buffers get:handle];
+	return handle < table->lookup_capacity ? table->lookup[handle] : nil;
 }
 
-static MetalTexture *texture_record(gpu_texture handle)
+static inline __attribute__((always_inline)) MetalBuffer *buffer_record(gpu_buffer handle)
 {
-	return [textures get:handle];
+	return table_get(buffers, handle);
+}
+
+static inline __attribute__((always_inline)) MetalTexture *texture_record(gpu_texture handle)
+{
+	return table_get(textures, handle);
 }
 
 /* room for size bytes at alignment in the current chunk, moving to the next
@@ -1901,7 +1903,7 @@ static uint32_t gpu_metal_draw(const struct gpu_draw *draw, const struct gpu_con
 {
 	@autoreleasepool
 	{
-		MetalShader *vertex = [shaders get:draw->vertex_shader], *pixel = [shaders get:draw->pixel_shader];
+		MetalShader *vertex = table_get(shaders, draw->vertex_shader), *pixel = table_get(shaders, draw->pixel_shader);
 		MetalTexture *depth = texture_record(draw->depth_target);
 		id<MTLRenderPipelineState> pipeline;
 		unsigned long width, height;
