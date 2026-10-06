@@ -462,6 +462,12 @@ camera position with its orientation settled. The film holds until it has
 (stereo.c) */
 #define HALO_CUTSCENE_SETTLED_DISTANCE 0.05f
 int halo_cutscene_camera_settled(void);
+/* the film's title bars (cinematics.c, halo_cinematic_title_bars) a frame
+of seconds on from bars: none while the script fade shows (fade, its
+intensity, above 0), else toward limit at the letterbox's rate (one amount a
+second) and never above it. limit is 1 while a title is up and fading in or
+holding, the title's own fade while it fades out, 0 with none */
+float halo_stereo_title_bars_ease(float bars, float limit, float fade, float seconds);
 /* debug.gpu_stats's cutscene line (stereo.c): what decides the film */
 struct halo_cutscene_state
 {
@@ -481,8 +487,9 @@ interpolation fraction; 1.0 gives the game's own whole-tick intensity). Its
 RGB and intensity into rgb_intensity, zero intensity if none; 1 while the
 game has a fade active (it draws one, perhaps at intensity 0) */
 int halo_screen_fade(float tick_fraction, float rgb_intensity[4]);
-/* source/cutscene/cinematics.c: 0..1, how far the bars are in, following
-the active title's fades */
+/* source/cutscene/cinematics.c, once a frame of the film: 0..1, how far
+the bars are in: out while the script fade shows, then in at one a second
+while a title is up, out with its fade-out (halo_stereo_title_bars_ease) */
 float halo_cinematic_title_bars(void);
 /* HEAD mode's help text (port/linux/game/stereo_help_text.c): how much of
 the help message named message_name hud_messaging.c draws. In HEAD mode and

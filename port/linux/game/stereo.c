@@ -1429,3 +1429,15 @@ void halo_stereo_depth_range(float *z_near, float *z_far)
 	*z_near = z_near_world;
 	*z_far = z_far_world;
 }
+
+/* the film's title bars come in at the Xbox letterbox's rate
+(cinematics.c's cinematic_render): one letterbox amount a second */
+#define TITLE_BARS_RATE 1.0f
+
+float halo_stereo_title_bars_ease(float bars, float limit, float fade, float seconds)
+{
+	if (fade > 0.0f || !(limit > 0.0f))
+		return 0.0f;
+	bars = fminf(bars + fmaxf(0.0f, seconds) * TITLE_BARS_RATE, 1.0f);
+	return fminf(bars, limit);
+}

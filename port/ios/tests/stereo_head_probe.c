@@ -1356,6 +1356,30 @@ static void cutscene_end(void)
 		cutscene_frame();
 }
 
+/* the title bars: out while the script fade shows, in at one a second,
+out with the title's fade */
+static void title_bars(void)
+{
+	float bars = 0.0f;
+	int frame;
+
+	printf("the film's title bars:\n");
+	for (frame = 0; frame < 30; frame++)
+		bars = halo_stereo_title_bars_ease(bars, 1.0f, 0.5f, 1.0f / 30.0f);
+	check(bars == 0.0f, "none while the white fade shows");
+	for (frame = 0; frame < 15; frame++)
+		bars = halo_stereo_title_bars_ease(bars, 1.0f, 0.0f, 1.0f / 30.0f);
+	printf("  half a second after the fade: %.4f\n", bars);
+	check(fabsf(bars - 0.5f) < 1e-4f, "then in at one a second");
+	for (frame = 0; frame < 30; frame++)
+		bars = halo_stereo_title_bars_ease(bars, 1.0f, 0.0f, 1.0f / 30.0f);
+	check(bars == 1.0f, "all the way in");
+	bars = halo_stereo_title_bars_ease(bars, 0.3f, 0.0f, 1.0f / 30.0f);
+	check(fabsf(bars - 0.3f) < 1e-6f, "following the title's fade-out");
+	bars = halo_stereo_title_bars_ease(bars, 0.0f, 0.0f, 1.0f / 30.0f);
+	check(bars == 0.0f, "out with it");
+}
+
 int main(void)
 {
 	pole_crossing();
@@ -1379,6 +1403,7 @@ int main(void)
 	first_person_cutscenes();
 	look_disabled();
 	cutscene_end();
+	title_bars();
 	if (failures)
 	{
 		printf("stereo head probe: %d failed\n", failures);
