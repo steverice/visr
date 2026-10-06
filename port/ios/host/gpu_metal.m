@@ -892,6 +892,32 @@ static uint32_t gpu_metal_stream(uint32_t kind, const void *data, uint32_t size,
 /* vertex shaders' and pixel shaders' (gpu_metal_initialize) */
 static MTLCompileOptions *compile_options, *pixel_compile_options;
 
+/* debug.gl_debug: the shader work done while drawing, which a frame waits
+for: shader libraries compiled, vertex functions specialized and pipelines
+made (each the newLibrary, newFunction or newRenderPipelineState call
+alone), with their time and the longest one; logged and reset at a frame
+with any (gpu_metal_present) */
+enum { COMPILE_LIBRARY, COMPILE_SPECIALIZE, COMPILE_PIPELINE, COMPILE_KINDS };
+static struct
+{
+	unsigned long count[COMPILE_KINDS];
+	double seconds[COMPILE_KINDS], longest[COMPILE_KINDS];
+	unsigned long total_count[COMPILE_KINDS];
+	double total_seconds[COMPILE_KINDS];
+} compile_stats;
+
+static void compile_count(int kind, CFTimeInterval started)
+{
+	double seconds = CACurrentMediaTime() - started;
+
+	compile_stats.count[kind]++;
+	compile_stats.seconds[kind] += seconds;
+	if (seconds > compile_stats.longest[kind])
+		compile_stats.longest[kind] = seconds;
+	compile_stats.total_count[kind]++;
+	compile_stats.total_seconds[kind] += seconds;
+}
+
 /* the translators' MSL (nv2a_msl.c); 0 if it doesn't compile, which the front
 end counts as a draw skipped for its program, as under GL */
 static gpu_shader gpu_metal_shader_create(uint32_t stage, const char *source)
@@ -900,8 +926,11 @@ static gpu_shader gpu_metal_shader_create(uint32_t stage, const char *source)
 	{
 		NSError *error = nil;
 		NSString *text = @(source);
+		CFTimeInterval started = CACurrentMediaTime();
 		id<MTLLibrary> library = [device newLibraryWithSource:text
 			options:stage == GPU_SHADER_VERTEX ? compile_options : pixel_compile_options error:&error];
+
+		compile_count(COMPILE_LIBRARY, started);
 		MetalShader *record;
 
 		/* debug.gl_debug: the warnings of a shader that compiled */
@@ -1550,6 +1579,7 @@ static id<MTLFunction> vertex_function(MetalShader *vertex, const uint8_t kinds[
 		MTLFunctionConstantValues *values = [MTLFunctionConstantValues new];
 		NSError *error = nil;
 		NSUInteger index;
+		CFTimeInterval started;
 
 		for (index = 0; index < GPU_ATTRIBUTE_COUNT; index++)
 		{
@@ -1557,7 +1587,9 @@ static id<MTLFunction> vertex_function(MetalShader *vertex, const uint8_t kinds[
 
 			[values setConstantValue:&kind type:MTLDataTypeUInt atIndex:index];
 		}
+		started = CACurrentMediaTime();
 		function = [vertex->library newFunctionWithName:@"vertex_main" constantValues:values error:&error];
+		compile_count(COMPILE_SPECIALIZE, started);
 		if (!function)
 		{
 			static int logged;
@@ -1607,6 +1639,7 @@ static id<MTLRenderPipelineState> draw_pipeline(const struct gpu_draw *draw, Met
 		MTLRenderPipelineColorAttachmentDescriptor *attachment = descriptor.colorAttachments[0];
 		MTLRenderPipelineReflection *reflection = nil;
 		NSError *error = nil;
+		CFTimeInterval started;
 
 		descriptor.vertexFunction = vertex_function(vertex, key.attribute_kinds);
 		descriptor.fragmentFunction = pixel_function(pixel, exact) ?: pixel->function;
@@ -1621,6 +1654,7 @@ static id<MTLRenderPipelineState> draw_pipeline(const struct gpu_draw *draw, Met
 		}
 		descriptor.depthAttachmentPixelFormat = depth;
 		descriptor.stencilAttachmentPixelFormat = depth;
+		started = CACurrentMediaTime();
 		if (metal_debug && !layout_checked)
 		{
 			pipeline = [device newRenderPipelineStateWithDescriptor:descriptor
@@ -1635,6 +1669,7 @@ static id<MTLRenderPipelineState> draw_pipeline(const struct gpu_draw *draw, Met
 		{
 			pipeline = [device newRenderPipelineStateWithDescriptor:descriptor error:&error];
 		}
+		compile_count(COMPILE_PIPELINE, started);
 		if (!pipeline)
 		{
 			/* as a GL link failure: logged once, the draws skipped */
@@ -2641,6 +2676,18 @@ static uint32_t gpu_metal_present(gpu_texture back_buffer)
 		}
 		drawable = nil;
 		commit(YES);
+		if (metal_debug && (compile_stats.count[COMPILE_LIBRARY] || compile_stats.count[COMPILE_SPECIALIZE] ||
+			compile_stats.count[COMPILE_PIPELINE]))
+			platform_log("Metal: frame %lu compiled %lu libraries (%.1f ms, longest %.1f), specialized %lu vertex "
+				"functions (%.1f ms, longest %.1f), made %lu pipelines (%.1f ms, longest %.1f)", frames,
+				compile_stats.count[COMPILE_LIBRARY], compile_stats.seconds[COMPILE_LIBRARY] * 1e3,
+				compile_stats.longest[COMPILE_LIBRARY] * 1e3, compile_stats.count[COMPILE_SPECIALIZE],
+				compile_stats.seconds[COMPILE_SPECIALIZE] * 1e3, compile_stats.longest[COMPILE_SPECIALIZE] * 1e3,
+				compile_stats.count[COMPILE_PIPELINE], compile_stats.seconds[COMPILE_PIPELINE] * 1e3,
+				compile_stats.longest[COMPILE_PIPELINE] * 1e3);
+		memset(compile_stats.count, 0, sizeof(compile_stats.count));
+		memset(compile_stats.seconds, 0, sizeof(compile_stats.seconds));
+		memset(compile_stats.longest, 0, sizeof(compile_stats.longest));
 		frames++;
 		if (pass_log)
 		{
@@ -2663,6 +2710,12 @@ static uint32_t gpu_metal_present(gpu_texture back_buffer)
 				platform_log("Metal: %.1f pipeline changes a frame, %.1f of them with the same shaders",
 					(double)pipeline_changes.changes / 600.0, (double)pipeline_changes.same_shaders / 600.0);
 			pipeline_changes.changes = pipeline_changes.same_shaders = 0;
+			if (metal_debug)
+				platform_log("Metal: so far %lu shader libraries (%.0f ms), %lu vertex specializations (%.0f ms), "
+					"%lu pipelines (%.0f ms)", compile_stats.total_count[COMPILE_LIBRARY],
+					compile_stats.total_seconds[COMPILE_LIBRARY] * 1e3, compile_stats.total_count[COMPILE_SPECIALIZE],
+					compile_stats.total_seconds[COMPILE_SPECIALIZE] * 1e3, compile_stats.total_count[COMPILE_PIPELINE],
+					compile_stats.total_seconds[COMPILE_PIPELINE] * 1e3);
 			metal_state_take_counts(&state_cache);
 		}
 		if (frames % 600 == 0)
