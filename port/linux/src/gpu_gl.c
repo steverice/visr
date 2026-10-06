@@ -1435,7 +1435,7 @@ struct gpu_gl_program
 	unsigned long constant_count;
 	int constants_consecutive;
 	/* gpu_constant_store.serial at the program's last constant upload */
-	uint32_t constants_serial;
+	uint64_t constants_serial;
 	/* gpu_uniforms.serial when the uniforms below were brought up to date */
 	uint32_t uniforms_serial;
 	/* what the program's other uniforms hold (all ones: unknown) */
@@ -1565,7 +1565,7 @@ static void program_constants(struct gpu_gl_program *entry, const struct gpu_con
 
 		if (store->serial - entry->constants_serial <= GPU_CONSTANT_COUNT)
 		{
-			uint32_t serial;
+			uint64_t serial;
 
 			for (serial = entry->constants_serial + 1; serial <= store->serial; serial++)
 			{

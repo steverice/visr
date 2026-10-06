@@ -156,8 +156,12 @@ enum { GPU_STAGE_COUNT = 4, GPU_ATTRIBUTE_COUNT = 16 };
 struct gpu_constant_store
 {
 	float c[GPU_CONSTANT_COUNT][4];
-	uint32_t serials[GPU_CONSTANT_COUNT];
-	uint32_t serial;
+	/* 64-bit, so they never wrap: a skinned model's draw changes up to 132
+	registers, and 32 bits wrapped within minutes to an hour at a high frame
+	rate, after which a program found none of its registers changed and drew
+	with another object's node matrices (upstream's b449c43e) */
+	uint64_t serials[GPU_CONSTANT_COUNT];
+	uint64_t serial;
 	uint8_t log[GPU_CONSTANT_LOG_SIZE];
 };
 

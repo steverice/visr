@@ -32,23 +32,23 @@ jobs:
       - name: ABI, memory, audio, and XISO regressions
         run: python3 tools/ios_test.py
       - name: Build unsigned device IPA
-        run: python3 tools/ios_build.py --unsigned --jobs 3 --ipa dist/Halo-CE-iOS-unsigned.ipa
+        run: python3 tools/ios_build.py --unsigned --jobs 3 --ipa dist/VISR-iOS-unsigned.ipa
       - name: Build ARM64 simulator app
         run: python3 tools/ios_build.py --simulator --jobs 3
       - name: Archive simulator app
-        run: ditto -c -k --keepParent build/ios/app-simulator/Release-iphonesimulator/HaloCE.app dist/Halo-CE-simulator.zip
+        run: ditto -c -k --keepParent build/ios/app-simulator/Release-iphonesimulator/VISR.app dist/VISR-simulator.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: halo-ce-ios-unsigned
+          name: visr-ios-unsigned
           path: |
-            dist/Halo-CE-iOS-unsigned.ipa
-            dist/Halo-CE-iOS-unsigned.ipa.sha256
+            dist/VISR-iOS-unsigned.ipa
+            dist/VISR-iOS-unsigned.ipa.sha256
           if-no-files-found: error
           retention-days: 14
       - uses: actions/upload-artifact@v4
         with:
-          name: halo-ce-ios-simulator
-          path: dist/Halo-CE-simulator.zip
+          name: visr-ios-simulator
+          path: dist/VISR-simulator.zip
           if-no-files-found: error
           retention-days: 14
 
@@ -65,23 +65,23 @@ jobs:
       # Like iOS, the app ships no game data: it imports the player's XISO
       # over the local network (port/ios/host/host_tv_import.m).
       - name: Build unsigned Apple TV IPA
-        run: python3 tools/ios_build.py --tvos --unsigned --jobs 3 --ipa dist/Halo-CE-tvOS-unsigned.ipa
+        run: python3 tools/ios_build.py --tvos --unsigned --jobs 3 --ipa dist/VISR-tvOS-unsigned.ipa
       - name: Build ARM64 Apple TV simulator app
         run: python3 tools/ios_build.py --tvos --simulator --jobs 3
       - name: Archive simulator app
-        run: ditto -c -k --keepParent build/tvos/app-simulator/Release-appletvsimulator/HaloCE.app dist/Halo-CE-tvOS-simulator.zip
+        run: ditto -c -k --keepParent build/tvos/app-simulator/Release-appletvsimulator/VISR.app dist/VISR-tvOS-simulator.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: halo-ce-tvos-unsigned
+          name: visr-tvos-unsigned
           path: |
-            dist/Halo-CE-tvOS-unsigned.ipa
-            dist/Halo-CE-tvOS-unsigned.ipa.sha256
+            dist/VISR-tvOS-unsigned.ipa
+            dist/VISR-tvOS-unsigned.ipa.sha256
           if-no-files-found: error
           retention-days: 14
       - uses: actions/upload-artifact@v4
         with:
-          name: halo-ce-tvos-simulator
-          path: dist/Halo-CE-tvOS-simulator.zip
+          name: visr-tvos-simulator
+          path: dist/VISR-tvOS-simulator.zip
           if-no-files-found: error
           retention-days: 14
   visionos:
@@ -100,22 +100,22 @@ jobs:
       # Metal only; the XISO comes in through Files or the Documents folder
       # (port/ios/host/host_import.m).
       - name: Build unsigned Apple Vision Pro IPA
-        run: python3 tools/ios_build.py --visionos --unsigned --jobs 3 --ipa dist/Halo-CE-visionOS-unsigned.ipa
+        run: python3 tools/ios_build.py --visionos --unsigned --jobs 3 --ipa dist/VISR-visionOS-unsigned.ipa
       - name: Build ARM64 Apple Vision Pro simulator app
         run: python3 tools/ios_build.py --visionos --simulator --jobs 3
       - name: Archive simulator app
-        run: ditto -c -k --keepParent build/visionos/app-simulator/Release-xrsimulator/HaloCE.app dist/Halo-CE-visionOS-simulator.zip
+        run: ditto -c -k --keepParent build/visionos/app-simulator/Release-xrsimulator/VISR.app dist/VISR-visionOS-simulator.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: halo-ce-visionos-unsigned
+          name: visr-visionos-unsigned
           path: |
-            dist/Halo-CE-visionOS-unsigned.ipa
-            dist/Halo-CE-visionOS-unsigned.ipa.sha256
+            dist/VISR-visionOS-unsigned.ipa
+            dist/VISR-visionOS-unsigned.ipa.sha256
           if-no-files-found: error
           retention-days: 14
       - uses: actions/upload-artifact@v4
         with:
-          name: halo-ce-visionos-simulator
-          path: dist/Halo-CE-visionOS-simulator.zip
+          name: visr-visionos-simulator
+          path: dist/VISR-visionOS-simulator.zip
           if-no-files-found: error
           retention-days: 14

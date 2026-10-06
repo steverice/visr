@@ -27,7 +27,7 @@ void host_log(int priority,const char *text) { host_logf(priority,"%s",text); }
 void host_fatal(const char *format,...) {
     va_list ap;va_start(ap,format);char text[1024];vsnprintf(text,sizeof(text),format,ap);va_end(ap);
     host_logf(HOST_LOG_ERROR,"FATAL: %s",text);
-    if(!getenv("HALO_RUNNER"))SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,"Halo",text,NULL);exit(1);
+    if(!getenv("HALO_RUNNER"))SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,"VISR",text,NULL);exit(1);
 }
 void host_abort(const char *reason) { host_logf(HOST_LOG_ERROR,"guest abort: %s",reason);abort(); }
 void host_exit(int code) {host_logf(HOST_LOG_INFO,"game exit %d",code);exit(code);}
@@ -61,6 +61,14 @@ int main(int argc,char **argv) {
         snprintf(save_root,sizeof(save_root),"%s/save",data_root);mkdir(save_root,0755);
         chdir(data_root);
         log_file=fopen("ios-runtime.log","w");setvbuf(stderr,NULL,_IONBF,0);
+        /* internet play's MQTT brokers (network.brokers_file, p2p_signal.c): the app's
+           list, written beside config.toml at each start, as upstream's Android app does */
+        {
+            NSString *brokers=[NSBundle.mainBundle pathForResource:@"brokers" ofType:@"txt"];
+            NSData *list=brokers?[NSData dataWithContentsOfFile:brokers]:nil;
+            if(!list||![list writeToFile:@"brokers.txt" atomically:YES])
+                host_logf(HOST_LOG_ERROR,"cannot write brokers.txt from the app bundle");
+        }
         /* Tools (tools/mac_run.py) create stderr.log to keep the guest's own log, platform_log
            and debug.gpu_stats among it, which otherwise only a debugger's console shows. */
         if(access("stderr.log",F_OK)==0){int fd=open("stderr.log",O_WRONLY|O_APPEND);if(fd>=0){dup2(fd,2);close(fd);}}

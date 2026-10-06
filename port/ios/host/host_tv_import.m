@@ -97,7 +97,7 @@ static void import_image(void) {
 /* ---------- HTTP */
 
 static NSString *const page=@"<!doctype html><html><head><meta charset=utf-8>"
-"<meta name=viewport content='width=device-width,initial-scale=1'><title>Halo: CE for Apple TV</title><style>"
+"<meta name=viewport content='width=device-width,initial-scale=1'><title>VISR for Apple TV</title><style>"
 ":root{color-scheme:light dark;--bg:#f4f5f2;--fg:#15191b;--muted:#5c6468;--card:#fff;--accent:#4f8f3a;--line:#d6dad6}"
 "@media (prefers-color-scheme:dark){:root{--bg:#0b1114;--fg:#e8ece9;--muted:#9aa4a8;--card:#141d21;--line:#27343a}}"
 "body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 -apple-system,system-ui,sans-serif}"
@@ -107,8 +107,8 @@ static NSString *const page=@"<!doctype html><html><head><meta charset=utf-8>"
 "#drop{display:block;border:2px dashed var(--line);border-radius:12px;padding:32px 16px;text-align:center;background:var(--card);cursor:pointer}"
 "#drop.over{border-color:var(--accent)}#file{display:none}progress{width:100%;height:12px;margin-top:20px;accent-color:var(--accent)}"
 "#status{margin-top:8px;min-height:3em;overflow-wrap:anywhere}</style></head><body><main>"
-"<h1>Halo: CE</h1><p>Send your own Halo: Combat Evolved Xbox disc image (.iso or .xiso) to your Apple TV. "
-"Keep the Halo setup screen open on the TV until the import finishes.</p>"
+"<h1>VISR</h1><p>Send your own Halo: Combat Evolved Xbox disc image (.iso or .xiso) to your Apple TV. "
+"Keep the VISR setup screen open on the TV until the import finishes.</p>"
 "<label for=code>Code shown on the TV</label><input id=code type=text inputmode=numeric autocomplete=off maxlength=6>"
 "<label>Disc image</label><label id=drop for=file>Drop the disc image here, or choose it</label>"
 "<input id=file type=file accept='.iso,.xiso'><progress id=bar max=1 value=0 hidden></progress><div id=status></div>"
@@ -395,7 +395,7 @@ static UIImage *qr_image(NSString *text) {
     self.overrideUserInterfaceStyle=UIUserInterfaceStyleDark;
     UIStackView *stack=[UIStackView new];stack.axis=UILayoutConstraintAxisVertical;stack.spacing=28;
     stack.alignment=UIStackViewAlignmentCenter;stack.translatesAutoresizingMaskIntoConstraints=NO;[self.view addSubview:stack];
-    UILabel *title=[self label:UIFontTextStyleTitle1 color:UIColor.labelColor];title.text=@"Halo: CE";[stack addArrangedSubview:title];
+    UILabel *title=[self label:UIFontTextStyleTitle1 color:UIColor.labelColor];title.text=@"VISR";[stack addArrangedSubview:title];
     UILabel *body=[self label:UIFontTextStyleBody color:UIColor.secondaryLabelColor];
     body.text=@"To play, send your own Halo: Combat Evolved Xbox disc image (.iso or .xiso)\nfrom a phone or computer on the same network. No game files are included.";
     [stack addArrangedSubview:body];

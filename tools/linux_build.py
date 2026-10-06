@@ -114,8 +114,19 @@ GAME_FLAGS = [
 
 # the TOML parser the platform layer reads config.toml with (port_config.c)
 TOML_DIR = Path("port/third_party/tomlc17")
+EXPAT_DIR = Path("port/third_party/expat")
+EXPAT_SOURCES = ("xmlparse.c", "xmlrole.c", "xmltok.c")
 KCP_DIR = Path("port/third_party/kcp")
+MONOCYPHER_DIR = Path("port/third_party/monocypher")
 MUSL_MATH_DIR = Path("port/third_party/musl-math")
+# the port's zlib (port/third_party/zlib/zlib_prefixed.h): what inflates the
+# maps, the menus' and the HUD's PNGs and the updates, data from anywhere,
+# instead of the game's own 1.1.3 (its inflate only, its names prefixed z_)
+ZLIB_DIR = Path("port/third_party/zlib")
+ZLIB_SOURCES = ("adler32.c", "crc32.c", "inffast.c", "inflate.c", "inftrees.c", "uncompr.c", "zutil.c")
+# (its names prefixed, and the one Z_PREFIX leaves, its error messages, which
+# the game's zlib names the same)
+ZLIB_DEFINES = ("-DZ_PREFIX", "-Dz_errmsg=z_port_errmsg")
 # the self-updater's TLS (port/linux/src/posix_update.c)
 MBEDTLS_DIR = Path("port/third_party/mbedtls")
 # internet play's UPnP (port/linux/src/posix_upnp.c)
@@ -363,7 +374,11 @@ def generate_linux_build(n: Writer, sln: Any) -> None:
     # the high-res HUD's textures (port/assets/hud; port/linux/src/hud_hires.c)
     embedded_assets = hud_assets_build(n, "linux", build_dir / "generated" / "hud_hires_assets.c")
 
-    abi = " ".join(LINUX_ABI_FLAGS + [march_flag(sln)] + (["-DHALO_RELEASE"] if getattr(sln, "port_release", False) else []))
+    # (a debug build checks its stack frames, and stops at the first one
+    # overrun, as it stops at the first failed assertion; a release build
+    # does not, so that an overrun nobody has met cannot end a game)
+    abi = " ".join(LINUX_ABI_FLAGS + [march_flag(sln)] + (["-DHALO_RELEASE"] if getattr(sln, "port_release", False)
+                                                          else ["-fstack-protector-strong"]))
     port_include = PORT_DIR / "include"
     sdk_flags = f"-idirafter {XDK_INCLUDE}"
     libs = " ".join(f"-l{lib}" for lib in config.get("libraries", []))
@@ -398,6 +413,9 @@ def generate_linux_build(n: Writer, sln: Any) -> None:
             f"-include {prefix_header}",
             f"-include {semantics_header}",
             f"-I{port_include}",
+            # the headers of the port's own game units (port/linux/game), for
+            # the game sources that call them
+            f"-iquote {Path(config['game_sources'])}",
             game_defines_and_includes(config),
             sdk_flags,
         ])
@@ -417,7 +435,10 @@ def generate_linux_build(n: Writer, sln: Any) -> None:
             f"-I{platform_dir}",
             f"-I{port_include}",
             f"-I{TOML_DIR}",
+            f"-I{EXPAT_DIR}",
             f"-I{KCP_DIR}",
+            f"-I{MONOCYPHER_DIR}",
+            f"-I{ZLIB_DIR}",
             "-Isource -Isource/cseries",
             sdk_flags,
         ])
@@ -453,8 +474,18 @@ def generate_linux_build(n: Writer, sln: Any) -> None:
         # the settings file's parser (port/third_party/tomlc17), with the
         # platform layer's ABI (its structs hold doubles) and nothing else
         add_object(TOML_DIR / "tomlc17.c", " ".join([abi, "-std=gnu11", "-w"]))
+        # the menus' XML parser (port/third_party/expat; menu_files.c)
+        for name in EXPAT_SOURCES:
+            add_object(EXPAT_DIR / name, " ".join([abi, "-std=gnu11", f"-I{EXPAT_DIR}", "-w"]))
         # internet play's reliable streams (port/third_party/kcp; p2p.c)
         add_object(KCP_DIR / "ikcp.c", " ".join([abi, "-std=gnu11", "-w"]))
+        # internet play's signatures, for public games' listings
+        # (port/third_party/monocypher; p2p_crypto.c)
+        for name in ("monocypher.c", "monocypher-ed25519.c"):
+            add_object(MONOCYPHER_DIR / name, " ".join([abi, "-std=gnu11", "-w"]))
+        # the port's zlib
+        for name in ZLIB_SOURCES:
+            add_object(ZLIB_DIR / name, " ".join([abi, "-std=gnu11", *ZLIB_DEFINES, "-w"]))
         # the game's sin, pow and the rest, the same on every port
         # (port/include/halo_math.h)
         for source in musl_math_sources():
@@ -491,5 +522,9 @@ def generate_linux_build(n: Writer, sln: Any) -> None:
     cflags, ldflags = lto_flags(sln, build_dir / "thinlto-cache")
     cflags += profile_use_flags(profile)
     emit(obj_dir, output, cflags, ldflags, [profile] if profile else [])
-    n.build(outputs="linux", rule="phony", inputs=output)
+    # internet play's MQTT brokers, a file beside the game (network.brokers_file)
+    brokers = build_dir / "brokers.txt"
+    n.rule(name="linux_copy", command="cp $in $out", description="LINUX COPY $out")
+    n.build(outputs=brokers, rule="linux_copy", inputs=Path("port/assets/network/brokers.txt"))
+    n.build(outputs="linux", rule="phony", inputs=[output, brokers])
     n.newline()

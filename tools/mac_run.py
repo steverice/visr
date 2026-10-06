@@ -5,7 +5,7 @@
 For the iPad runner: macOS launches an iPad app only if Xcode installed it. It also kills the app
 that port/ios's CMake project builds ("Code Signature Invalid"), although the
 same executable runs when a plain Xcode project signs it. So `run` generates a
-small wrapper project around the CMake-built HaloCE executable and Info.plist,
+small wrapper project around the CMake-built VISR executable and Info.plist,
 installs and launches it through Xcode with the debugger off (memory_watch.c
 write-protects pages and expects their faults, which would stop a debugger),
 waits for the game to quit (debug.exit_after), and copies the logs,
@@ -24,6 +24,7 @@ display pinned to what the iPad runner sees, so its results compare with the iPa
 import argparse
 import datetime
 import difflib
+import hashlib
 import os
 import plistlib
 import re
@@ -31,6 +32,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -373,10 +375,10 @@ targets:
       MARKETING_VERSION: "1.0"
       ENABLE_DEBUG_DYLIB: NO
     postBuildScripts:
-      - name: Use the CMake-built HaloCE
+      - name: Use the CMake-built app
         basedOnDependencyAnalysis: false
         script: |
-          cp "{app}/HaloCE" "$TARGET_BUILD_DIR/$EXECUTABLE_PATH"
+          cp "{app}/{executable}" "$TARGET_BUILD_DIR/$EXECUTABLE_PATH"
           cp "{app}/Info.plist" "$TARGET_BUILD_DIR/$INFOPLIST_PATH"
           plutil -replace CFBundleExecutable -string "$EXECUTABLE_NAME" "$TARGET_BUILD_DIR/$INFOPLIST_PATH"
           plutil -replace CFBundleIdentifier -string "$PRODUCT_BUNDLE_IDENTIFIER" "$TARGET_BUILD_DIR/$INFOPLIST_PATH"
@@ -441,6 +443,27 @@ CLOSE_OTHERS = """tell application "{xcode}"
 end tell
 """
 
+# xcodegen rewrites HaloRunner.xcodeproj whenever its inputs change (regenerate_project).
+# With the project open, Xcode reloads it, and sometimes answers with a modal "changed
+# on disk" alert instead, which no one is there to click: every later run then fails
+# with "Build operations are disabled: 'project.xcworkspace' has changed and is
+# reloading" or stays "not yet started" (an M4 build host, 2026-10-05), and Xcode later aborted
+# in that same handler (an M6 build host, 2026-10-06). So every runner project is closed before
+# xcodegen runs, and LAUNCH opens this one again. An Xcode held by such an alert does
+# not answer: give up in seconds, with the reason (osascript_failure)
+CLOSE_RUNNER_PROJECTS = """with timeout of 30 seconds
+	tell application "{xcode}"
+		repeat with runner in (every workspace document whose path contains "/{target}.xcodeproj")
+			try
+				close runner saving no
+			end try
+		end repeat
+		-- a close can fail quietly (inside the try): report what is still open
+		return count of (every workspace document whose path contains "/{target}.xcodeproj")
+	end tell
+end timeout
+"""
+
 LAUNCH = """tell application "{xcode}"
 	repeat 120 times
 		if exists (first workspace document whose path is "{project}") then exit repeat
@@ -481,6 +504,9 @@ LAUNCH = """tell application "{xcode}"
 			-- launches anything (seen on an M4 Mac mini): ask again
 			if run_status is "cancelled" then
 				set last_error to "Xcode cancelled the run"
+			-- still pending after two minutes (a cold Xcode can still be building or
+			-- indexing): don't ask again over a pending run; mac_run.py keeps waiting for the
+			-- game and checks Xcode for a modal alert meanwhile
 			else if run_status is not "error occurred" then
 				set started_run to true
 				exit repeat
@@ -507,6 +533,89 @@ def xcode_app():
     return str(Path(developer).parents[1])
 
 
+def xcode_pid(xcode):
+    pids = subprocess.run(["pgrep", "-f", f"{xcode}/Contents/MacOS/Xcode"], capture_output=True, text=True).stdout.split()
+    return int(pids[0]) if pids else None
+
+
+def xcode_running(xcode):
+    return xcode_pid(xcode) is not None
+
+
+def modal_alert(sample_text):
+    """what holds Xcode's main thread in a modal alert, from `sample`'s output; None when nothing does.
+    Neither AppleScript nor the window list (no titles without Screen Recording) tells an alert apart,
+    but the main thread's stack does"""
+    lines = sample_text.splitlines()
+    start = next((i for i, line in enumerate(lines) if "com.apple.main-thread" in line), None)
+    if start is None:
+        return None
+    main = []
+    for line in lines[start + 1:]:
+        if re.match(r"^\s*\d+ Thread_", line) or not line.strip():
+            break
+        main.append(line)
+    main = "\n".join(main)
+    if "runModal" not in main and "_doModalLoop" not in main:
+        return None
+    if "responseToExternalChangesToBackingFileForContainer" in main:
+        return "a project file that changed on disk"
+    if "presentError" in main:
+        return "an error"
+    return "something unknown"
+
+
+def xcode_alert(xcode):
+    """the modal alert holding Xcode, if any: a 1-second `sample` of its main thread (about 2 s)"""
+    pid = xcode_pid(xcode)
+    if pid is None:
+        return None
+    with tempfile.TemporaryDirectory() as folder:
+        report = Path(folder) / "sample.txt"
+        subprocess.run(["sample", str(pid), "1", "-file", report], capture_output=True)
+        return modal_alert(report.read_text(errors="replace")) if report.exists() else None
+
+
+def osascript_failure(xcode, doing, error):
+    """why an osascript call to Xcode failed, from its error number: a denied Automation permission,
+    an Xcode that stopped answering (held by an alert, or busy), or the script's own error"""
+    message = (error.stderr or "").strip()
+    if "(-1743)" in message:
+        return (f"this Mac does not let the process running mac_run.py (Terminal, or sshd-keygen-wrapper over ssh) "
+                f"control Xcode, so it failed while {doing}: allow it under System Settings > Privacy & Security > "
+                f"Automation on this Mac's screen ({message})")
+    if "(-1712)" in message:
+        alert = xcode_alert(xcode)
+        if alert:
+            return (f"Xcode ({xcode}) did not answer while {doing}: it is held by a modal alert about {alert} "
+                    "on this Mac's screen; answer the alert (or quit Xcode), then run again")
+        return f"Xcode ({xcode}) did not answer in time while {doing}, with no alert open: it may be busy ({message})"
+    return f"osascript failed while {doing}: {message or f'exit status {error.returncode}'}"
+
+
+def exit_if_xcode_alert(xcode):
+    alert = xcode_alert(xcode)
+    if alert:
+        sys.exit(f"Xcode ({xcode}) is held by a modal alert about {alert} on this Mac's screen, so it can't "
+                 f"load or run {TARGET}: answer the alert (or quit Xcode), then run again")
+
+
+def close_runner_projects():
+    """close every runner project in Xcode before xcodegen rewrites this one (see CLOSE_RUNNER_PROJECTS)"""
+    xcode = xcode_app()
+    if not xcode_running(xcode):
+        return
+    try:
+        closed = run_command("osascript", input=CLOSE_RUNNER_PROJECTS.format(xcode=xcode, target=TARGET), text=True,
+                             capture_output=True)
+    except subprocess.CalledProcessError as error:
+        sys.exit(osascript_failure(xcode, f"closing its {TARGET} projects", error))
+    still_open = closed.stdout.strip()
+    if still_open != "0":
+        sys.exit(f"Xcode ({xcode}) still has {still_open or 'an unknown number of'} {TARGET} projects open after "
+                 f"closing them, and xcodegen would rewrite one under it; close them in Xcode, then run again")
+
+
 def running():
     return subprocess.run(["pgrep", "-x", TARGET], capture_output=True).returncode == 0
 
@@ -526,17 +635,53 @@ def wait_for(condition, seconds):
     return False
 
 
+def app_executable(app):
+    """the CMake-built device app's executable name, from its Info.plist: VISR, or HaloCE in an app built before
+    the VISR rename (VISR when the plist can't be read)"""
+    try:
+        with (Path(app) / "Info.plist").open("rb") as file:
+            return plistlib.load(file).get("CFBundleExecutable") or "VISR"
+    except (OSError, plistlib.InvalidFileException):
+        return "VISR"
+
+
 def build_wrapper(args):
     RUNNER.mkdir(parents=True, exist_ok=True)
     (RUNNER / "stub.c").write_text("int main(void) { return 0; }\n")
     (RUNNER / "project.yml").write_text(PROJECT.format(
         target=TARGET, team=args.team, bundle_id=args.bundle_id, app=args.app.resolve(),
+        executable=app_executable(args.app),
         environment=scheme_environment(validation_environment(getattr(args, "metal_validation", False),
                                                              getattr(args, "metal_shader_validation", False)))))
-    run_command("xcodegen", "generate", "--spec", RUNNER / "project.yml", "--project", RUNNER, "--quiet")
+    regenerate_project()
     run_command("xcodebuild", "-project", RUNNER / f"{TARGET}.xcodeproj", "-scheme", TARGET,
                 "-destination", DESTINATION, "-allowProvisioningUpdates", "build",
                 stdout=subprocess.DEVNULL)
+
+
+def project_inputs_hash():
+    """what xcodegen makes HaloRunner.xcodeproj from: the spec, the stub and the xcodegen it runs"""
+    xcodegen = shutil.which("xcodegen")
+    digest = hashlib.sha256()
+    for part in ((RUNNER / "project.yml").read_bytes(), (RUNNER / "stub.c").read_bytes(),
+                 str(Path(xcodegen).resolve() if xcodegen else "").encode()):
+        digest.update(hashlib.sha256(part).digest())
+    return digest.hexdigest()
+
+
+def regenerate_project():
+    """run xcodegen only when its inputs changed since the last run, so an unchanged project stays as
+    Xcode has it open; when they did, close the runner projects first (CLOSE_RUNNER_PROJECTS)"""
+    stamp = RUNNER / "project.yml.sha256"
+    inputs = project_inputs_hash()
+    project = RUNNER / f"{TARGET}.xcodeproj/project.pbxproj"
+    if project.is_file() and stamp.is_file() and stamp.read_text().strip() == inputs:
+        print(f"{TARGET}.xcodeproj is up to date: not regenerating it", flush=True)
+        return
+    stamp.unlink(missing_ok=True)
+    close_runner_projects()
+    run_command("xcodegen", "generate", "--spec", RUNNER / "project.yml", "--project", RUNNER, "--quiet")
+    stamp.write_text(inputs + "\n")
 
 
 def launch(documents=None):
@@ -546,9 +691,29 @@ def launch(documents=None):
     project = RUNNER / f"{TARGET}.xcodeproj"
     run_command("osascript", input=CLOSE_OTHERS.format(xcode=xcode, target=TARGET, project=project), text=True)
     run_command("open", "-a", xcode, project)
-    run_command("osascript", input=LAUNCH.format(xcode=xcode, target=TARGET, project=project), text=True)
-    if not wait_for(lambda: started(documents, running), 300):
+    exit_if_xcode_alert(xcode)
+    try:
+        run_command("osascript", input=LAUNCH.format(xcode=xcode, target=TARGET, project=project), text=True,
+                    stderr=subprocess.PIPE)
+    except subprocess.CalledProcessError as error:
+        sys.exit(osascript_failure(xcode, f"running {TARGET}", error))
+    if not wait_for_start(lambda: started(documents, running), lambda: exit_if_xcode_alert(xcode), 300):
         sys.exit(f"{TARGET} did not start within 300 seconds; see Xcode's report navigator")
+
+
+def wait_for_start(has_started, check_xcode, seconds, every=30):
+    """wait_for, checking Xcode for a modal alert every so often, so a held Xcode fails the run in
+    seconds rather than at the deadline"""
+    deadline = time.monotonic() + seconds
+    next_check = time.monotonic() + every
+    while time.monotonic() < deadline:
+        if has_started():
+            return True
+        if time.monotonic() >= next_check:
+            check_xcode()
+            next_check = time.monotonic() + every
+        time.sleep(2)
+    return False
 
 
 def container_documents(args):
@@ -610,7 +775,7 @@ def collect(documents, out):
 
 def simulator_pattern(udid):
     """a pgrep -f pattern matching the game's executable in simulator udid"""
-    return f"CoreSimulator/Devices/{udid}/.*/HaloCE.app/HaloCE"
+    return f"CoreSimulator/Devices/{udid}/.*/VISR.app/VISR"
 
 
 def simulator_running(udid):
@@ -620,8 +785,8 @@ def simulator_running(udid):
 
 def run_simulator(args):
     udid = args.simulator
-    app = args.app or ROOT / "build/visionos/app-simulator/Release-xrsimulator/HaloCE.app"
-    if not (app / "HaloCE").is_file():
+    app = args.app or ROOT / "build/visionos/app-simulator/Release-xrsimulator/VISR.app"
+    if not (app / "VISR").is_file():
         sys.exit(f"no simulator app at {app}; run tools/ios_build.py --simulator (--visionos) first")
     with (app / "Info.plist").open("rb") as file:
         bundle_id = plistlib.load(file)["CFBundleIdentifier"]
@@ -655,11 +820,11 @@ def native_app_default(environment=None):
     that runs developer-built apps only from one folder: the MacBook's Santa)"""
     environment = os.environ if environment is None else environment
     if environment.get("HALO_MAC_BUILD"):
-        return Path(environment["HALO_MAC_BUILD"]) / ROOT.name / "app/Release-maccatalyst/HaloCE.app"
-    return ROOT / "build/mac/app/Release-maccatalyst/HaloCE.app"
+        return Path(environment["HALO_MAC_BUILD"]) / ROOT.name / "app/Release-maccatalyst/VISR.app"
+    return ROOT / "build/mac/app/Release-maccatalyst/VISR.app"
 
 
-NATIVE_EXECUTABLE = "Contents/MacOS/HaloCE"
+NATIVE_EXECUTABLE = "Contents/MacOS/VISR"
 # what the iPad runner's SDL reports on a 2x screen, pinned for the native app (host_main.m)
 NATIVE_DISPLAY = "1366x1024@2"
 # the game's exit (host_exit, host_main.m) in ios-runtime.log: open --wait-apps returns 0 whatever it was
@@ -861,8 +1026,8 @@ def run(args):
     args.bundle_id = args.bundle_id or "org.haloce.macrunner"
     if not args.team:
         sys.exit("--runner ipad needs --team")
-    args.app = args.app or ROOT / "build/ios/app-device/Release-iphoneos/HaloCE.app"
-    if not (args.app / "HaloCE").is_file():
+    args.app = args.app or ROOT / "build/ios/app-device/Release-iphoneos/VISR.app"
+    if not (args.app / app_executable(args.app)).is_file():
         sys.exit(f"no CMake-built app at {args.app}; run tools/ios_build.py --team ... first")
     build_wrapper(args)
     documents = container_documents(args)
