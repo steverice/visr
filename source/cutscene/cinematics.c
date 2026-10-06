@@ -418,6 +418,8 @@ void cinematic_render(
 			static boolean bars_shown = FALSE;
 
 			bar_amount = halo_stereo_film_letterbox() ? halo_cinematic_title_bars() : 0.0f;
+			/* (the cutscene window's expansion carries on from the film's last) */
+			halo_stereo_set_title_bars(bar_amount);
 			/* once each time a title brings them in, and as they leave */
 			if ((bar_amount > 0.0f) != bars_shown)
 			{

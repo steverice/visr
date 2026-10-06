@@ -471,6 +471,13 @@ struct gpu_stereo_present
 	the UI layer (halo_stereo_ui_dim_active): the presenter multiplies the
 	eyes' color by 1 - ui_dim */
 	float ui_dim;
+	/* HEAD mode's cutscene window (halo_stereo_window.h, halo_stereo_expansion):
+	1 while the film's rectangle expands out to the full view, the eyes
+	showing inside it, with its progress (0 to 1) and the bars (0 to 1 of
+	the letterbox's) it still carries */
+	int32_t expanding;
+	float expansion;
+	float expansion_bars;
 };
 
 /* presents a stereo frame as gpu_present does a mono one (and returns the

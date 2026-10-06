@@ -39,6 +39,7 @@ Elsewhere host_stereo_frame leaves the frame mono. */
 #include "host_stereo_head.h"
 #include "host_stereo_vignette.h"
 #include "host_stereo_hud.h"
+#include "halo_stereo_window.h"
 
 /* one world unit in meters */
 #define METERS_PER_UNIT 3.048f
@@ -125,13 +126,37 @@ static NSString *const shader_source =
 	and never its depth */
 	HOST_STEREO_VIGNETTE_STRING(HOST_STEREO_VIGNETTE_SOURCE) "\n"
 	"struct eye_uniforms { uint decode_srgb; float depth_scale; float depth_floor; float brightness; float vignette;\n"
-	"	float4 tangents; float vignette_inner; float vignette_outer; };\n"
-	/* the picture and depth at at (normalized), the vignette at the view's
-	own coordinate */
-	"static eye_pixel eye_shade(float2 coordinate, float2 at, texture2d<float> picture, depth2d<float> depth,\n"
-	"	sampler linear, sampler nearest, constant eye_uniforms &u)\n"
+	"	float4 tangents; float vignette_inner; float vignette_outer; uint expanding; float bars; float4 window;\n"
+	"	float4 tint; float tint_depth; float4x4 screen_from_view; };\n"
+	/* the cutscene window's expansion (halo_stereo_window.h): whether the
+	view's coordinate is outside the growing window (0), inside it (1) or on
+	its bars (2); always inside while it isn't expanding */
+	HALO_STEREO_WINDOW_STRING(HALO_STEREO_WINDOW_SOURCE) "\n"
+	"static int eye_window(float2 coordinate, constant eye_uniforms &u)\n"
 	"{\n"
-	"	float3 color = picture.sample(linear, at).rgb;\n"
+	"	if (!u.expanding)\n"
+	"		return 1;\n"
+	"	float3 view = float3(mix(-u.tangents.x, u.tangents.y, coordinate.x), mix(u.tangents.z, -u.tangents.w,\n"
+	"		coordinate.y), -1.0);\n"
+	"	float3 d = (u.screen_from_view * float4(view, 0.0)).xyz;\n"
+	"	return halo_stereo_window_test(d.x, d.y, d.z, u.window.x, u.window.y, u.window.z, u.window.w, u.bars);\n"
+	"}\n"
+	/* outside the window: the theater's surroundings, as around the film's
+	screen: the script fade's tint if any, else nothing (the clear: the dark,
+	or the room) */
+	"static eye_pixel eye_outside(constant eye_uniforms &u)\n"
+	"{\n"
+	"	eye_pixel out;\n"
+	"	out.color = u.tint;\n"
+	"	out.depth = u.tint_depth;\n"
+	"	return out;\n"
+	"}\n"
+	/* the picture and depth at at (normalized), the vignette at the view's
+	own coordinate; black on the expanding window's bars */
+	"static eye_pixel eye_shade(float2 coordinate, float2 at, texture2d<float> picture, depth2d<float> depth,\n"
+	"	sampler linear, sampler nearest, constant eye_uniforms &u, int shown)\n"
+	"{\n"
+	"	float3 color = shown == 2 ? float3(0.0) : picture.sample(linear, at).rgb;\n"
 	"	if (u.decode_srgb)\n"
 	"		color = select(pow((color + 0.055) / 1.055, 2.4), color / 12.92, color <= 0.04045);\n"
 	"	float edge = u.vignette > 0.0 ? host_stereo_vignette_edge(coordinate.x, coordinate.y, u.tangents.x,\n"
@@ -145,7 +170,12 @@ static NSString *const shader_source =
 	"	depth2d<float> depth [[texture(1)]], sampler linear [[sampler(0)]], sampler nearest [[sampler(1)]],\n"
 	"	constant eye_uniforms &u [[buffer(0)]])\n"
 	"{\n"
-	"	return eye_shade(in.coordinate, in.coordinate, picture, depth, linear, nearest, u);\n"
+	"	int shown = eye_window(in.coordinate, u);\n"
+	"	if (shown == 0 && u.tint.w <= 0.0)\n"
+	"		discard_fragment();\n"
+	"	if (shown == 0)\n"
+	"		return eye_outside(u);\n"
+	"	return eye_shade(in.coordinate, in.coordinate, picture, depth, linear, nearest, u, shown);\n"
 	"}\n"
 	/* foveated eye passes (foveated_eyes): the game's picture and depth were
 	rendered through the eye's rate map, so a screen point (the normalized
@@ -158,10 +188,15 @@ static NSString *const shader_source =
 	"	constant eye_uniforms &u [[buffer(0)]], constant rasterization_rate_map_data &map [[buffer(1)]],\n"
 	"	constant eye_foveation &f [[buffer(2)]])\n"
 	"{\n"
+	"	int shown = eye_window(in.coordinate, u);\n"
+	"	if (shown == 0 && u.tint.w <= 0.0)\n"
+	"		discard_fragment();\n"
+	"	if (shown == 0)\n"
+	"		return eye_outside(u);\n"
 	"	rasterization_rate_map_decoder decoder(map);\n"
 	"	float2 screen = clamp(in.coordinate * f.screen, float2(0.0), f.screen - 1.0 / 256.0);\n"
 	"	float2 physical = clamp(decoder.map_screen_to_physical_coordinates(screen), float2(0.5), f.physical - 0.5);\n"
-	"	return eye_shade(in.coordinate, physical / f.allocated, picture, depth, linear, nearest, u);\n"
+	"	return eye_shade(in.coordinate, physical / f.allocated, picture, depth, linear, nearest, u, shown);\n"
 	"}\n"
 	/* one of the HUD's quads (host_stereo_hud.h): its texture's rectangle,
 	and its center and half extents in its frame, which clip_from_frame
@@ -502,6 +537,16 @@ struct eye_uniforms
 	inner and outer angles in radians, the same for both eyes */
 	simd_float4 tangents;
 	float vignette_inner, vignette_outer;
+	/* the cutscene window's expansion (halo_stereo_window.h): on, the bars
+	it carries, its window (left, right, down, up angles in the screen's
+	frame), the theater's fade tint around it and that tint's depth, and the
+	view's rotation into the screen's frame */
+	uint32_t expanding;
+	float bars;
+	simd_float4 window;
+	simd_float4 tint;
+	float tint_depth;
+	simd_float4x4 screen_from_view;
 };
 
 struct hud_uniforms
@@ -1130,16 +1175,34 @@ static void hud_draw(id<MTLRenderCommandEncoder> encoder, __unsafe_unretained id
 }
 #endif
 
+#if TARGET_OS_VISION
+/* the cutscene window's expansion: each view's window on its last frame
+(halo_stereo_window_at keeps it from shrinking), and whether the last
+frame expanded */
+#define EXPANSION_VIEWS 4
+static float expansion_last[EXPANSION_VIEWS][4];
+static int expansion_last_on;
+
+/* a matrix's rotation as rows, for halo_stereo_window_include_view */
+static void rotation_rows(simd_float4x4 matrix, float rows[3][3])
+{
+	for (int row = 0; row < 3; row++)
+		for (int column = 0; column < 3; column++)
+			rows[row][column] = matrix.columns[column][row];
+}
+#endif
+
 void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLTexture> right,
 	id<MTLTexture> left_depth, id<MTLTexture> right_depth, __unsafe_unretained id<MTLTexture> const *hud_layers,
 	const float (*hud_group_extent)[4], float hud_aspect, int hud_ui, const float reticle[3],
 	const float hud_tangents[2], id<MTLTexture> inset, float near_meters, float far_meters, float brightness,
-	float vignette, float ui_dim)
+	float vignette, float ui_dim, int expanding, float expansion, float expansion_bars, const float fade[4])
 {
 	id<MTLTexture> hud = hud_layers[HOST_STEREO_HUD_LAYER_HUD];
 	/* the HUD's pieces need its layer or the UI's (a pause can leave the
-	HUD undrawn) */
-	int hud_shown = hud || hud_layers[HOST_STEREO_HUD_LAYER_UI];
+	HUD undrawn); while the cutscene window expands they wait for it to
+	cover the view, since they would hang over the room outside it */
+	int hud_shown = !expanding && (hud || hud_layers[HOST_STEREO_HUD_LAYER_UI]);
 
 #if TARGET_OS_VISION
 	if (@available(visionOS 26.0, *))
@@ -1159,7 +1222,11 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 		/* the zoom's inset, under the HUD, along the reticle's direction; not
 		while a menu holds the HUD layer, whose UI quad it would cover */
 		struct host_stereo_hud_quad inset_quad;
-		int inset_shown = inset && !hud_ui && host_stereo_hud_inset(layout_width, NULL, reticle, &inset_quad);
+		int inset_shown = inset && !hud_ui && !expanding &&
+			host_stereo_hud_inset(layout_width, NULL, reticle, &inset_quad);
+		/* outside the expanding window the theater's surroundings show: the
+		dark, or the room */
+		double clear_alpha = expanding && !host_theater_dark() ? 0.0 : 1.0;
 
 		if (stereo_presents++ == 0)
 			host_logf(HOST_LOG_INFO, "stereo: first present: eyes %lux%lu%s, %s (laid out at %.3f:1; its bands at "
@@ -1224,6 +1291,29 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 			}
 			if (!(vignette_outer > 0.0f))
 				vignette = 0.0f;
+			/* the cutscene window's expansion: the screen's pose and size, and
+			the window it ends at, just past every view's edges */
+			simd_float4x4 screen_from_origin = matrix_identity_float4x4;
+			simd_float2 screen_half = { 0.0f, 0.0f };
+			float expansion_end[4];
+			if (expanding)
+			{
+				simd_float4x4 origin_from_screen;
+
+				host_theater_screen(index, &origin_from_screen, &screen_half);
+				screen_from_origin = simd_inverse(origin_from_screen);
+				halo_stereo_window_empty(expansion_end);
+				for (size_t view_index = 0; view_index < views; view_index++)
+				{
+					simd_float4 t = view_tangents(drawable, view_index);
+					const float tangents[4] = { t.x, t.y, t.z, t.w };
+					float rows[3][3];
+
+					rotation_rows(simd_mul(screen_from_origin, simd_mul(origin_from_device,
+						cp_view_get_transform(cp_drawable_get_view(drawable, view_index)))), rows);
+					halo_stereo_window_include_view(expansion_end, tangents, rows);
+				}
+			}
 			for (size_t view_index = 0; view_index < views; view_index++)
 			{
 				cp_view_t view = cp_drawable_get_view(drawable, view_index);
@@ -1241,12 +1331,44 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 					brightness * (decode_srgb ? powf(ui_keep, 2.2f) : ui_keep),
 					fmaxf(0.0f, fminf(1.0f, vignette)), view_tangents(drawable, view_index),
 					HOST_STEREO_VIGNETTE_CLEAR_SHARE * vignette_outer, vignette_outer };
+				simd_float4x4 projection = cp_drawable_compute_projection(drawable,
+					cp_axis_direction_convention_right_up_back, view_index);
+
+				/* the window this frame: from the screen as this eye sees it
+				toward the end, never smaller than its last frame's */
+				if (expanding)
+				{
+					simd_float4x4 screen_from_view = simd_mul(screen_from_origin, simd_mul(origin_from_device,
+						cp_view_get_transform(view)));
+					const float eye_position[3] = { screen_from_view.columns[3].x, screen_from_view.columns[3].y,
+						screen_from_view.columns[3].z };
+					float start[4], window[4];
+					int fresh = !expansion_last_on || view_index >= EXPANSION_VIEWS;
+
+					halo_stereo_screen_window(eye_position, screen_half.x, screen_half.y, start);
+					halo_stereo_window_at(start, expansion_end, expansion, fresh ? NULL : expansion_last[view_index],
+						window);
+					if (view_index < EXPANSION_VIEWS)
+						memcpy(expansion_last[view_index], window, sizeof(window));
+					if (!expansion_last_on && view_index == 0)
+						host_logf(HOST_LOG_INFO, "stereo: the cutscene window expands: view 0 from %.1f..%.1f by "
+							"%.1f..%.1f degrees (the screen) toward %.1f..%.1f by %.1f..%.1f, its bars at %.2f",
+							start[0] * 57.29578f, start[1] * 57.29578f, start[2] * 57.29578f, start[3] * 57.29578f,
+							expansion_end[0] * 57.29578f, expansion_end[1] * 57.29578f, expansion_end[2] * 57.29578f,
+							expansion_end[3] * 57.29578f, expansion_bars);
+					eye_uniforms.expanding = 1;
+					eye_uniforms.bars = expansion_bars;
+					eye_uniforms.window = (simd_float4){ window[0], window[1], window[2], window[3] };
+					eye_uniforms.tint = host_theater_fade_tint(fade, decode_srgb);
+					eye_uniforms.tint_depth = host_theater_fade_depth(projection);
+					eye_uniforms.screen_from_view = screen_from_view;
+				}
 
 				pass.colorAttachments[0].texture = color;
 				pass.colorAttachments[0].slice = slice;
 				pass.colorAttachments[0].loadAction = MTLLoadActionClear;
 				pass.colorAttachments[0].storeAction = MTLStoreActionStore;
-				pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
+				pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, clear_alpha);
 				pass.depthAttachment.texture = depth;
 				pass.depthAttachment.slice = slice;
 				pass.depthAttachment.loadAction = MTLLoadActionClear;
@@ -1297,8 +1419,6 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 				whose pixels needn't be square), which stay readable over it */
 				if (inset_shown || quad_count > 0)
 				{
-					simd_float4x4 projection = cp_drawable_compute_projection(drawable,
-						cp_axis_direction_convention_right_up_back, view_index);
 					simd_float4x4 clip_from_device = simd_mul(projection, simd_inverse(cp_view_get_transform(view)));
 
 					if (inset_shown)
@@ -1318,9 +1438,16 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 			gpu_metal_count_gpu_time(commands);
 			[commands commit];
 		}
+		if (expansion_last_on && !expanding)
+			host_logf(HOST_LOG_INFO, "stereo: the cutscene window covers the view");
+		expansion_last_on = expanding;
 		host_theater_frame_end();
 	}
 #else
+	(void)expanding;
+	(void)expansion;
+	(void)expansion_bars;
+	(void)fade;
 	(void)queue;
 	(void)left;
 	(void)right;

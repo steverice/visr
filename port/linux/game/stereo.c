@@ -29,7 +29,8 @@ stays immersive until its first such camera, then on the film until it ends
 (the stereo spec's session 4 "Cutscenes"). A first-person camera without
 the look (halo_look_disabled_first_person) turns its picture by the head, as
 a third-person one does. At a cutscene's end the film holds until the camera
-reaches the player's eyes. HEAD mode asks the host for SCREEN
+reaches the player's eyes, then its rectangle expands out to the full view
+(halo_stereo_window.h). HEAD mode asks the host for SCREEN
 eyes meanwhile, so the frame is SCREEN for everyone downstream: the host
 draws it on the screen, and the head's turn stays out of the look and the
 camera. The film has display.film_depth_share and display.film_convergence,
@@ -63,6 +64,7 @@ brings bars in for titles (cinematics.c), following the held film.
 #include <string.h>
 
 #include "../src/halo_stereo.h"
+#include "../src/halo_stereo_window.h"
 
 /* port/linux/src/port_config.c */
 const char *config_string(const char *name);
@@ -302,10 +304,20 @@ camera reaches the player's eyes (halo_cutscene_camera_settled), at most
 FILM_SETTLE_SECONDS from the cutscene's end: the observer glides from the
 cutscene camera's last pose for at most 2 s (observer_update_command), so a
 camera still away by then isn't coming. The seconds since the end, and
-whether the last wait gave up (the film then ends through black) */
+whether the last wait gave up (the film then ends through black, without
+the expansion) */
 #define FILM_SETTLE_SECONDS 2.5f
 static float settle_elapsed;
 static int settle_gave_up;
+/* the cutscene window's expansion (halo_stereo_window.h): running, its
+seconds so far, and the bars it began with */
+static int expansion_on;
+static float expansion_elapsed, expansion_bars;
+/* the bars cinematics.c drew this frame, and on the last frame of the film */
+static float title_bars_now, title_bars_film;
+/* the side-by-side view's model of the expansion (halo_stereo_side_by_side_window):
+each eye's window last frame */
+static float side_by_side_last_window[2][4];
 /* the zoom's inset this frame (halo_stereo_inset_begin): whether the
 frame is zoomed in the full view, which keeps the zoom's screen effects out
 of the eyes and routes the crosshairs out of the HUD layer, and whether the
@@ -351,21 +363,21 @@ static void cutscene_log(float time_delta)
 		return;
 	halo_cutscene_state(&state);
 	if (state.letterbox || state.director_scripted || state.look_disabled ||
-		state.perspective == 2 || film_reason != 0)
+		state.perspective == 2 || film_reason != 0 || expansion_on)
 		cutscene_log_left = CUTSCENE_LOG_SECONDS;
 	else if (cutscene_log_left > 0.0f)
 		cutscene_log_left -= time_delta;
 	else
 		return;
 	platform_log("stereo: cutscene: frame %lu: letterbox %d, director scripted %d, perspective %s, script mode %s, "
-		"look %s, last frame's fade %.2f; film %s, hold %d, waited %.2f s, a third-person shot %d, "
-		"observer finished %d, orientation settled %d, %.3f units from the eyes",
+		"look %s, last frame's fade %.2f, title bars %.2f; film %s, hold %d, waited %.2f s, a third-person shot %d, "
+		"expanding %d at %.2f; observer finished %d, orientation settled %d, %.3f units from the eyes",
 		head_log_frame, state.letterbox, state.director_scripted,
 		state.perspective >= 0 && state.perspective < 4 ? perspectives[state.perspective] : "?",
 		state.script_mode >= 0 && state.script_mode < 4 ? script_modes[state.script_mode] : "none",
-		state.look_disabled ? "disabled" : "enabled", cutscene_log_fade, film_reasons[film_reason],
+		state.look_disabled ? "disabled" : "enabled", cutscene_log_fade, title_bars_film, film_reasons[film_reason],
 		film_hold, settle_elapsed,
-		cutscene_third_person,
+		cutscene_third_person, expansion_on, expansion_elapsed / HALO_STEREO_EXPANSION_SECONDS,
 		state.observer_finished, state.orientation_settled, state.distance);
 }
 
@@ -780,6 +792,10 @@ void halo_stereo_frame_begin(void)
 		if (!cutscene_third_person)
 			film_reason = 0;
 	}
+	/* the title bars the last frame drew, if it was the film's */
+	if (film_frame)
+		title_bars_film = title_bars_now;
+	title_bars_now = 0.0f;
 	if (film_reason != 0) {
 		film_hold = FILM_HOLD_FRAMES;
 		settle_elapsed = 0.0f;
@@ -808,6 +824,28 @@ void halo_stereo_frame_begin(void)
 	if (film_reason == 0 && !cutscene)
 		cutscene_third_person = 0;
 	film = film_reason != 0;
+	/* the cutscene window expands from the film's rectangle out to the full
+	view once a cutscene's film has held until the camera reached the eyes,
+	at the letterbox bars' rate (halo_stereo_window.h); the film again, or
+	no full view with eyes (below), stops it */
+	if (film) {
+		expansion_on = 0;
+	} else if (film_frame && !screen && (film_reason_logged == 1 || film_reason_logged == 2) && !settle_gave_up &&
+		(stereo_mode == HALO_STEREO_HEAD || stereo_mode == HALO_STEREO_SIDE_BY_SIDE)) {
+		expansion_on = 1;
+		expansion_elapsed = 0.0f;
+		expansion_bars = title_bars_film;
+		memset(side_by_side_last_window, 0, sizeof(side_by_side_last_window));
+		platform_log("stereo: the cutscene's film expands out to the full view over %.1f s, its bars at %.2f",
+			HALO_STEREO_EXPANSION_SECONDS, expansion_bars);
+	} else if (expansion_on) {
+		expansion_elapsed += time_delta;
+		if (expansion_elapsed >= HALO_STEREO_EXPANSION_SECONDS - 1e-4f) {
+			expansion_on = 0;
+			if (stereo_stats)
+				platform_log("stereo: the cutscene window has expanded to the full view");
+		}
+	}
 	cutscene_log(time_delta);
 	film_last = film_frame;
 	gameplay_last = gameplay_frame;
@@ -897,6 +935,9 @@ void halo_stereo_frame_begin(void)
 		inset_logged = -1;
 		ui_shown_last = 0;
 	}
+	if (expansion_on && (stereo_frame.eye_count != 2 ||
+		(stereo_frame.mode != HALO_STEREO_HEAD && stereo_frame.mode != HALO_STEREO_SIDE_BY_SIDE)))
+		expansion_on = 0;
 	on_screen = film_frame || gameplay_frame;
 	mapping_on_screen_last = on_screen;
 	if (!on_screen)
@@ -1430,6 +1471,11 @@ void halo_stereo_depth_range(float *z_near, float *z_far)
 	*z_far = z_far_world;
 }
 
+void halo_stereo_set_title_bars(float bars)
+{
+	title_bars_now = bars;
+}
+
 /* the film's title bars come in at the Xbox letterbox's rate
 (cinematics.c's cinematic_render): one letterbox amount a second */
 #define TITLE_BARS_RATE 1.0f
@@ -1440,4 +1486,60 @@ float halo_stereo_title_bars_ease(float bars, float limit, float fade, float sec
 		return 0.0f;
 	bars = fminf(bars + fmaxf(0.0f, seconds) * TITLE_BARS_RATE, 1.0f);
 	return fminf(bars, limit);
+}
+
+int halo_stereo_expansion(float *progress, float *bars)
+{
+	if (!expansion_on || stereo_frame.eye_count != 2) {
+		*progress = *bars = 0.0f;
+		return 0;
+	}
+	*progress = expansion_elapsed / HALO_STEREO_EXPANSION_SECONDS;
+	*bars = halo_stereo_expansion_bars(expansion_bars, expansion_elapsed);
+	return 1;
+}
+
+/* the theater's default screen, for the side-by-side view's model: 60
+degrees across at 4 m (host_theater.m's display.theater_* defaults), in
+meters */
+#define SIDE_BY_SIDE_SCREEN_DISTANCE 4.0f
+
+int halo_stereo_side_by_side_window(int eye, struct halo_stereo_window_model *model)
+{
+	static const float identity[3][3] = { { 1.0f, 0.0f, 0.0f }, { 0.0f, 1.0f, 0.0f }, { 0.0f, 0.0f, 1.0f } };
+	float position[3], half_height = FILM_DEFAULT_HALF_WIDTH / FILM_ASPECT, start[4], end[4];
+	float progress, bars;
+	int film = halo_stereo_film(), expanding = halo_stereo_expansion(&progress, &bars);
+
+	memset(model, 0, sizeof(*model));
+	if (stereo_mode != HALO_STEREO_SIDE_BY_SIDE || side_by_side_screen || eye < 0 || eye > 1 ||
+		stereo_frame.eye_count != 2 || (!film && !expanding))
+		return 0;
+	/* the eye's fixed frustum (eye 1 mirrors eye 0), and where it sits
+	before the screen: its offset to the side, the screen's center level
+	with it */
+	model->tangents[0] = side_by_side_tangents[eye == 0 ? 0 : 1];
+	model->tangents[1] = side_by_side_tangents[eye == 0 ? 1 : 0];
+	model->tangents[2] = side_by_side_tangents[2];
+	model->tangents[3] = side_by_side_tangents[3];
+	position[0] = (eye == 0 ? -SIDE_BY_SIDE_OFFSET : SIDE_BY_SIDE_OFFSET) * METERS_PER_UNIT;
+	position[1] = 0.0f;
+	position[2] = SIDE_BY_SIDE_SCREEN_DISTANCE;
+	model->screen[0] = (-FILM_DEFAULT_HALF_WIDTH - position[0]) / position[2];
+	model->screen[1] = (FILM_DEFAULT_HALF_WIDTH - position[0]) / position[2];
+	model->screen[2] = (-half_height - position[1]) / position[2];
+	model->screen[3] = (half_height - position[1]) / position[2];
+	if (film) {
+		model->kind = 1;
+		return 1;
+	}
+	halo_stereo_screen_window(position, FILM_DEFAULT_HALF_WIDTH, half_height, start);
+	halo_stereo_window_empty(end);
+	halo_stereo_window_include_view(end, model->tangents, identity);
+	halo_stereo_window_at(start, end, progress, progress > 0.0f ? side_by_side_last_window[eye] : NULL,
+		model->window);
+	memcpy(side_by_side_last_window[eye], model->window, sizeof(model->window));
+	model->bars = bars;
+	model->kind = 2;
+	return 2;
 }

@@ -30,6 +30,7 @@ Conventions carried over from the Xbox:
 #include "port_config.h"
 #include "halo_display.h"
 #include "halo_stereo.h"
+#include "halo_stereo_window.h"
 #include "posix.h"
 
 #include <math.h>
@@ -4210,6 +4211,34 @@ static void write_screenshot(struct render_target_entry *target, const char *suf
 	write_screenshot_channel(target, suffix, 0);
 }
 
+/* a screenshot's BGRA pixels, rows from the top, as directory/frameNNNNN<suffix>.bmp */
+static void screenshot_file(const char *directory, const char *suffix, const unsigned char *pixels,
+	unsigned long width, unsigned long height)
+{
+	unsigned char header[54] = { 'B', 'M' };
+	unsigned long image_size = width * height * 4, row;
+	char path[512];
+	FILE *file;
+
+	snprintf(path, sizeof(path), "%s/frame%05lu%s.bmp", directory, device.frame, suffix);
+	file = fopen(path, "wb");
+	if (file)
+	{
+		*(unsigned int *)(header + 2) = (unsigned int)(54 + image_size);
+		*(unsigned int *)(header + 10) = 54;
+		*(unsigned int *)(header + 14) = 40;
+		*(int *)(header + 18) = (int)width;
+		*(int *)(header + 22) = -(int)height; /* rows from the top, as read */
+		*(unsigned short *)(header + 26) = 1;
+		*(unsigned short *)(header + 28) = 32;
+		*(unsigned int *)(header + 34) = (unsigned int)image_size;
+		fwrite(header, 1, sizeof(header), file);
+		for (row = 0; row < height; row++)
+			fwrite(pixels + row * width * 4, 1, width * 4, file);
+		fclose(file);
+	}
+}
+
 /* the target's color, or with alpha its alpha channel as gray (stereo's HUD
 layer: the picture's transmittance, hud_layer_blend) */
 static void write_screenshot_channel(struct render_target_entry *target, const char *suffix, int alpha)
@@ -4218,10 +4247,7 @@ static void write_screenshot_channel(struct render_target_entry *target, const c
 		config_string("debug.screenshot_directory") : NULL;
 	unsigned long width = target->target.gl_width, height = target->target.gl_height;
 	unsigned char *pixels;
-	char path[512];
-	FILE *file;
 	unsigned long row;
-	unsigned char header[54] = { 'B', 'M' };
 	unsigned long image_size = width * height * 4;
 
 	if (!directory)
@@ -4240,23 +4266,79 @@ static void write_screenshot_channel(struct render_target_entry *target, const c
 			pixels[row * 4] = pixels[row * 4 + 1] = pixels[row * 4 + 2] = pixels[row * 4 + 3];
 		pixels[row * 4 + 3] = 0xff;
 	}
-	snprintf(path, sizeof(path), "%s/frame%05lu%s.bmp", directory, device.frame, suffix);
-	file = fopen(path, "wb");
-	if (file)
+	screenshot_file(directory, suffix, pixels, width, height);
+	free(pixels);
+}
+
+/* debug.screenshot_every in the side-by-side view, around a cutscene's
+film: what HEAD mode's presenter would show the left eye
+(halo_stereo_side_by_side_window), with the window's own test
+(halo_stereo_window.h), over the eye's fixed frustum. The film: its picture
+on the theater's default screen. The expansion: the eye's picture inside
+the growing window, black on its bars. Gray around, for the room */
+static void write_window_screenshot(struct render_target_entry *target)
+{
+	const char *directory = *config_string("debug.screenshot_directory") ?
+		config_string("debug.screenshot_directory") : NULL;
+	unsigned long width = target->target.gl_width, height = target->target.gl_height;
+	unsigned long image_size = width * height * 4, x, y;
+	struct halo_stereo_window_model model;
+	unsigned char *picture, *pixels;
+
+	if (!directory || !halo_stereo_side_by_side_window(0, &model))
+		return;
+	picture = malloc(image_size);
+	pixels = malloc(image_size);
+	if (!picture || !pixels || !gpu_texture_read(target->target.texture, picture, (uint32_t)image_size))
 	{
-		*(unsigned int *)(header + 2) = (unsigned int)(54 + image_size);
-		*(unsigned int *)(header + 10) = 54;
-		*(unsigned int *)(header + 14) = 40;
-		*(int *)(header + 18) = (int)width;
-		*(int *)(header + 22) = -(int)height; /* rows from the top, as read */
-		*(unsigned short *)(header + 26) = 1;
-		*(unsigned short *)(header + 28) = 32;
-		*(unsigned int *)(header + 34) = (unsigned int)image_size;
-		fwrite(header, 1, sizeof(header), file);
-		for (row = 0; row < height; row++)
-			fwrite(pixels + row * width * 4, 1, width * 4, file);
-		fclose(file);
+		free(picture);
+		free(pixels);
+		return;
 	}
+	for (y = 0; y < height; y++)
+	{
+		for (x = 0; x < width; x++)
+		{
+			/* the pixel's direction: the eye looks along -z at the screen */
+			float u = ((float)x + 0.5f) / (float)width, v = ((float)y + 0.5f) / (float)height;
+			float across = -model.tangents[0] + u * (model.tangents[0] + model.tangents[1]);
+			float rise = model.tangents[2] - v * (model.tangents[2] + model.tangents[3]);
+			unsigned char *out = pixels + (y * width + x) * 4;
+			const unsigned char *in = NULL;
+			int shown = 0;
+
+			if (model.kind == 1)
+			{
+				if (across >= model.screen[0] && across <= model.screen[1] && rise >= model.screen[2] &&
+					rise <= model.screen[3])
+				{
+					unsigned long sx = (unsigned long)((across - model.screen[0]) / (model.screen[1] - model.screen[0]) *
+						(float)(width - 1) + 0.5f);
+					unsigned long sy = (unsigned long)((model.screen[3] - rise) / (model.screen[3] - model.screen[2]) *
+						(float)(height - 1) + 0.5f);
+
+					in = picture + (sy * width + sx) * 4;
+					shown = 1;
+				}
+			}
+			else
+				shown = halo_stereo_window_test(across, rise, -1.0f, model.window[0], model.window[1], model.window[2],
+					model.window[3], model.bars);
+			if (shown == 1)
+			{
+				if (!in)
+					in = picture + (y * width + x) * 4;
+				out[0] = in[0];
+				out[1] = in[1];
+				out[2] = in[2];
+			}
+			else
+				out[0] = out[1] = out[2] = shown == 2 ? 0 : 0x60;
+			out[3] = 0xff;
+		}
+	}
+	screenshot_file(directory, "-window", pixels, width, height);
+	free(picture);
 	free(pixels);
 }
 
@@ -4584,6 +4666,7 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 				write_screenshot(back_buffer, "-left");
 				write_screenshot(render_target_get_layer(&device.back_buffer, 1), "-right");
 				write_depth_screenshot(render_target_get_layer(&device.depth_buffer, 0), "-left-depth");
+				write_window_screenshot(back_buffer);
 				if (hud)
 				{
 					write_screenshot(hud, "-hud");
@@ -4729,6 +4812,9 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 					ui_dim_logged = hundredths;
 				}
 			}
+			/* HEAD mode's cutscene window, expanding from the film out to
+			the full view */
+			present.expanding = halo_stereo_expansion(&present.expansion, &present.expansion_bars);
 			present.hud_ui = ui ? 1 : hud && hud_layer_ui && !halo_stereo_film_letterbox();
 			/* the next frame's inset waits while a menu holds the layer */
 			halo_stereo_set_ui_shown(present.hud_ui);

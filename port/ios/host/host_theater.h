@@ -65,6 +65,13 @@ if a present hasn't placed it yet) and its half width and half height in
 meters, at the picture's shape (host_theater_picture_size); the screen's
 center is its origin, x right, y up and z toward the viewer */
 void host_theater_screen(size_t index, simd_float4x4 *origin_from_screen, simd_float2 *half_size);
+/* the script fade's tint around the screen as the theater draws it, for a
+target (decode_srgb: an sRGB one): the color to write, opaque over the dark
+surroundings, premultiplied at the fade's opacity over the room; alpha 0
+without a fade. And the depth of that tint's surface (a little behind the
+screen) for a view's projection */
+simd_float4 host_theater_fade_tint(const float fade[4], uint32_t decode_srgb);
+float host_theater_fade_depth(simd_float4x4 projection);
 #endif
 
 /* reads display.theater_* from config.toml (host_config.c) */

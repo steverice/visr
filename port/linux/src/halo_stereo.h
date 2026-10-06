@@ -462,12 +462,33 @@ camera position with its orientation settled. The film holds until it has
 (stereo.c) */
 #define HALO_CUTSCENE_SETTLED_DISTANCE 0.05f
 int halo_cutscene_camera_settled(void);
+/* cinematics.c, each stereo frame cinematic_render runs: the bars it drew
+(0 to 1 of the letterbox's), which the expansion carries on from when the
+film for a cutscene ends */
+void halo_stereo_set_title_bars(float bars);
 /* the film's title bars (cinematics.c, halo_cinematic_title_bars) a frame
 of seconds on from bars: none while the script fade shows (fade, its
 intensity, above 0), else toward limit at the letterbox's rate (one amount a
 second) and never above it. limit is 1 while a title is up and fading in or
 holding, the title's own fade while it fades out, 0 with none */
 float halo_stereo_title_bars_ease(float bars, float limit, float fade, float seconds);
+/* HEAD mode's cutscene window (halo_stereo_window.h): 1 while the film's
+rectangle is expanding out to the full view after a cutscene's film, with
+its progress (0 on the first full-view frame, toward 1 over
+HALO_STEREO_EXPANSION_SECONDS) and the bars it still carries; 0 otherwise */
+int halo_stereo_expansion(float *progress, float *bars);
+/* the side-by-side view's model of what HEAD mode's presenter shows for an
+eye, for its debug screenshot (d3d8_device.c, "-window"): the theater's
+default screen 4 m ahead of the eye's fixed frustum */
+struct halo_stereo_window_model
+{
+	int kind;                  /* 0: nothing to model; 1: the film on its screen; 2: the expansion */
+	float tangents[4];         /* the eye's full view: left, right, up, down */
+	float screen[4];           /* the screen as the eye sees it, in tangents: left, right, down, up */
+	float window[4];           /* the expansion's window (halo_stereo_window.h): left, right, down, up */
+	float bars;                /* the bars the expansion still carries */
+};
+int halo_stereo_side_by_side_window(int eye, struct halo_stereo_window_model *model);
 /* debug.gpu_stats's cutscene line (stereo.c): what decides the film */
 struct halo_cutscene_state
 {

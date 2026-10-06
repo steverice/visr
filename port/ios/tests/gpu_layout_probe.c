@@ -76,6 +76,9 @@ int main(void)
 	FIELD(gpu_stereo_present, hud_group_extent);
 	FIELD(gpu_stereo_present, ui);
 	FIELD(gpu_stereo_present, ui_dim);
+	FIELD(gpu_stereo_present, expanding);
+	FIELD(gpu_stereo_present, expansion);
+	FIELD(gpu_stereo_present, expansion_bars);
 	/* host_stereo_frame's (guest_host.h) */
 	SIZE(halo_stereo_eye);
 	FIELD(halo_stereo_eye, left);

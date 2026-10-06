@@ -35,6 +35,7 @@ frame, plus the body's own. */
 #include "halo_stereo.h"
 #include "host_stereo_head.h"
 #include "host_stereo_vignette.h"
+#include "halo_stereo_window.h"
 
 /* the eye shader's vignette mask, as C */
 HOST_STEREO_VIGNETTE_SOURCE
@@ -48,6 +49,9 @@ static char last_log[256];
 /* the film's settings, and what the game shows: the letterbox, a scripted
 camera */
 static double setting_film_depth_share = 0.25, setting_film_convergence = 1.75;
+/* display.stereo, and the window's drawable size (the side-by-side view's) */
+static const char *setting_stereo = "head";
+static int probe_drawable[2];
 static int game_letterbox, game_scripted_camera, game_third_person;
 /* the cutscene's camera: first person (the director's or a scripted one in
 first-person mode), the look taken away in it, and whether the camera has
@@ -58,7 +62,7 @@ static int game_first_person, game_look_disabled, game_settled = 1;
 const char *config_string(const char *name)
 {
 	if (!strcmp(name, "display.stereo"))
-		return "head";
+		return setting_stereo;
 	if (!strcmp(name, "input.turn"))
 		return setting_turn;
 	if (!strcmp(name, "display.screen_framing"))
@@ -84,7 +88,7 @@ double config_real(const char *name)
 	return setting_snap_angle;
 }
 int config_boolean(const char *name) { return !strcmp(name, "input.comfort_vignette") && setting_comfort_vignette; }
-void platform_video_drawable_size(int *width, int *height) { *width = *height = 0; }
+void platform_video_drawable_size(int *width, int *height) { *width = probe_drawable[0]; *height = probe_drawable[1]; }
 void platform_log(const char *format, ...)
 {
 	va_list arguments;
@@ -1356,6 +1360,86 @@ static void cutscene_end(void)
 		cutscene_frame();
 }
 
+/* after the hold, the film's rectangle expands out to the full view at the
+bars' rate, carrying the film's bars */
+static void cutscene_expansion(void)
+{
+	int frame, held, passed, expanding;
+	float progress = 0.0f, bars = 0.0f, last_progress = -1.0f, worst_step = 0.0f, worst_bars = 0.0f;
+
+	printf("the cutscene window's expansion:\n");
+	restart("snap", 30.0, 120.0, 0);
+	game_first_person = 0;
+	game_letterbox = 1;
+	game_settled = 1;
+	cutscene_frame();
+	halo_stereo_set_title_bars(0.4f);
+	game_letterbox = 0;
+	game_settled = 0;
+	for (held = 0; held < 20 && halo_stereo_film(); held++) {
+		cutscene_frame();
+		halo_stereo_set_title_bars(0.4f);
+	}
+	game_settled = 1;
+	cutscene_frame();
+	expanding = halo_stereo_expansion(&progress, &bars);
+	printf("  the first full-view frame: expanding %d, progress %.4f, bars %.4f\n", expanding, progress, bars);
+	check(immersive() && expanding && progress == 0.0f && fabsf(bars - 0.4f) < 1e-6f,
+		"the film's rectangle starts to expand, carrying the film's bars");
+	passed = 1;
+	for (frame = 1; frame < 40 && halo_stereo_expansion(&progress, &bars); frame++) {
+		last_progress = progress;
+		cutscene_frame();
+		if (!halo_stereo_expansion(&progress, &bars))
+			break;
+		worst_step = fmaxf(worst_step, fabsf(progress - last_progress - 1.0f / 30.0f));
+		worst_bars = fmaxf(worst_bars, fabsf(bars - fmaxf(0.0f, 0.4f - progress)));
+		passed &= immersive();
+	}
+	printf("  expanded over %d frames; its progress %.2e from a thirtieth a frame at worst, the bars %.2e from "
+		"0.4 less a second's rate\n", frame, worst_step, worst_bars);
+	check(passed && frame == 30 && worst_step < 1e-4f && worst_bars < 1e-4f,
+		"over a second, linear, the bars going on out at one a second, immersive throughout");
+	cutscene_frame();
+	check(!halo_stereo_expansion(&progress, &bars) && immersive(), "then the plain full view");
+
+	/* a camera that never reaches the eyes: no expansion */
+	game_letterbox = 1;
+	cutscene_frame();
+	game_letterbox = 0;
+	game_settled = 0;
+	frames_to_full_view(200);
+	check(!halo_stereo_expansion(&progress, &bars), "a film that gave up on the camera cuts, with no expansion");
+	game_settled = 1;
+	for (frame = 0; frame < 40; frame++)
+		cutscene_frame();
+
+	/* the film coming back stops it */
+	game_letterbox = 1;
+	cutscene_frame();
+	game_letterbox = 0;
+	frames_to_full_view(4 * FILM_HOLD_FRAMES);
+	cutscene_frame();
+	game_letterbox = 1;
+	cutscene_frame();
+	check(on_film() && !halo_stereo_expansion(&progress, &bars), "a new cutscene during it stops the expansion");
+	game_letterbox = 0;
+	frames_to_full_view(4 * FILM_HOLD_FRAMES);
+	for (frame = 0; frame < 40; frame++)
+		cutscene_frame();
+
+	/* a vehicle's film (display.stereo_vehicle_screen) cuts, as before */
+	vehicle_screen = 1;
+	game_third_person = 1;
+	cutscene_frame();
+	game_third_person = 0;
+	frames_to_full_view(4 * FILM_HOLD_FRAMES);
+	check(!halo_stereo_expansion(&progress, &bars), "a vehicle's film doesn't expand");
+	vehicle_screen = 0;
+	for (frame = 0; frame < 40; frame++)
+		cutscene_frame();
+}
+
 /* the title bars: out while the script fade shows, in at one a second,
 out with the title's fade */
 static void title_bars(void)
@@ -1378,6 +1462,91 @@ static void title_bars(void)
 	check(fabsf(bars - 0.3f) < 1e-6f, "following the title's fade-out");
 	bars = halo_stereo_title_bars_ease(bars, 0.0f, 0.0f, 1.0f / 30.0f);
 	check(bars == 0.0f, "out with it");
+}
+
+/* the window's geometry (halo_stereo_window.h) and the side-by-side model */
+static void expansion_window(void)
+{
+	const float eye[3] = { -0.032f, 0.05f, 4.0f }, half_width = 2.309f, half_height = 2.309f * 9.0f / 16.0f;
+	const float identity[3][3] = { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } };
+	const float tangents[4] = { 1.2f, 0.9f, 1.0f, 1.1f };
+	float start[4], end[4], window[4], last[4], misfit = 0.0f;
+	struct halo_stereo_window_model model;
+	int k, inside, outside;
+
+	printf("the cutscene window:\n");
+	check(halo_stereo_screen_window(eye, half_width, half_height, start), "an eye in front of the screen");
+	/* points on the screen's plane just inside and just outside its edges */
+	inside = outside = 0;
+	for (k = 0; k < 400; k++) {
+		float u = -1.2f + 2.4f * (k % 20) / 19.0f, v = -1.2f + 2.4f * (k / 20) / 19.0f;
+		float point[3] = { u * half_width, v * half_height, 0.0f };
+		float d[3] = { point[0] - eye[0], point[1] - eye[1], point[2] - eye[2] };
+		int on_screen = fabsf(u) <= 1.0f && fabsf(v) <= 1.0f;
+		int in_window = halo_stereo_window_test(d[0], d[1], d[2], start[0], start[1], start[2], start[3], 0.0f) != 0;
+
+		inside += on_screen && in_window;
+		outside += !on_screen && !in_window;
+		misfit += on_screen != in_window;
+	}
+	printf("  the start window against the screen's quad: %d in, %d out, %.0f misfits\n", inside, outside, misfit);
+	check(misfit == 0.0f, "the window begins as the screen exactly, from an eye off its axis");
+	halo_stereo_window_empty(end);
+	halo_stereo_window_include_view(end, tangents, identity);
+	check(end[0] < -atanf(1.2f) && end[1] > atanf(0.9f) && end[2] < -atanf(1.1f) && end[3] > atanf(1.0f),
+		"the end window covers the view");
+	halo_stereo_window_at(start, end, 0.0f, NULL, window);
+	check(!memcmp(window, start, sizeof(window)), "progress 0: the screen");
+	halo_stereo_window_at(start, end, 0.5f, NULL, window);
+	check(fabsf(window[1] - 0.5f * (start[1] + end[1])) < 1e-6f, "progress 0.5: half way, linear");
+	halo_stereo_window_at(start, end, 1.0f, NULL, window);
+	check(!memcmp(window, end, sizeof(window)), "progress 1: the end");
+	memcpy(last, end, sizeof(last));
+	halo_stereo_window_at(start, end, 0.2f, last, window);
+	check(!memcmp(window, end, sizeof(window)), "never smaller than the last frame's");
+	{
+		const float turned[3][3] = { { 0, 0, 1 }, { 0, 1, 0 }, { -1, 0, 0 } };
+
+		halo_stereo_window_empty(end);
+		halo_stereo_window_include_view(end, tangents, turned);
+		check(end[0] <= -3.14f && end[1] >= 3.14f, "a view turned from the screen: the end is everything");
+	}
+	check(halo_stereo_window_test(0.0f, 0.99f * tanf(start[3]) * 4.0f, -4.0f, start[0], start[1], start[2], start[3],
+		0.5f) == 2 && halo_stereo_window_test(0.0f, 0.0f, -4.0f, start[0], start[1], start[2], start[3], 0.5f) == 1,
+		"the bars sit at the window's top and bottom");
+
+	/* the side-by-side view's model: the film on the theater's default
+	screen (60 degrees across, 4 m ahead), then the expansion from it */
+	setting_stereo = "side_by_side";
+	probe_drawable[0] = 1920;
+	probe_drawable[1] = 1080;
+	restart("snap", 30.0, 120.0, 0);
+	game_letterbox = 1;
+	cutscene_frame();
+	k = halo_stereo_side_by_side_window(0, &model);
+	printf("  side by side, the film: kind %d, the screen's tangents %.4f %.4f %.4f %.4f, the eye's %.2f %.2f %.2f %.2f\n",
+		k, model.screen[0], model.screen[1], model.screen[2], model.screen[3], model.tangents[0], model.tangents[1],
+		model.tangents[2], model.tangents[3]);
+	check(k == 1 && model.kind == 1 && fabsf(model.screen[1] - model.screen[0] - 2.0f * 2.309f / 4.0f) < 1e-3f &&
+		fabsf((model.screen[3] - model.screen[2]) * 16.0f / 9.0f - 2.0f * 2.309f / 4.0f) < 1e-3f &&
+		model.screen[0] + model.screen[1] > 0.0f && model.tangents[0] == SIDE_BY_SIDE_TANGENT,
+		"the film: the default screen as the left eye sees it, a little to its right");
+	game_letterbox = 0;
+	frames_to_full_view(4 * FILM_HOLD_FRAMES);
+	k = halo_stereo_side_by_side_window(0, &model);
+	check(k == 2 && fabsf(model.window[0] - atanf(model.screen[0])) < 1e-5f &&
+		fabsf(model.window[3] - atanf(model.screen[3])) < 1e-5f, "the expansion begins at the film's screen");
+	for (k = 0; k < 15; k++)
+		cutscene_frame();
+	halo_stereo_side_by_side_window(0, &model);
+	check(model.kind == 2 && model.window[1] > atanf(model.screen[1]) && model.window[1] < atanf(0.8f) + 0.06f,
+		"half way, between the screen and the view's edge");
+	for (k = 0; k < 15; k++)
+		cutscene_frame();
+	check(halo_stereo_side_by_side_window(0, &model) == 0, "after a second, nothing to model: the full view");
+	setting_stereo = "head";
+	probe_drawable[0] = probe_drawable[1] = 0;
+	restart("snap", 30.0, 120.0, 0);
 }
 
 int main(void)
@@ -1403,7 +1572,9 @@ int main(void)
 	first_person_cutscenes();
 	look_disabled();
 	cutscene_end();
+	cutscene_expansion();
 	title_bars();
+	expansion_window();
 	if (failures)
 	{
 		printf("stereo head probe: %d failed\n", failures);

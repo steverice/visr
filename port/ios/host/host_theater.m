@@ -710,6 +710,20 @@ static simd_float4 fade_tint(const float *fade, uint32_t decode_srgb, BOOL over_
 	return (simd_float4){ color.x * intensity, color.y * intensity, color.z * intensity, intensity };
 }
 
+simd_float4 host_theater_fade_tint(const float fade[4], uint32_t decode_srgb)
+{
+	simd_float4 tint = fade_tint(fade, decode_srgb, environment_dark);
+
+	if (environment_dark && tint.w > 0.0f)
+		tint.w = 1.0f;
+	return tint;
+}
+
+float host_theater_fade_depth(simd_float4x4 projection)
+{
+	return fade_depth(projection, screen_distance + FADE_BEYOND_SCREEN);
+}
+
 /* the pictures on the screen for the open frame (or the next one): view 0's
 the left one, the others the right; the HUD, if any, over each; the script
 fade, if any (RGB and intensity), around the screen; the pictures at a
