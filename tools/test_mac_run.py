@@ -424,6 +424,7 @@ def native(tmp_path, monkeypatch):
     monkeypatch.setattr(mac_run, "native_pids", lambda app: [])
     monkeypatch.setenv("HALO_NATIVE_DATA", str(tmp_path / "data"))
     (tmp_path / "data/maps").mkdir(parents=True)
+    (tmp_path / "data/seeded").write_text("seeded by the test fixture\n")
     return make_native_app(tmp_path, "org.example.mac")
 
 
@@ -519,6 +520,7 @@ def test_native_run_rewrites_config_each_run(tmp_path, monkeypatch, native):
 def seeding(monkeypatch, tmp_path):
     """an empty data folder, extracted maps to seed it from, and cp -c -R done by copytree"""
     shutil.rmtree(tmp_path / "data/maps")
+    (tmp_path / "data/seeded").unlink()
     maps = tmp_path / "extracted/maps"
     maps.mkdir(parents=True)
     (maps / "a10.map").write_text("map")
@@ -537,6 +539,7 @@ def test_native_run_seeds_a_new_data_folder_once_with_throwaway_a10_and_menu_run
     assert launches[0]["out"] == tmp_path / "out-seed"
     assert launches[1]["out"] == tmp_path / "out-seed-menu"
     assert launches[2]["out"] == tmp_path / "out"
+    assert (tmp_path / "data/seeded").read_text().strip()
     assert "exit_after = 20.0" in launches[1]["config"]
     assert "fixed_timestep = true" in launches[1]["config"]
     assert "screenshot_every = 0" in launches[1]["config"]
@@ -583,6 +586,7 @@ def test_a_failed_menu_seed_run_leaves_the_folder_unseeded(tmp_path, monkeypatch
 
 def test_native_run_without_maps_says_how_to_seed(tmp_path, monkeypatch, native):
     shutil.rmtree(tmp_path / "data/maps")
+    (tmp_path / "data/seeded").unlink()
     monkeypatch.setattr(mac_run, "launch_native", fake_launches([]))
     with pytest.raises(SystemExit, match="--maps"):
         mac_run.run_native(native_args(tmp_path, native))
@@ -598,6 +602,54 @@ def test_a_throwaway_run_that_open_could_not_start_leaves_the_folder_unseeded(tm
         mac_run.run_native(native_args(tmp_path, native, maps=maps))
     assert not (tmp_path / "data/maps").exists()
     assert (tmp_path / "data/maps.partial/a10.map").is_file()
+
+
+def test_a_fresh_folder_gets_the_marker_only_after_both_throwaway_runs(tmp_path, monkeypatch, native):
+    maps = seeding(monkeypatch, tmp_path)
+    seen = []
+    good = fake_launches([])
+
+    def launch(app, data, out, environment, limit):
+        seen.append((out.name, (data / "seeded").exists()))
+        return good(app, data, out, environment, limit)
+    monkeypatch.setattr(mac_run, "launch_native", launch)
+    mac_run.run_native(native_args(tmp_path, native, maps=maps))
+    assert seen == [("out-seed", False), ("out-seed-menu", False), ("out", True)]
+
+
+def test_a_folder_with_maps_and_no_marker_plays_the_throwaway_runs_without_cloning(tmp_path, monkeypatch, native):
+    (tmp_path / "data/seeded").unlink()
+    (tmp_path / "data/maps/mine.map").write_text("made elsewhere")
+
+    def no_clone(*command, **options):
+        raise AssertionError("cloned into a folder that already has maps")
+    monkeypatch.setattr(mac_run, "run_command", no_clone)
+    launches = []
+    monkeypatch.setattr(mac_run, "launch_native", fake_launches(launches))
+    mac_run.run_native(native_args(tmp_path, native))    # no --maps
+    assert [launch["init"] for launch in launches] == ["map_name a10\n", "", ""]
+    assert launches[0]["out"] == tmp_path / "out-seed"
+    assert launches[1]["out"] == tmp_path / "out-seed-menu"
+    assert (tmp_path / "data/seeded").is_file()
+    assert (tmp_path / "data/maps/mine.map").read_text() == "made elsewhere"
+
+
+def test_a_folder_with_the_marker_is_not_seeded_again(tmp_path, monkeypatch, native):
+    launches = []
+    monkeypatch.setattr(mac_run, "launch_native", fake_launches(launches))
+    mac_run.run_native(native_args(tmp_path, native))
+    assert [launch["out"] for launch in launches] == [tmp_path / "out"]
+
+
+def test_a_failed_throwaway_run_leaves_existing_maps_alone_and_writes_no_marker(tmp_path, monkeypatch, native):
+    (tmp_path / "data/seeded").unlink()
+    (tmp_path / "data/maps/mine.map").write_text("made elsewhere")
+    monkeypatch.setattr(mac_run, "launch_native", fake_launches([], exit_line="halo-ios: FATAL: no maps"))
+    with pytest.raises(SystemExit, match="throwaway a10 run"):
+        mac_run.run_native(native_args(tmp_path, native))
+    assert (tmp_path / "data/maps/mine.map").read_text() == "made elsewhere"
+    assert not (tmp_path / "data/maps.partial").exists()
+    assert not (tmp_path / "data/seeded").exists()
 
 
 SHA = "ab" * 32
