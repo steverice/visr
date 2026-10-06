@@ -22,7 +22,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 IOS = ROOT / "port/ios"
-DEFAULT_CONCEPT = "reticle"
+DEFAULT_CONCEPT = "visor-helmet-gold"
 
 CYAN = "#3fd8ff"
 ICE = "#e9fbff"
