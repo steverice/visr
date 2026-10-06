@@ -1339,7 +1339,10 @@ struct metal_attribute_table
 	float constants[GPU_ATTRIBUTE_COUNT][4];
 };
 
-/* what a pipeline is made of besides the shaders' text */
+/* what a pipeline is made of besides the shaders' text. Every descriptor
+field draw_pipeline sets must be in it (a sample count for anti-aliasing,
+say): the caches return a pipeline for an equal key, and nothing checks the
+descriptor against the target it draws to. */
 struct pipeline_key
 {
 	gpu_shader vertex_shader, pixel_shader;
@@ -1393,6 +1396,9 @@ static unsigned long front_cache_index(const void *key, size_t length)
 	}
 	for (; index < length; index++)
 		hash = (hash ^ bytes[index]) * 16777619u;
+	/* the multiplies carry a difference only upward, so one in the last
+	word's top byte (attribute kind 15) reaches only bits 24-31: fold those
+	down into the 8 bits the index keeps */
 	hash ^= hash >> 16;
 	return (hash ^ (hash >> 8)) & (FRONT_CACHE_ENTRIES - 1);
 }

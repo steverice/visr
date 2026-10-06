@@ -65,7 +65,9 @@ n): 0 for a constant attribute, else its GPU_ATTRIBUTE_* format. The Metal
 backend specializes each pipeline's vertex function with the kinds of the
 draws that use it (pipeline_key), so the compiler folds the format switch
 away; without them (the shader replays, xcrun metal) the kind is read from
-the table per draw, as before. Both read the same bytes the same way. */
+the table per draw, as before. Both read the same bytes the same way.
+Function constant indices 0-15 are the attribute kinds; any other constant a
+vertex shader takes must start at 16. */
 static const char msl_vertex_fetch[] =
 	"struct AttributeEntry\n"
 	"{\n"
