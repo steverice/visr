@@ -89,6 +89,13 @@ def main():
         ('port/third_party/kcp/LICENSE', 'kcp.txt'),
         ('port/third_party/extract-xiso/LICENSE.TXT', 'extract-xiso.txt'),
         ('port/third_party/tomlc17/LICENSE', 'tomlc17.txt'),
+        ('port/third_party/stb/LICENSE', 'stb_truetype.txt'),
+        ('port/third_party/expat/COPYING', 'expat.txt'),
+        ('port/third_party/monocypher/LICENCE.md', 'Monocypher.txt'),
+        ('port/third_party/zlib/LICENSE', 'zlib.txt'),
+        ('port/assets/fonts/Overpass-OFL.txt', 'Overpass-OFL.txt'),
+        ('port/assets/fonts/OpenCE-OFL.txt', 'OpenCE-OFL.txt'),
+        ('port/assets/fonts/Newtown-LICENSE.txt', 'Newtown.txt'),
     ):
         shutil.copyfile(ROOT/source, notices/name)
     if args.mac:
