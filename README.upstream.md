@@ -1,5 +1,7 @@
 > Historical upstream README at `16514a13`. Android build files are removed
 > from this iOS branch; those instructions apply to the upstream repository.
+> Its agent quick references are dropped, because the docs they linked are
+> removed from this tree.
 
 Halo 1 xbox decomp, ported to Linux, Windows and Android
 =============
@@ -9,14 +11,6 @@ This is a port of the decompilation of Halo: Combat Evolved build 2342 (`cachebe
 <img width="1289" height="995" alt="image" src="https://github.com/user-attachments/assets/0d3ad50f-f8b8-46cf-aef8-e3661da2a7d7" />
 
 This is based on [bnunu](https://github.com/bnunu/halo)'s decompilation project, which itself is a fork of [punpckhdq/halo](https://github.com/punpckhdq/halo).
-
-## Agent quick references
-
-- [Current campaign house rules and batch/treemap cadence](docs/campaign_house_rules.md)
-- [Common constants, types, float patterns, tag IDs, and flag conventions](docs/common_constants.md)
-- [Shared assertion macros and byte-matching examples](docs/assertions.md)
-- [Supplied CE source maps, recovered names, and next reconstruction packets](docs/user_source_reconstruction_map_20260906.md)
-- [Matching methodology and source-credibility rules](docs/matching_methodology.md)
 
 ## Build instructions
 
