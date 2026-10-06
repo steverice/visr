@@ -28,7 +28,7 @@ void host_log(int priority,const char *text) { host_logf(priority,"%s",text); }
 void host_fatal(const char *format,...) {
     va_list ap;va_start(ap,format);char text[1024];vsnprintf(text,sizeof(text),format,ap);va_end(ap);
     host_logf(HOST_LOG_ERROR,"FATAL: %s",text);
-    if(!getenv("HALO_RUNNER"))SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,"Halo",text,NULL);exit(1);
+    if(!getenv("HALO_RUNNER"))SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,"VISR",text,NULL);exit(1);
 }
 void host_abort(const char *reason) { host_logf(HOST_LOG_ERROR,"guest abort: %s",reason);abort(); }
 void host_exit(int code) {host_logf(HOST_LOG_INFO,"game exit %d",code);exit(code);}

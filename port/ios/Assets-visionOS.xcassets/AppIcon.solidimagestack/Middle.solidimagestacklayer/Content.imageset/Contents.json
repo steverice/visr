@@ -1,9 +1,9 @@
 {
   "images": [
     {
-      "filename": "Content@1x.png",
-      "idiom": "tv",
-      "scale": "1x"
+      "filename": "Middle.png",
+      "idiom": "vision",
+      "scale": "2x"
     }
   ],
   "info": {
