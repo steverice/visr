@@ -59,7 +59,8 @@ the HUD's quads (host_stereo_hud_inset). While expanding (a cutscene's
 film handing over to the full view, halo_stereo_window.h) the eyes show only
 inside the window growing from the theater screen's rectangle at expansion
 (0 to 1), black on the bars it carries (expansion_bars), with the theater's
-surroundings and the script fade's tint (fade) outside it and no HUD */
+surroundings and the script fade's tint (fade) outside it, and of the HUD
+only a menu's UI quad */
 void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLTexture> right,
 	id<MTLTexture> left_depth, id<MTLTexture> right_depth, __unsafe_unretained id<MTLTexture> const *hud_layers,
 	const float (*hud_group_extent)[4], float hud_aspect, int hud_ui, const float reticle[3],

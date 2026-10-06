@@ -146,4 +146,30 @@ static inline float halo_stereo_expansion_bars(float bars, float elapsed)
 	return now > 0.0f ? now : 0.0f;
 }
 
+/* The presenter's memory of an expansion (host_stereo.m), which keeps each
+view's window from shrinking: whether the last frame it drew expanded, that
+frame's progress, and each view's window then. Frames that don't reach the
+full view's presenter (the film, a menu, no space) never update it, so an
+expansion begins afresh at progress 0 (the guest reports its first frame at
+exactly 0) or when the progress goes back, whatever it last saw */
+#define HALO_STEREO_EXPANSION_VIEWS 4
+struct halo_stereo_expansion_memory
+{
+	int on;
+	float progress;
+	float window[HALO_STEREO_EXPANSION_VIEWS][4];
+};
+
+/* once each frame the full view's presenter draws: 1 if this frame begins
+an expansion (there is no last window to keep), else 0 */
+static inline int halo_stereo_expansion_fresh(struct halo_stereo_expansion_memory *memory, int expanding,
+	float progress)
+{
+	int fresh = expanding && (!memory->on || progress <= 0.0f || progress < memory->progress);
+
+	memory->on = expanding;
+	memory->progress = expanding ? progress : 0.0f;
+	return fresh;
+}
+
 #endif

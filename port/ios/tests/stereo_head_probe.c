@@ -1549,6 +1549,33 @@ static void expansion_window(void)
 	restart("snap", 30.0, 120.0, 0);
 }
 
+/* the presenter's memory of an expansion (halo_stereo_window.h), across an
+interruption it never sees */
+static void expansion_memory(void)
+{
+	struct halo_stereo_expansion_memory memory;
+	int fresh[7];
+
+	printf("the presenter's memory of an expansion:\n");
+	memset(&memory, 0, sizeof(memory));
+	fresh[0] = halo_stereo_expansion_fresh(&memory, 1, 0.0f);
+	fresh[1] = halo_stereo_expansion_fresh(&memory, 1, 0.3f);
+	fresh[2] = halo_stereo_expansion_fresh(&memory, 1, 0.6f);
+	/* a new cutscene, its film never reaching this presenter; the next
+	expansion's first frame */
+	fresh[3] = halo_stereo_expansion_fresh(&memory, 1, 0.0f);
+	fresh[4] = halo_stereo_expansion_fresh(&memory, 1, 0.5f);
+	/* interrupted again, and the next expansion's first frame missed (no
+	space that frame) */
+	fresh[5] = halo_stereo_expansion_fresh(&memory, 1, 1.0f / 30.0f);
+	halo_stereo_expansion_fresh(&memory, 0, 0.0f);
+	fresh[6] = halo_stereo_expansion_fresh(&memory, 1, 0.2f);
+	check(fresh[0] && !fresh[1] && !fresh[2], "an expansion is fresh on its first frame only");
+	check(fresh[3] && !fresh[4], "an expansion interrupted unseen: the next begins afresh, not at the old window");
+	check(fresh[5], "a first frame missed: the progress going back begins afresh");
+	check(fresh[6], "after a frame without one: afresh");
+}
+
 int main(void)
 {
 	pole_crossing();
@@ -1575,6 +1602,7 @@ int main(void)
 	cutscene_expansion();
 	title_bars();
 	expansion_window();
+	expansion_memory();
 	if (failures)
 	{
 		printf("stereo head probe: %d failed\n", failures);

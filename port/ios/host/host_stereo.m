@@ -1176,12 +1176,9 @@ static void hud_draw(id<MTLRenderCommandEncoder> encoder, __unsafe_unretained id
 #endif
 
 #if TARGET_OS_VISION
-/* the cutscene window's expansion: each view's window on its last frame
-(halo_stereo_window_at keeps it from shrinking), and whether the last
-frame expanded */
-#define EXPANSION_VIEWS 4
-static float expansion_last[EXPANSION_VIEWS][4];
-static int expansion_last_on;
+/* the cutscene window's expansion: each view's window on the last frame
+drawn here (halo_stereo_window_at keeps it from shrinking) */
+static struct halo_stereo_expansion_memory expansion_memory;
 
 /* a matrix's rotation as rows, for halo_stereo_window_include_view */
 static void rotation_rows(simd_float4x4 matrix, float rows[3][3])
@@ -1200,9 +1197,8 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 {
 	id<MTLTexture> hud = hud_layers[HOST_STEREO_HUD_LAYER_HUD];
 	/* the HUD's pieces need its layer or the UI's (a pause can leave the
-	HUD undrawn); while the cutscene window expands they wait for it to
-	cover the view, since they would hang over the room outside it */
-	int hud_shown = !expanding && (hud || hud_layers[HOST_STEREO_HUD_LAYER_UI]);
+	HUD undrawn) */
+	int hud_shown = hud || hud_layers[HOST_STEREO_HUD_LAYER_UI];
 
 #if TARGET_OS_VISION
 	if (@available(visionOS 26.0, *))
@@ -1215,6 +1211,20 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 		struct host_stereo_hud_quad quads[HOST_STEREO_HUD_MAXIMUM_QUADS];
 		int quad_count = hud_shown ? host_stereo_hud_layout(layout_width, hud_ui, reticle, hud_tangents,
 			hud_group_extent, quads) : 0;
+		/* while the cutscene window expands, the HUD's pieces and the
+		crosshairs wait for it to cover the view (they would hang over the
+		room outside it); a menu's UI quad shows, as the eyes darken for it */
+		if (expanding)
+		{
+			int kept = 0;
+
+			for (int quad = 0; quad < quad_count; quad++)
+				if (quads[quad].layer == HOST_STEREO_HUD_LAYER_UI)
+					quads[kept++] = quads[quad];
+			quad_count = kept;
+		}
+		/* whether this frame begins an expansion: no last window to keep */
+		int expansion_fresh = halo_stereo_expansion_fresh(&expansion_memory, expanding, expansion);
 		/* the widgets' dim (the guest's ui_dim) darkens the eyes as it does
 		the game's picture in mono, where it multiplies the gamma-encoded
 		color: about the 2.2 power of that in linear light */
@@ -1343,14 +1353,14 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 					const float eye_position[3] = { screen_from_view.columns[3].x, screen_from_view.columns[3].y,
 						screen_from_view.columns[3].z };
 					float start[4], window[4];
-					int fresh = !expansion_last_on || view_index >= EXPANSION_VIEWS;
+					int fresh = expansion_fresh || view_index >= HALO_STEREO_EXPANSION_VIEWS;
 
 					halo_stereo_screen_window(eye_position, screen_half.x, screen_half.y, start);
-					halo_stereo_window_at(start, expansion_end, expansion, fresh ? NULL : expansion_last[view_index],
-						window);
-					if (view_index < EXPANSION_VIEWS)
-						memcpy(expansion_last[view_index], window, sizeof(window));
-					if (!expansion_last_on && view_index == 0)
+					halo_stereo_window_at(start, expansion_end, expansion,
+						fresh ? NULL : expansion_memory.window[view_index], window);
+					if (view_index < HALO_STEREO_EXPANSION_VIEWS)
+						memcpy(expansion_memory.window[view_index], window, sizeof(window));
+					if (expansion_fresh && index == 0 && view_index == 0)
 						host_logf(HOST_LOG_INFO, "stereo: the cutscene window expands: view 0 from %.1f..%.1f by "
 							"%.1f..%.1f degrees (the screen) toward %.1f..%.1f by %.1f..%.1f, its bars at %.2f",
 							start[0] * 57.29578f, start[1] * 57.29578f, start[2] * 57.29578f, start[3] * 57.29578f,
@@ -1438,9 +1448,6 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 			gpu_metal_count_gpu_time(commands);
 			[commands commit];
 		}
-		if (expansion_last_on && !expanding)
-			host_logf(HOST_LOG_INFO, "stereo: the cutscene window covers the view");
-		expansion_last_on = expanding;
 		host_theater_frame_end();
 	}
 #else
