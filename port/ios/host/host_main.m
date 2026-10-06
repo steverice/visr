@@ -4,6 +4,7 @@
 #include "ios_host.h"
 #include "guest_image.h"
 #include "host_display_pin.h"
+#include "host_join_link.h"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 #include <errno.h>
@@ -75,6 +76,9 @@ int main(int argc,char **argv) {
         host_logf(HOST_LOG_INFO,"Halo iOS native guest starting");
         /* names the exact game image a result folder came from (tools/mac_run.py compare-inputs) */
         host_logf(HOST_LOG_INFO,"guest image sha256 %s",HALO_GUEST_SHA256);
+        /* halo://join links (host_join_link.c): before the import screen can spin the run loop,
+           which is when SDL's scene delegate passes on the link the app was launched with */
+        host_join_link_install(data_root);
 #if TARGET_OS_VISION
         /* Closing the window is how a visionOS app is left, and an app reopened
            into a new scene would have no game window: quit (the game saves at

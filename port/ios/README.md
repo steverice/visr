@@ -190,7 +190,17 @@ orientation lock for the full-screen scene; portrait is excluded from the
 app's orientation masks. iPadOS controls windowed multitasking and may
 letterbox the landscape app when a full-screen orientation lock is unavailable.
 Internet invite hosting and clipboard joining default to off on iOS. Local/network multiplayer is
-not yet validated. Bink intro videos remain unsupported by the upstream port.
+not yet validated.
+
+With internet play on (`network.online = true` in `config.toml`), opening a
+`halo://join/...` invite link, from Discord, Messages or Safari, opens the app and
+joins the invite, as pasting it into Join Game > Direct Link does. The app
+registers the `halo` URL scheme on iPhone, iPad, Apple Vision Pro, Apple TV and
+the Mac. The link is taken in any state of the game: internet play reaches the
+invite's host in the background, and the host's game then appears in Direct
+Link's list. A link that opens the app cold waits until internet play starts.
+Only a join link's 64 hex digits are used; any other `halo:` link is ignored
+with a line in `ios-runtime.log`, as is a link while internet play is off. Bink intro videos remain unsupported by the upstream port.
 
 ## How the port works
 
