@@ -69,7 +69,7 @@ The cache validator accepts these exact Xbox v5 cache builds on iOS:
 ### Import on the device
 
 1. Sign/install the IPA with your own account, then open **VISR**.
-2. Tap **Choose Halo XISO** and select your `.iso` or `.xiso` in Files (On My
+2. Tap **Choose XISO** and select your `.iso` or `.xiso` in Files (On My
    iPhone/iPad, iCloud Drive, or another Files provider). Compressed ZIP/7z
    archives and PC/MCC disc images are not supported.
 3. The app validates the Xbox filesystem, cache version/build, and complete

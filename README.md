@@ -123,7 +123,7 @@ have guides. Keep the same bundle ID when you update, and your saves carry over.
 
 ## Playing
 
-1. Open **VISR** and tap **Choose Halo XISO**, then pick your disc image in
+1. Open **VISR** and tap **Choose XISO**, then pick your disc image in
    Files. You can also copy the image into the VISR folder in Files (or in
    Finder's Files tab for your device) and open the app.
 2. Wait for the import to finish. The game starts by itself, and from then on
