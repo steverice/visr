@@ -22,6 +22,7 @@ but never returns to its run loop, which would otherwise drain them.
 
 #include "gpu.h"
 #include "ios_host.h"
+#include "metal_state_cache.h"
 
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
@@ -79,14 +80,20 @@ Handles index tables of these; 0 is none. */
 {
 @public
 	id<MTLFunction> function;
+	/* a pixel shader's text, and its compilations with exact border colors
+	(exact_borders), compiled on first use: one for each EXACT_BORDERS mask,
+	nil until tried, and a bit per mask tried */
+	NSString *source;
+	id<MTLFunction> exact[16];
+	uint16_t exact_tried;
 }
 @end
 @implementation MetalShader
 @end
 
 /* a handle table: index 0 holds NSNull. objects owns the records; lookup
-mirrors them as plain pointers, so get: (once or more per draw) is an array
-read rather than messages to the array */
+mirrors them as plain pointers, which table_get reads: a draw looks up 20 or
+more handles, and each was a message and an autoreleased return before */
 @interface MetalTable : NSObject
 {
 @public
@@ -137,10 +144,6 @@ read rather than messages to the array */
 	[self mirror:handle object:object];
 	return (uint32_t)handle;
 }
-- (id)get:(uint32_t)handle
-{
-	return handle < lookup_capacity ? lookup[handle] : nil;
-}
 - (void)remove:(uint32_t)handle
 {
 	if (!handle || handle >= objects.count || objects[handle] == [NSNull null])
@@ -174,6 +177,10 @@ static BOOL visibility_wait;
 /* the open command buffer and render pass */
 static id<MTLCommandBuffer> commands;
 static id<MTLRenderCommandEncoder> encoder;
+/* what encoder holds, to skip calls that set it again (metal_state_cache.h;
+debug.metal_state_cache) */
+static struct metal_state_cache state_cache;
+_Static_assert(GPU_STAGE_COUNT == 4 && GPU_ATTRIBUTE_COUNT == 16, "metal_state_cache.h's slots");
 static gpu_texture pass_color, pass_depth;
 static unsigned long pass_commands;
 /* the open command buffer's serial; every earlier one has been committed */
@@ -267,14 +274,20 @@ struct transient
 
 static struct transient streams[FRAMES], snapshots[FRAMES];
 
-static MetalBuffer *buffer_record(gpu_buffer handle)
+/* a handle's record, or nil: an array read, inlined, with no message */
+static inline __attribute__((always_inline)) id table_get(MetalTable *table, uint32_t handle)
 {
-	return [buffers get:handle];
+	return handle < table->lookup_capacity ? table->lookup[handle] : nil;
 }
 
-static MetalTexture *texture_record(gpu_texture handle)
+static inline __attribute__((always_inline)) MetalBuffer *buffer_record(gpu_buffer handle)
 {
-	return [textures get:handle];
+	return table_get(buffers, handle);
+}
+
+static inline __attribute__((always_inline)) MetalTexture *texture_record(gpu_texture handle)
+{
+	return table_get(textures, handle);
 }
 
 /* room for size bytes at alignment in the current chunk, moving to the next
@@ -356,7 +369,12 @@ static id<MTLCommandBuffer> command_buffer(void)
 	{
 		MTLCommandBufferDescriptor *descriptor = [MTLCommandBufferDescriptor new];
 
-		descriptor.errorOptions = MTLCommandBufferErrorOptionEncoderExecutionStatus;
+		/* each encoder's execution status in a failed buffer's error, only
+		with debug.gl_debug: a debugging aid, for which the driver keeps
+		track of every encoder of every frame. A failure is logged either
+		way (commit). */
+		if (metal_debug)
+			descriptor.errorOptions = MTLCommandBufferErrorOptionEncoderExecutionStatus;
 		commands = [queue commandBufferWithDescriptor:descriptor];
 		if (metal_debug)
 			commands.label = [NSString stringWithFormat:@"frame %lu", frames];
@@ -370,6 +388,22 @@ static id<MTLTexture> pass_depth_texture;
 
 static void pass_attachment_traffic(id<MTLTexture> texture, MTLLoadAction load, MTLStoreAction store, double bytes_per_pixel);
 
+/* debug.gl_debug: one frame in every 600 has its render passes and blits
+listed, in the order the GPU runs them, and logged at its Present, so a GPU
+trace's encoders can be matched with their targets and load and store actions;
+nil in every other frame */
+static NSMutableString *pass_log;
+
+static const char *load_name(MTLLoadAction load)
+{
+	return load == MTLLoadActionLoad ? "load" : load == MTLLoadActionClear ? "clear" : "dontcare";
+}
+
+static const char *store_name(MTLStoreAction store)
+{
+	return store == MTLStoreActionStore ? "store" : store == MTLStoreActionDontCare ? "dontcare" : "unknown";
+}
+
 /* ends the open pass. The depth-stencil target is stored, unless the pass
 ends the frame (Present): nothing reads the screen's depth after it, and at
 the display's size it's tens of megabytes of writes a frame */
@@ -382,10 +416,15 @@ static void pass_finish(BOOL frame_end)
 		[encoder setDepthStoreAction:store];
 		[encoder setStencilStoreAction:store];
 		pass_attachment_traffic(pass_depth_texture, MTLLoadActionDontCare, store, 5.0);
+		if (pass_log)
+			[pass_log appendFormat:@"; depth-stencil %s", store_name(store)];
 	}
+	if (encoder && pass_log)
+		[pass_log appendFormat:@"; %lu draws and clears", pass_commands];
 	pass_depth_texture = nil;
 	[encoder endEncoding];
 	encoder = nil;
+	metal_state_reset(&state_cache);
 	visibility.entry_open = 0;
 	pass_color = pass_depth = 0;
 	pass_commands = 0;
@@ -737,6 +776,11 @@ static void gpu_metal_texture_copy_level(gpu_texture source, gpu_texture destina
 			return;
 		pass_end();
 		blit = [command_buffer() blitCommandEncoder];
+		if (metal_debug)
+			blit.label = @"copy level";
+		if (pass_log)
+			[pass_log appendFormat:@"\n  blit: copy %lux%lu of texture %u into level %u of texture %u", width, height, source,
+				level, destination];
 		[blit copyFromTexture:from->texture sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
 			sourceSize:MTLSizeMake(width, height, 1) toTexture:to->texture destinationSlice:0
 			destinationLevel:level destinationOrigin:MTLOriginMake(0, 0, 0)];
@@ -762,6 +806,11 @@ static void gpu_metal_texture_generate_mipmaps(gpu_texture texture, uint32_t bas
 			slices:NSMakeRange(0, 1)] : record->texture;
 		pass_end();
 		blit = [command_buffer() blitCommandEncoder];
+		if (metal_debug)
+			blit.label = @"mipmaps";
+		if (pass_log)
+			[pass_log appendFormat:@"\n  blit: mipmaps of texture %u (%lux%lu) from level %u, %lu levels", texture,
+				(unsigned long)record->texture.width, (unsigned long)record->texture.height, base_level, record->levels];
 		[blit generateMipmapsForTexture:levels];
 		[blit endEncoding];
 		use_texture(record);
@@ -821,7 +870,7 @@ static uint32_t gpu_metal_stream(uint32_t kind, const void *data, uint32_t size,
 {
 	@autoreleasepool
 	{
-		MetalBuffer *record;
+		__unsafe_unretained MetalBuffer *record;
 		uint32_t offset;
 
 		frame_begin();
@@ -836,7 +885,8 @@ static uint32_t gpu_metal_stream(uint32_t kind, const void *data, uint32_t size,
 
 /* ---------- shaders */
 
-static MTLCompileOptions *compile_options;
+/* vertex shaders' and pixel shaders' (gpu_metal_initialize) */
+static MTLCompileOptions *compile_options, *pixel_compile_options;
 
 /* the translators' MSL (nv2a_msl.c); 0 if it doesn't compile, which the front
 end counts as a draw skipped for its program, as under GL */
@@ -845,7 +895,9 @@ static gpu_shader gpu_metal_shader_create(uint32_t stage, const char *source)
 	@autoreleasepool
 	{
 		NSError *error = nil;
-		id<MTLLibrary> library = [device newLibraryWithSource:@(source) options:compile_options error:&error];
+		NSString *text = @(source);
+		id<MTLLibrary> library = [device newLibraryWithSource:text
+			options:stage == GPU_SHADER_VERTEX ? compile_options : pixel_compile_options error:&error];
 		MetalShader *record;
 
 		/* debug.gl_debug: the warnings of a shader that compiled */
@@ -865,8 +917,38 @@ static gpu_shader gpu_metal_shader_create(uint32_t stage, const char *source)
 			platform_log("the %s shader has no entry point", stage == GPU_SHADER_VERTEX ? "vertex" : "pixel");
 			return 0;
 		}
+		if (stage != GPU_SHADER_VERTEX)
+			record->source = text;
 		return [shaders add:record];
 	}
+}
+
+/* a pixel shader's function for a draw whose stages in exact (a mask of
+exact_borders) rebuild their border colors: the shader compiled again with
+EXACT_BORDERS on the first draw that asks for that mask. nil if it doesn't
+compile (logged once), and the draw then samples the plain way. */
+static id<MTLFunction> pixel_function(MetalShader *pixel, unsigned exact)
+{
+	if (!exact)
+		return pixel->function;
+	if (!(pixel->exact_tried & (1u << exact)) && pixel->source)
+	{
+		@autoreleasepool
+		{
+			NSError *error = nil;
+			NSString *text = [NSString stringWithFormat:@"#define EXACT_BORDERS %u\n%@", exact, pixel->source];
+			/* relaxed, as the plain variant (gpu_metal_initialize) */
+			id<MTLLibrary> library = [device newLibraryWithSource:text options:pixel_compile_options error:&error];
+
+			pixel->exact_tried |= 1u << exact;
+			if (library)
+				pixel->exact[exact] = [library newFunctionWithName:@"fragment_main"];
+			if (!pixel->exact[exact])
+				platform_log("cannot compile the pixel shader with exact border colors (stages %#x): %s", exact,
+					library ? "no entry point" : error.localizedDescription.UTF8String);
+		}
+	}
+	return pixel->exact[exact];
 }
 
 /* ---------- render passes */
@@ -986,7 +1068,20 @@ static BOOL pass_begin(gpu_texture color, gpu_texture depth, const struct gpu_cl
 		use_texture(depth_record);
 	}
 	pass_traffic_count(pass);
+	if (pass_log)
+	{
+		id<MTLTexture> target = pass.colorAttachments[0].texture;
+
+		[pass_log appendFormat:@"\n  pass: color %u %lux%lu %s/%s", color, (unsigned long)target.width,
+			(unsigned long)target.height, color ? load_name(pass.colorAttachments[0].loadAction) : "memoryless",
+			store_name(pass.colorAttachments[0].storeAction)];
+		if (depth)
+			[pass_log appendFormat:@", depth %u %lux%lu %s, stencil %s", depth, (unsigned long)depth_record->texture.width,
+				(unsigned long)depth_record->texture.height, load_name(pass.depthAttachment.loadAction),
+				load_name(pass.stencilAttachment.loadAction)];
+	}
 	encoder = [command_buffer() renderCommandEncoderWithDescriptor:pass];
+	metal_state_reset(&state_cache);
 	if (metal_debug)
 		encoder.label = [NSString stringWithFormat:@"targets %u/%u", color, depth];
 	pass_color = color;
@@ -1174,6 +1269,8 @@ static void gpu_metal_clear(const struct gpu_clear *clear, const struct gpu_rect
 		/* the test's next draw opens a new entry rather than counting into
 		this one again in the same pass */
 		visibility.entry_open = 0;
+		/* the next draw sets again what the quad changed */
+		metal_state_clear_quad(&state_cache);
 	}
 }
 
@@ -1201,7 +1298,10 @@ struct metal_attribute_table
 struct pipeline_key
 {
 	gpu_shader vertex_shader, pixel_shader;
-	uint8_t blend, source, destination, operation, write_mask, pad[3];
+	uint8_t blend, source, destination, operation, write_mask;
+	/* the stages that rebuild their border colors (exact_borders) */
+	uint8_t exact_borders;
+	uint8_t pad[2];
 	uint32_t color_format, depth_format;
 };
 
@@ -1263,7 +1363,8 @@ static id<MTLBuffer> empty_buffer;
 static struct
 {
 	unsigned long frame;
-	uint32_t constants_serial, uniforms_serial;
+	uint64_t constants_serial;
+	uint32_t uniforms_serial;
 	gpu_buffer buffer;
 	uint32_t offset;
 	BOOL valid;
@@ -1386,7 +1487,7 @@ static void check_uniform_layout(MTLRenderPipelineReflection *reflection)
 
 /* the pipeline for a draw, or nil if it can't be made (cached either way) */
 static id<MTLRenderPipelineState> draw_pipeline(const struct gpu_draw *draw, MetalShader *vertex, MetalShader *pixel,
-	MTLPixelFormat color, MTLPixelFormat depth)
+	unsigned exact, MTLPixelFormat color, MTLPixelFormat depth)
 {
 	struct pipeline_key key;
 	NSData *name;
@@ -1404,6 +1505,7 @@ static id<MTLRenderPipelineState> draw_pipeline(const struct gpu_draw *draw, Met
 		key.operation = draw->blend.operation;
 	}
 	key.write_mask = draw->color_target ? draw->blend.color_write_mask & 0xf : 0;
+	key.exact_borders = (uint8_t)exact;
 	key.color_format = (uint32_t)color;
 	key.depth_format = (uint32_t)depth;
 	_Static_assert(sizeof(key) <= FRONT_CACHE_KEY, "pipeline_key fits the front cache");
@@ -1419,7 +1521,7 @@ static id<MTLRenderPipelineState> draw_pipeline(const struct gpu_draw *draw, Met
 		NSError *error = nil;
 
 		descriptor.vertexFunction = vertex->function;
-		descriptor.fragmentFunction = pixel->function;
+		descriptor.fragmentFunction = pixel_function(pixel, exact) ?: pixel->function;
 		attachment.pixelFormat = color;
 		attachment.writeMask = write_mask(key.write_mask);
 		if (key.blend)
@@ -1514,35 +1616,74 @@ static id<MTLDepthStencilState> depth_state(const struct gpu_depth_stencil_state
 }
 
 /* whether the GPU has border colors (Apple7 and later, and Macs): BORDER
-addressing then samples the nearest of Metal's three border colors instead of
-clamping to the edge, which smeared a shadow map's edge texels into long
-streaks across the ground */
+addressing then samples the game's border color instead of clamping to the
+edge, which smeared a shadow map's edge texels into long streaks across the
+ground */
 static BOOL border_colors;
 
-/* Metal's border color nearest a D3DCOLOR (ARGB): the Xbox's uses are
-transparent or opaque black and opaque white */
+/* Metal's border color for a D3DCOLOR (ARGB): its own when Metal has it
+(transparent black, opaque black, opaque white). Any other color (the motion
+sensor's sweep has 0x46000000, the loading bar 0x05050505) is rebuilt in the
+pixel shader from this sampler's transparent black border and an opaque white
+one (exact_borders). */
 static MTLSamplerBorderColor border_color(uint32_t color)
 {
-	unsigned alpha = color >> 24, red = (color >> 16) & 0xff, green = (color >> 8) & 0xff, blue = color & 0xff;
+	return color == 0xffffffffu ? MTLSamplerBorderColorOpaqueWhite :
+		color == 0xff000000u ? MTLSamplerBorderColorOpaqueBlack : MTLSamplerBorderColorTransparentBlack;
+}
 
-	if (alpha < 0x80)
-		return MTLSamplerBorderColorTransparentBlack;
-	return red + green + blue >= 3 * 0x80 ? MTLSamplerBorderColorOpaqueWhite : MTLSamplerBorderColorOpaqueBlack;
+/* exact border colors, after pfista/halo-og's native Metal renderer: the
+stages of a draw whose BORDER addressing has a color Metal lacks, bit n for
+stage n. Each samples its texture a second time, with an opaque white border
+(sampler 4 + n), and the pixel shader compiled with EXACT_BORDERS
+(nv2a_msl.c) rebuilds the game's color from the two, as xemu's custom border
+colors sample it. A cube texture never samples its border in Metal. Other
+draws are as before. */
+static unsigned exact_borders(const struct gpu_draw *draw)
+{
+	unsigned mask = 0;
+	int stage;
+
+	if (!border_colors)
+		return 0;
+	for (stage = 0; stage < GPU_STAGE_COUNT; stage++)
+	{
+		const struct gpu_stage *packet = &draw->stages[stage];
+		const struct gpu_sampler_state *state = &packet->sampler;
+		uint32_t color = state->border_color;
+
+		if (!packet->type || packet->type == GPU_TEXTURE_CUBE ||
+			color == 0 || color == 0xff000000u || color == 0xffffffffu)
+			continue;
+		if (state->address_u == GPU_ADDRESS_BORDER || state->address_v == GPU_ADDRESS_BORDER ||
+			(packet->type == GPU_TEXTURE_3D && state->address_w == GPU_ADDRESS_BORDER))
+			mask |= 1u << stage;
+	}
+	return mask;
 }
 
 /* a stage's sampler, mapped as gpu_gl.c maps it on OpenGL ES: every filter
 but POINT is linear, ANISOTROPIC turns on anisotropy, the first level sampled
 is D3D's MAXMIPLEVEL, BORDER addressing clamps to the border (border_colors)
-or the edge, and the LOD bias is the shader's */
-static id<MTLSamplerState> sampler_state(const struct gpu_sampler_state *state)
+or the edge, and the LOD bias is the shader's. white: the same with an opaque
+white border, an exact border stage's second sampler. */
+static id<MTLSamplerState> sampler_state(const struct gpu_sampler_state *state, BOOL white)
 {
+	struct
+	{
+		struct gpu_sampler_state state;
+		uint32_t white;
+	} key;
 	NSData *name;
 	id<MTLSamplerState> result;
 
-	_Static_assert(sizeof(*state) <= FRONT_CACHE_KEY, "gpu_sampler_state fits the front cache");
-	if ((result = front_cache_get(&sampler_cache, state, sizeof(*state))))
+	memset(&key, 0, sizeof(key));
+	key.state = *state;
+	key.white = white;
+	_Static_assert(sizeof(key) <= FRONT_CACHE_KEY, "the sampler key fits the front cache");
+	if ((result = front_cache_get(&sampler_cache, &key, sizeof(key))))
 		return result;
-	name = [NSData dataWithBytes:state length:sizeof(*state)];
+	name = [NSData dataWithBytes:&key length:sizeof(key)];
 	result = samplers[name];
 	if (!result)
 	{
@@ -1561,7 +1702,7 @@ static id<MTLSamplerState> sampler_state(const struct gpu_sampler_state *state)
 				addresses[axis] == GPU_ADDRESS_BORDER && border_colors ? MTLSamplerAddressModeClampToBorderColor :
 				MTLSamplerAddressModeClampToEdge;
 		if (border_colors)
-			descriptor.borderColor = border_color(state->border_color);
+			descriptor.borderColor = white ? MTLSamplerBorderColorOpaqueWhite : border_color(state->border_color);
 		descriptor.sAddressMode = modes[0];
 		descriptor.tAddressMode = modes[1];
 		descriptor.rAddressMode = modes[2];
@@ -1571,7 +1712,7 @@ static id<MTLSamplerState> sampler_state(const struct gpu_sampler_state *state)
 		result = [device newSamplerStateWithDescriptor:descriptor];
 		samplers[name] = result;
 	}
-	front_cache_put(&sampler_cache, state, sizeof(*state), result);
+	front_cache_put(&sampler_cache, &key, sizeof(key), result);
 	return result;
 }
 
@@ -1595,7 +1736,7 @@ frame's draws until a serial moves: a Metal draw reads everything bound, so
 each snapshot is whole */
 static void bind_constants(const struct gpu_constant_store *constants, const struct gpu_uniforms *uniforms)
 {
-	MetalBuffer *record;
+	__unsafe_unretained MetalBuffer *record;
 
 	if (!snapshot.valid || snapshot.frame != frames || snapshot.constants_serial != constants->serial ||
 		snapshot.uniforms_serial != uniforms->serial)
@@ -1617,9 +1758,14 @@ static void bind_constants(const struct gpu_constant_store *constants, const str
 	}
 	record = buffer_record(snapshot.buffer);
 	use_buffer(record);
-	[encoder setVertexBuffer:record->buffer offset:snapshot.offset atIndex:0];
-	[encoder setVertexBuffer:record->buffer offset:snapshot.offset + sizeof(constants->c) atIndex:1];
-	[encoder setFragmentBuffer:record->buffer offset:snapshot.offset + sizeof(constants->c) atIndex:0];
+	if (metal_state_object(&state_cache, METAL_STATE_VERTEX_BUFFER, (__bridge void *)record->buffer, snapshot.offset))
+		[encoder setVertexBuffer:record->buffer offset:snapshot.offset atIndex:0];
+	if (metal_state_object(&state_cache, METAL_STATE_VERTEX_BUFFER + 1, (__bridge void *)record->buffer,
+		snapshot.offset + sizeof(constants->c)))
+		[encoder setVertexBuffer:record->buffer offset:snapshot.offset + sizeof(constants->c) atIndex:1];
+	if (metal_state_object(&state_cache, METAL_STATE_FRAGMENT_BUFFER, (__bridge void *)record->buffer,
+		snapshot.offset + sizeof(constants->c)))
+		[encoder setFragmentBuffer:record->buffer offset:snapshot.offset + sizeof(constants->c) atIndex:0];
 }
 
 static void bind_attributes(const struct gpu_draw *draw)
@@ -1632,7 +1778,7 @@ static void bind_attributes(const struct gpu_draw *draw)
 	{
 		const struct gpu_vertex_attribute *attribute = &draw->attributes[index];
 		struct metal_attribute *entry = &table.entries[index];
-		MetalBuffer *record = attribute->stream < GPU_STREAM_CONSTANT ?
+		__unsafe_unretained MetalBuffer *record = attribute->stream < GPU_STREAM_CONSTANT ?
 			buffer_record(draw->streams[attribute->stream].buffer) : nil;
 
 		entry->format = attribute->format;
@@ -1642,51 +1788,116 @@ static void bind_attributes(const struct gpu_draw *draw)
 			every unused attribute a constant) */
 			entry->stream = GPU_STREAM_CONSTANT;
 			memcpy(table.constants[index], draw->constant_values[index], sizeof(table.constants[index]));
-			[encoder setVertexBuffer:empty_buffer offset:0 atIndex:VERTEX_STREAM_BINDING + index];
+			if (metal_state_object(&state_cache, METAL_STATE_ATTRIBUTE_BUFFER + index, (__bridge void *)empty_buffer, 0))
+				[encoder setVertexBuffer:empty_buffer offset:0 atIndex:VERTEX_STREAM_BINDING + index];
 			continue;
 		}
 		entry->stream = attribute->stream;
 		entry->offset = draw->streams[attribute->stream].offset + attribute->offset;
 		entry->stride = draw->streams[attribute->stream].stride ? draw->streams[attribute->stream].stride :
 			attribute_size(attribute->format);
+		/* use_buffer whether or not the binding is skipped: renaming reads it */
 		use_buffer(record);
-		[encoder setVertexBuffer:record->buffer offset:0 atIndex:VERTEX_STREAM_BINDING + index];
+		if (metal_state_object(&state_cache, METAL_STATE_ATTRIBUTE_BUFFER + index, (__bridge void *)record->buffer, 0))
+			[encoder setVertexBuffer:record->buffer offset:0 atIndex:VERTEX_STREAM_BINDING + index];
 	}
 	[encoder setVertexBytes:&table length:sizeof(table) atIndex:2];
+	metal_state_always(&state_cache);
 }
 
-static void bind_stages(const struct gpu_draw *draw)
+/* each stage's last sampler state and its sampler: consecutive draws mostly
+sample the same way, and comparing 24 bytes costs less than sampler_state's
+hash of its key (4 stages a draw). The samplers dictionary keeps every
+sampler for good, so these needn't retain them. */
+static struct
+{
+	struct gpu_sampler_state state;
+	__unsafe_unretained id<MTLSamplerState> sampler;
+} stage_samplers[GPU_STAGE_COUNT];
+
+static void bind_stages(const struct gpu_draw *draw, unsigned exact)
 {
 	int stage;
 
 	for (stage = 0; stage < GPU_STAGE_COUNT; stage++)
 	{
 		const struct gpu_stage *packet = &draw->stages[stage];
-		MetalTexture *record = packet->type ? texture_record(packet->texture) : nil;
-		id<MTLTexture> texture = record ? record->texture : nil;
+		__unsafe_unretained MetalTexture *record = packet->type ? texture_record(packet->texture) : nil;
+		__unsafe_unretained id<MTLTexture> texture = record ? record->texture : nil;
+		__unsafe_unretained id<MTLSamplerState> sampler;
 
 		/* a stage with no texture, or one with no storage yet, samples black,
 		as GL's texture 0 or an incomplete texture does */
 		if (!texture)
 			texture = empty_textures[packet->type <= GPU_TEXTURE_CUBE ? packet->type : 0];
 		use_texture(record);
-		[encoder setFragmentTexture:texture atIndex:stage];
-		[encoder setFragmentSamplerState:packet->type ? sampler_state(&packet->sampler) : empty_sampler atIndex:stage];
+		if (metal_state_object(&state_cache, METAL_STATE_TEXTURE + stage, (__bridge void *)texture, 0))
+			[encoder setFragmentTexture:texture atIndex:stage];
+		if (!packet->type)
+			sampler = empty_sampler;
+		else if (stage_samplers[stage].sampler &&
+			!memcmp(&stage_samplers[stage].state, &packet->sampler, sizeof(packet->sampler)))
+			sampler = stage_samplers[stage].sampler;
+		else
+		{
+			sampler = sampler_state(&packet->sampler, NO);
+			stage_samplers[stage].state = packet->sampler;
+			stage_samplers[stage].sampler = sampler;
+		}
+		if (metal_state_object(&state_cache, METAL_STATE_SAMPLER + stage, (__bridge void *)sampler, 0))
+			[encoder setFragmentSamplerState:sampler atIndex:stage];
+	}
+	/* exact border colors (exact_borders): the white samplers and the colors,
+	set on every such draw, which are few (the state cache doesn't track them) */
+	if (exact)
+	{
+		float colors[GPU_STAGE_COUNT][4];
+
+		memset(colors, 0, sizeof(colors));
+		for (stage = 0; stage < GPU_STAGE_COUNT; stage++)
+		{
+			uint32_t color = draw->stages[stage].sampler.border_color;
+
+			if (!(exact & (1u << stage)))
+				continue;
+			[encoder setFragmentSamplerState:sampler_state(&draw->stages[stage].sampler, YES) atIndex:GPU_STAGE_COUNT + stage];
+			metal_state_always(&state_cache);
+			colors[stage][0] = (float)((color >> 16) & 0xff) / 255.0f;
+			colors[stage][1] = (float)((color >> 8) & 0xff) / 255.0f;
+			colors[stage][2] = (float)(color & 0xff) / 255.0f;
+			colors[stage][3] = (float)(color >> 24) / 255.0f;
+		}
+		[encoder setFragmentBytes:colors length:sizeof(colors) atIndex:3];
+		metal_state_always(&state_cache);
 	}
 }
 
 /* fans and loops, which Metal can't draw, as 32-bit indexed lists of the
-original vertices; returns the vertex count, 0 if there's nothing to draw */
+original vertices, written straight into the frame's stream memory; returns
+the vertex count, 0 if there's nothing to draw */
+/* room for count 32-bit indices in the frame's stream memory: its chunk's
+handle and offset, and where to write them */
+static uint32_t *stream_indices(uint32_t count, gpu_buffer *buffer, uint32_t *offset)
+{
+	struct transient *memory = &streams[frame_slot];
+	MetalBuffer *record = transient_room(memory, count * (uint32_t)sizeof(uint32_t), 4);
+	uint32_t *indices = (uint32_t *)((unsigned char *)record->buffer.contents + memory->offset);
+
+	*offset = (uint32_t)memory->offset;
+	*buffer = memory->chunks[memory->chunk];
+	memory->offset += count * sizeof(uint32_t);
+	return indices;
+}
+
 static uint32_t convert_primitive(const struct gpu_draw *draw, MTLPrimitiveType *type, gpu_buffer *buffer, uint32_t *offset)
 {
 	const uint16_t *source = NULL;
 	uint32_t count = draw->count, converted, index, *indices;
-	MetalBuffer *record;
-	NSMutableData *list;
+	__unsafe_unretained MetalBuffer *record;
 
 	if (draw->index_buffer)
 	{
-		MetalBuffer *index_record = buffer_record(draw->index_buffer);
+		__unsafe_unretained MetalBuffer *index_record = buffer_record(draw->index_buffer);
 
 		if (!index_record || draw->index_offset + (uint64_t)count * 2 > index_record->buffer.length)
 			return 0;
@@ -1698,8 +1909,7 @@ static uint32_t convert_primitive(const struct gpu_draw *draw, MTLPrimitiveType 
 		if (count < 3)
 			return 0;
 		converted = (count - 2) * 3;
-		list = [NSMutableData dataWithLength:converted * sizeof(uint32_t)];
-		indices = list.mutableBytes;
+		indices = stream_indices(converted, buffer, offset);
 		for (index = 0; index + 2 < count; index++)
 		{
 			indices[index * 3] = VERTEX(0);
@@ -1713,15 +1923,13 @@ static uint32_t convert_primitive(const struct gpu_draw *draw, MTLPrimitiveType 
 		if (count < 2)
 			return 0;
 		converted = count + 1;
-		list = [NSMutableData dataWithLength:converted * sizeof(uint32_t)];
-		indices = list.mutableBytes;
+		indices = stream_indices(converted, buffer, offset);
 		for (index = 0; index < count; index++)
 			indices[index] = VERTEX(index);
 		indices[count] = VERTEX(0);
 		*type = MTLPrimitiveTypeLineStrip;
 	}
 #undef VERTEX
-	*offset = transient_copy(&streams[frame_slot], list.bytes, (uint32_t)list.length, 4, buffer);
 	record = buffer_record(*buffer);
 	use_buffer(record);
 	return converted;
@@ -1732,18 +1940,22 @@ static uint32_t gpu_metal_draw(const struct gpu_draw *draw, const struct gpu_con
 {
 	@autoreleasepool
 	{
-		MetalShader *vertex = [shaders get:draw->vertex_shader], *pixel = [shaders get:draw->pixel_shader];
-		MetalTexture *depth = texture_record(draw->depth_target);
-		id<MTLRenderPipelineState> pipeline;
+		/* (unretained: the tables and caches keep these for longer than the
+		draw, so retaining them would only cost a retain and a release each) */
+		__unsafe_unretained MetalShader *vertex = table_get(shaders, draw->vertex_shader);
+		__unsafe_unretained MetalShader *pixel = table_get(shaders, draw->pixel_shader);
+		__unsafe_unretained MetalTexture *depth = texture_record(draw->depth_target);
+		__unsafe_unretained id<MTLRenderPipelineState> pipeline;
 		unsigned long width, height;
 		struct gpu_rect area;
 		MTLScissorRect scissor;
 		MTLPrimitiveType type;
+		unsigned exact = exact_borders(draw);
 
 		/* as GL's program_get: no program, no draw */
 		if (!vertex || !pixel)
 			return 0;
-		pipeline = draw_pipeline(draw, vertex, pixel, MTLPixelFormatBGRA8Unorm,
+		pipeline = draw_pipeline(draw, vertex, pixel, exact, MTLPixelFormatBGRA8Unorm,
 			depth && depth->texture ? depth->texture.pixelFormat : MTLPixelFormatInvalid);
 		if (!pipeline)
 			return 0;
@@ -1776,29 +1988,54 @@ static uint32_t gpu_metal_draw(const struct gpu_draw *draw, const struct gpu_con
 			visibility.entry_open = 1;
 			((uint64_t *)visibility_buffer.contents)[entry] = 0;
 			[encoder setVisibilityResultMode:MTLVisibilityResultModeBoolean offset:entry * sizeof(uint64_t)];
+			metal_state_always(&state_cache);
 		}
-		[encoder setRenderPipelineState:pipeline];
-		[encoder setDepthStencilState:depth_state(&draw->depth_stencil)];
-		[encoder setStencilReferenceValue:draw->depth_stencil.stencil_reference & 0xff];
-		[encoder setViewport:(MTLViewport){ (double)draw->viewport.x, (double)draw->viewport.y,
-			(double)draw->viewport.width, (double)draw->viewport.height, draw->viewport.min_z, draw->viewport.max_z }];
-		[encoder setScissorRect:scissor];
-		[encoder setCullMode:draw->raster.cull_mode == GPU_CULL_FRONT ? MTLCullModeFront :
-			draw->raster.cull_mode == GPU_CULL_BACK ? MTLCullModeBack : MTLCullModeNone];
-		[encoder setFrontFacingWinding:draw->raster.front_face == GPU_FRONT_COUNTER_CLOCKWISE ?
-			MTLWindingCounterClockwise : MTLWindingClockwise];
-		/* glPolygonOffset(slope, constant); filled polygons only, as on ES */
-		if (draw->raster.depth_bias_enable)
-			[encoder setDepthBias:-draw->raster.depth_bias_constant slopeScale:-draw->raster.depth_bias_slope clamp:0.0f];
-		else
-			[encoder setDepthBias:0.0f slopeScale:0.0f clamp:0.0f];
-		[encoder setBlendColorRed:(float)((draw->blend.color >> 16) & 0xff) / 255.0f
-			green:(float)((draw->blend.color >> 8) & 0xff) / 255.0f blue:(float)(draw->blend.color & 0xff) / 255.0f
-			alpha:(float)(draw->blend.color >> 24) / 255.0f];
-		bind_stages(draw);
+		if (metal_state_object(&state_cache, METAL_STATE_PIPELINE, (__bridge void *)pipeline, 0))
+			[encoder setRenderPipelineState:pipeline];
+		{
+			__unsafe_unretained id<MTLDepthStencilState> depth_stencil = depth_state(&draw->depth_stencil);
+			uint32_t reference = draw->depth_stencil.stencil_reference & 0xff;
+			MTLViewport viewport = { (double)draw->viewport.x, (double)draw->viewport.y,
+				(double)draw->viewport.width, (double)draw->viewport.height, draw->viewport.min_z, draw->viewport.max_z };
+			MTLCullMode cull = draw->raster.cull_mode == GPU_CULL_FRONT ? MTLCullModeFront :
+				draw->raster.cull_mode == GPU_CULL_BACK ? MTLCullModeBack : MTLCullModeNone;
+			MTLWinding winding = draw->raster.front_face == GPU_FRONT_COUNTER_CLOCKWISE ?
+				MTLWindingCounterClockwise : MTLWindingClockwise;
+			/* glPolygonOffset(slope, constant); filled polygons only, as on ES */
+			float bias[3] = { 0.0f, 0.0f, 0.0f };
+			float blend[4] = { (float)((draw->blend.color >> 16) & 0xff) / 255.0f,
+				(float)((draw->blend.color >> 8) & 0xff) / 255.0f, (float)(draw->blend.color & 0xff) / 255.0f,
+				(float)(draw->blend.color >> 24) / 255.0f };
+
+			if (draw->raster.depth_bias_enable)
+			{
+				bias[0] = -draw->raster.depth_bias_constant;
+				bias[1] = -draw->raster.depth_bias_slope;
+			}
+			if (metal_state_object(&state_cache, METAL_STATE_DEPTH_STENCIL, (__bridge void *)depth_stencil, 0))
+				[encoder setDepthStencilState:depth_stencil];
+			if (metal_state_value(&state_cache, METAL_STATE_STENCIL_REFERENCE, &reference, sizeof(reference)))
+				[encoder setStencilReferenceValue:reference];
+			if (metal_state_value(&state_cache, METAL_STATE_VIEWPORT, &viewport, sizeof(viewport)))
+				[encoder setViewport:viewport];
+			if (metal_state_value(&state_cache, METAL_STATE_SCISSOR, &scissor, sizeof(scissor)))
+				[encoder setScissorRect:scissor];
+			if (metal_state_value(&state_cache, METAL_STATE_CULL_MODE, &cull, sizeof(cull)))
+				[encoder setCullMode:cull];
+			if (metal_state_value(&state_cache, METAL_STATE_WINDING, &winding, sizeof(winding)))
+				[encoder setFrontFacingWinding:winding];
+			if (metal_state_value(&state_cache, METAL_STATE_DEPTH_BIAS, bias, sizeof(bias)))
+				[encoder setDepthBias:bias[0] slopeScale:bias[1] clamp:bias[2]];
+			if (metal_state_value(&state_cache, METAL_STATE_BLEND_COLOR, blend, sizeof(blend)))
+				[encoder setBlendColorRed:blend[0] green:blend[1] blue:blend[2] alpha:blend[3]];
+		}
+		bind_stages(draw, exact);
 		bind_constants(constants, uniforms);
 		bind_attributes(draw);
 		pass_commands++;
+		/* the draw call itself, made below unless a conversion leaves nothing */
+		metal_state_always(&state_cache);
+		metal_state_draw(&state_cache);
 		switch (draw->primitive)
 		{
 		case GPU_PRIMITIVE_TRIANGLE_FAN:
@@ -1820,7 +2057,7 @@ static uint32_t gpu_metal_draw(const struct gpu_draw *draw, const struct gpu_con
 		}
 		if (draw->index_buffer)
 		{
-			MetalBuffer *record = buffer_record(draw->index_buffer);
+			__unsafe_unretained MetalBuffer *record = buffer_record(draw->index_buffer);
 
 			if (!record)
 				return 1;
@@ -2272,6 +2509,12 @@ static uint32_t gpu_metal_present(gpu_texture back_buffer)
 			pass.colorAttachments[0].storeAction = MTLStoreActionStore;
 			pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
 			present = [commands renderCommandEncoderWithDescriptor:pass];
+			if (metal_debug)
+				present.label = @"present";
+			if (pass_log)
+				[pass_log appendFormat:@"\n  present: texture %u %lux%lu into %ldx%ld of drawable %ldx%ld %s/%s", back_buffer,
+					(unsigned long)picture.width, (unsigned long)picture.height, width, height, window_width, window_height,
+					load_name(pass.colorAttachments[0].loadAction), store_name(pass.colorAttachments[0].storeAction)];
 			[present setRenderPipelineState:present_pipeline];
 			[present setViewport:(MTLViewport){ (double)((window_width - width) / 2), (double)((window_height - height) / 2),
 				(double)width, (double)height, 0.0, 1.0 }];
@@ -2297,10 +2540,24 @@ static uint32_t gpu_metal_present(gpu_texture back_buffer)
 		drawable = nil;
 		commit(YES);
 		frames++;
+		if (pass_log)
+		{
+			platform_log("Metal: frame %lu runs, in order:%s", frames - 1, pass_log.UTF8String);
+			pass_log = nil;
+		}
+		if (metal_debug && frames % 600 == 300)
+			pass_log = [NSMutableString string];
 		if (frames % 600 == 0 && renames)
 		{
 			platform_log("Metal: %lu renames in the last 600 frames", renames);
 			renames = 0;
+		}
+		if (frames % 600 == 0 && state_cache.draws)
+		{
+			platform_log("Metal: %.1f draws a frame make %.1f encoder calls each and skip %.1f (state cache %s)",
+				(double)state_cache.draws / 600.0, (double)state_cache.issued / state_cache.draws,
+				(double)state_cache.skipped / state_cache.draws, state_cache.enabled ? "on" : "off");
+			metal_state_take_counts(&state_cache);
 		}
 		if (frames % 600 == 0)
 		{
@@ -2333,6 +2590,7 @@ static void gpu_metal_initialize(uint32_t flags, struct gpu_capabilities *capabi
 		metal_debug = (flags & GPU_INITIALIZE_DEBUG) != 0;
 		visibility_wait = (flags & GPU_INITIALIZE_FIXED_TIMESTEP) != 0;
 		metalfx_wanted = (flags & GPU_INITIALIZE_METALFX) != 0;
+		metal_state_initialize(&state_cache, !(flags & GPU_INITIALIZE_NO_STATE_CACHE));
 #ifndef HAVE_METALFX
 		if (metalfx_wanted)
 			platform_log("Metal: this build has no MetalFX; the picture is scaled bilinearly");
@@ -2383,14 +2641,25 @@ static void gpu_metal_initialize(uint32_t flags, struct gpu_capabilities *capabi
 		samplers = [NSMutableDictionary dictionary];
 		scratch_colors = [NSMutableDictionary dictionary];
 		compile_options = [MTLCompileOptions new];
-		/* no fast math: the GLSL is highp, and the compiler mustn't reorder
-		its arithmetic; invariance keeps a position computed in two passes
-		identical, as GLSL's invariant gl_Position does */
+		/* vertex shaders: no fast math. The GLSL is highp, and the compiler
+		mustn't reorder its arithmetic; invariance keeps a position computed in
+		two passes identical, as GLSL's invariant gl_Position does */
 		if (@available(iOS 18.0, tvOS 18.0, visionOS 2.0, *))
 			compile_options.mathMode = MTLMathModeSafe;
 		else
 			compile_options.fastMathEnabled = NO;
 		compile_options.preserveInvariance = YES;
+		/* pixel shaders: relaxed math, which may reassociate, contract into
+		fused multiply-adds and divide by reciprocals, but keeps infinities and
+		NaNs. The scene's pixel shaders are bound by ALU work, and under
+		exact IEEE arithmetic they took about twice the GPU time of the same
+		shaders under ANGLE, which compiles with fast math. No pixel shader
+		writes depth, so positions and depth tests are untouched. Before iOS
+		18 the only other choice is fast math, which also drops infinities and
+		NaNs, so there pixel shaders keep the vertex shaders' options. */
+		pixel_compile_options = [compile_options copy];
+		if (@available(iOS 18.0, tvOS 18.0, visionOS 2.0, *))
+			pixel_compile_options.mathMode = MTLMathModeRelaxed;
 		{
 			static const uint8_t black[4] = { 0, 0, 0, 0xff };
 			MTLTextureType types[4] = { MTLTextureType2D, MTLTextureType2D, MTLTextureType3D, MTLTextureTypeCube };

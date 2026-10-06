@@ -61,6 +61,25 @@ uint32_t host_ios_default_framebuffer(void);
 #endif
 #endif
 
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+#if defined(TARGET_OS_MACCATALYST) && TARGET_OS_MACCATALYST
+/* SDL's extension check calls glGetString by name, which under Catalyst can
+   resolve to desktop OpenGL's (gl_functions.c); use the loaded entry point. */
+static bool catalyst_extension_supported(const char *name)
+{
+	const char *list = (const char *)glGetString(GL_EXTENSIONS);
+	size_t length = strlen(name);
+	for (const char *at = list; at && (at = strstr(at, name)); at += length)
+		if ((at == list || at[-1] == ' ') && (at[length] == ' ' || at[length] == 0))
+			return true;
+	return false;
+}
+#define gl_extension_supported catalyst_extension_supported
+#else
+#define gl_extension_supported SDL_GL_ExtensionSupported
+#endif
 #if !defined(GPU_GL_ES) && !defined(GPU_GL_HOST)
 /* Intel's graphics with Mesa's driver can hang the GPU in a long run of
 draws with no pipeline flush between them, which the game's effects make
@@ -849,11 +868,11 @@ static void gpu_gl_initialize(uint32_t flags, struct gpu_capabilities *capabilit
 		int es32 = major > 3 || (major == 3 && minor >= 2);
 
 		/* clip control is emulated in the vertex shader (nv2a_vsh.c) */
-		xgpu_capabilities.copy_image = es32 || SDL_GL_ExtensionSupported("GL_EXT_copy_image") ||
-			SDL_GL_ExtensionSupported("GL_OES_copy_image");
-		xgpu_capabilities.border_clamp = es32 || SDL_GL_ExtensionSupported("GL_EXT_texture_border_clamp") ||
-			SDL_GL_ExtensionSupported("GL_OES_texture_border_clamp");
-		xgpu_capabilities.anisotropy = SDL_GL_ExtensionSupported("GL_EXT_texture_filter_anisotropic");
+		xgpu_capabilities.copy_image = es32 || gl_extension_supported("GL_EXT_copy_image") ||
+			gl_extension_supported("GL_OES_copy_image");
+		xgpu_capabilities.border_clamp = es32 || gl_extension_supported("GL_EXT_texture_border_clamp") ||
+			gl_extension_supported("GL_OES_texture_border_clamp");
+		xgpu_capabilities.anisotropy = gl_extension_supported("GL_EXT_texture_filter_anisotropic");
 		xgpu_capabilities.base_vertex = es32;
 		if (es31)
 		{
@@ -862,10 +881,10 @@ static void gpu_gl_initialize(uint32_t flags, struct gpu_capabilities *capabilit
 			glGetIntegerv(GL_MAX_FRAGMENT_ATOMIC_COUNTERS, &counters);
 			xgpu_capabilities.atomic_counters = counters > 0;
 		}
-		xgpu_capabilities.s3tc = SDL_GL_ExtensionSupported("GL_EXT_texture_compression_s3tc") ||
-			(SDL_GL_ExtensionSupported("GL_EXT_texture_compression_dxt1") &&
-			SDL_GL_ExtensionSupported("GL_ANGLE_texture_compression_dxt3") &&
-			SDL_GL_ExtensionSupported("GL_ANGLE_texture_compression_dxt5"));
+		xgpu_capabilities.s3tc = gl_extension_supported("GL_EXT_texture_compression_s3tc") ||
+			(gl_extension_supported("GL_EXT_texture_compression_dxt1") &&
+			gl_extension_supported("GL_ANGLE_texture_compression_dxt3") &&
+			gl_extension_supported("GL_ANGLE_texture_compression_dxt5"));
 		platform_log("OpenGL ES %d.%d: copy image %d, border clamp %d, anisotropy %d, S3TC %d, sample counting %d",
 			(int)major, (int)minor, xgpu_capabilities.copy_image, xgpu_capabilities.border_clamp,
 			xgpu_capabilities.anisotropy, xgpu_capabilities.s3tc, xgpu_capabilities.atomic_counters);
@@ -1416,7 +1435,7 @@ struct gpu_gl_program
 	unsigned long constant_count;
 	int constants_consecutive;
 	/* gpu_constant_store.serial at the program's last constant upload */
-	uint32_t constants_serial;
+	uint64_t constants_serial;
 	/* gpu_uniforms.serial when the uniforms below were brought up to date */
 	uint32_t uniforms_serial;
 	/* what the program's other uniforms hold (all ones: unknown) */
@@ -1546,7 +1565,7 @@ static void program_constants(struct gpu_gl_program *entry, const struct gpu_con
 
 		if (store->serial - entry->constants_serial <= GPU_CONSTANT_COUNT)
 		{
-			uint32_t serial;
+			uint64_t serial;
 
 			for (serial = entry->constants_serial + 1; serial <= store->serial; serial++)
 			{

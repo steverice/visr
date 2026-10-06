@@ -65,11 +65,12 @@ static uint32_t frame_pacing_flags(void)
 The Xbox screen is 640x480. The native ports can draw a wider one: 480
 lines, and as many columns as the display's shape gives. On iOS that is
 display.screen_width (port_config.c; 640 keeps 4:3); on the desktop, the
-display's shape while the game is fullscreen, and 640 in a window. The
-game's camera derives its horizontal field of view from the viewport, so the
-3D view simply widens. The menus and full-screen overlays are laid out for
-640 columns; while they draw (halo_screen_ui_offset), everything shifts right
-to center them.
+shape of the window (of the display while the game is fullscreen, or of
+display.resolution), and 640 where display.resolution_scaling is "original".
+The game's camera derives its horizontal field of view from the viewport, so
+the 3D view simply widens. The menus and full-screen overlays are laid out
+for 640 columns; while they draw (halo_screen_ui_offset), everything shifts
+right to center them.
 
 The native ports also draw at the display's resolution: render
 targets the size of the screen get that many pixels (screen_scale), and
@@ -214,6 +215,22 @@ float halo_screen_pixel_scale(void)
 void halo_screen_ui_offset(unsigned char centered)
 {
 	ui_offset = centered ? (halo_screen_width() - 640) / 2 : 0;
+}
+
+/* render_window calls this once for each view it draws (each player's, and
+the mirror's, whose rasterizer_target says which), after the world, its fog
+and lens flares, and before interface_draw_screen draws the HUD: a
+post-process pass over a player's view (anti-aliasing for the upscaler's
+input, an upscale beneath the HUD) belongs here, so that the HUD, the menus
+and other views stay as drawn. viewport_bounds is the view's rectangle in the
+game's units. Nothing uses it yet. pfista/halo-og runs its FXAA from the same
+spot. */
+void halo_render_before_hud(short local_player_index, short rasterizer_target,
+	union rectangle2d const *viewport_bounds)
+{
+	(void)local_player_index;
+	(void)rasterizer_target;
+	(void)viewport_bounds;
 }
 
 /* ---------- state the XDK header's inline functions read and write */
@@ -789,7 +806,8 @@ static void gl_initialize(void)
 		(platform_fixed_timestep() ? GPU_INITIALIZE_FIXED_TIMESTEP : 0) | frame_pacing_flags() |
 		(config_boolean("display.compressed_textures") ? GPU_INITIALIZE_COMPRESSED_TEXTURES : 0) |
 		(!strcmp(config_string("display.upscaler"), "metalfx") ? GPU_INITIALIZE_METALFX : 0) |
-		(config_boolean("display.immersive") ? GPU_INITIALIZE_IMMERSIVE : 0), &device_capabilities);
+		(config_boolean("display.immersive") ? GPU_INITIALIZE_IMMERSIVE : 0) |
+		(config_boolean("debug.metal_state_cache") ? 0 : GPU_INITIALIZE_NO_STATE_CACHE), &device_capabilities);
 	screen_maximum_texture_size = (int32_t)device_capabilities.max_texture_size;
 #ifdef HALO_ILP32
 	/* Select the real Retina drawable before allocating any screen targets. */
@@ -967,8 +985,8 @@ HRESULT WINAPI Direct3D_CreateDevice(UINT adapter, D3DDEVTYPE device_type, void 
 #ifdef HALO_ILP32
 int halo_ui_pointer_update(int menus_active, struct halo_ui_pointer *pointer)
 {
-	(void)menus_active;
 	(void)pointer;
+	platform_menus_set_active(menus_active != 0);
 	return 0;
 }
 #else
@@ -1007,6 +1025,7 @@ int halo_ui_pointer_update(int menus_active, struct halo_ui_pointer *pointer)
 {
 	struct platform_ui_pointer state;
 
+	platform_menus_set_active(menus_active != 0);
 	platform_ui_pointer_set_active(menus_active != 0);
 	if (!menus_active || !device.gl_ready || !platform_ui_pointer_read(&state))
 		return 0;
@@ -1628,22 +1647,28 @@ typedef char pixel_shader_key_size_assert[sizeof(struct nv2a_pixel_shader_key) %
 
 static gpu_shader fragment_shader_get(const struct nv2a_pixel_shader_key *key)
 {
-	/* consecutive draws mostly use the same pixel shader */
-	static struct fragment_entry *last;
-	unsigned long hash;
+	/* consecutive draws mostly use one of a few pixel shaders (an object's
+	parts take turns) */
+#define RECENT_FRAGMENT_COUNT 4
+	static struct fragment_entry *recent[RECENT_FRAGMENT_COUNT];
+	static unsigned long recent_next;
+	unsigned long hash, index;
 	struct fragment_entry **bucket;
 	struct fragment_entry *entry;
 	char *source;
 
-	if (last && !memcmp(&last->key, key, sizeof(*key)))
-		return last->shader;
+	for (index = 0; index < RECENT_FRAGMENT_COUNT; index++)
+	{
+		if (recent[index] && !memcmp(&recent[index]->key, key, sizeof(*key)))
+			return recent[index]->shader;
+	}
 	hash = hash_words(key, sizeof(*key));
 	bucket = &fragment_buckets[hash % FRAGMENT_BUCKETS];
 	for (entry = *bucket; entry; entry = entry->next)
 	{
 		if (entry->hash == hash && !memcmp(&entry->key, key, sizeof(*key)))
 		{
-			last = entry;
+			recent[recent_next++ % RECENT_FRAGMENT_COUNT] = entry;
 			return entry->shader;
 		}
 	}
@@ -1669,7 +1694,7 @@ static gpu_shader fragment_shader_get(const struct nv2a_pixel_shader_key *key)
 	free(source);
 	entry->next = *bucket;
 	*bucket = entry;
-	last = entry;
+	recent[recent_next++ % RECENT_FRAGMENT_COUNT] = entry;
 	return entry->shader;
 }
 
@@ -2691,11 +2716,44 @@ static uint32_t packet_primitive(D3DPRIMITIVETYPE type)
 	}
 }
 
-/* quads become two triangles each */
+/* index lists a draw makes for itself (quad_indices, and the rebased copy
+in D3DDevice_DrawIndexedVertices), which go to gpu_stream at once: two
+buffers that grow as needed and are reused, rather than a malloc and free
+for nearly every indexed draw */
+enum
+{
+	_index_scratch_quads,
+	_index_scratch_rebased,
+	NUMBER_OF_INDEX_SCRATCHES
+};
+
+static struct
+{
+	WORD *indices;
+	unsigned long capacity;
+} index_scratches[NUMBER_OF_INDEX_SCRATCHES];
+
+/* room for count indices in a scratch, whose contents are then undefined */
+static WORD *index_scratch(int scratch, unsigned long count)
+{
+	if (index_scratches[scratch].capacity < count + 1)
+	{
+		unsigned long capacity = count + 1 > 4096 ? count + 1 : 4096;
+
+		while (capacity < count + 1)
+			capacity *= 2;
+		free(index_scratches[scratch].indices);
+		index_scratches[scratch].indices = malloc(capacity * sizeof(WORD));
+		index_scratches[scratch].capacity = capacity;
+	}
+	return index_scratches[scratch].indices;
+}
+
+/* quads become two triangles each, in the quads scratch (index_scratch) */
 static WORD *quad_indices(const WORD *indices, unsigned long count, unsigned long *out_count)
 {
 	unsigned long quads = count / 4;
-	WORD *result = malloc(quads * 6 * sizeof(WORD) + 2);
+	WORD *result = index_scratch(_index_scratch_quads, quads * 6);
 	unsigned long quad;
 
 	for (quad = 0; quad < quads; quad++)
@@ -2744,7 +2802,6 @@ void WINAPI D3DDevice_DrawVertices(D3DPRIMITIVETYPE primitive_type, UINT start_v
 		WORD *indices = quad_indices(NULL, vertex_count, &count);
 
 		draw->index_offset = index_upload(indices, count * sizeof(WORD), &draw->index_buffer);
-		free(indices);
 		draw->primitive = GPU_PRIMITIVE_TRIANGLES;
 		draw->count = (uint32_t)count;
 	}
@@ -2794,14 +2851,12 @@ void WINAPI D3DDevice_DrawIndexedVertices(D3DPRIMITIVETYPE primitive_type, UINT 
 	if (!device_capabilities.base_vertex)
 	{
 		/* the indices are copied anyway: rebase them */
-		WORD *rebased = malloc(count * sizeof(WORD) + 2);
+		WORD *rebased = index_scratch(_index_scratch_rebased, count);
 
 		for (index = 0; index < count; index++)
 			rebased[index] = (WORD)(source[index] - minimum);
 		draw->index_offset = index_upload(rebased, count * sizeof(WORD), &draw->index_buffer);
 		draw->count = (uint32_t)count;
-		free(rebased);
-		free(indices);
 		submit_draw(draw, FALSE);
 		return;
 	}
@@ -2809,7 +2864,6 @@ void WINAPI D3DDevice_DrawIndexedVertices(D3DPRIMITIVETYPE primitive_type, UINT 
 	draw->count = (uint32_t)count;
 	draw->base_vertex = -(int32_t)minimum;
 	submit_draw(draw, FALSE);
-	free(indices);
 }
 
 /* ---------- immediate mode */
@@ -2861,7 +2915,6 @@ void WINAPI D3DDevice_End(void)
 		WORD *indices = quad_indices(NULL, count, &index_count);
 
 		draw->index_offset = index_upload(indices, index_count * sizeof(WORD), &draw->index_buffer);
-		free(indices);
 		draw->primitive = GPU_PRIMITIVE_TRIANGLES;
 		draw->count = (uint32_t)index_count;
 	}

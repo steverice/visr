@@ -408,6 +408,7 @@ static void render_window(
 		rasterizer_transparent_geometry_stop();
 		structure_render_fog_screen();
 		rasterizer_lens_flares_draw();
+		halo_render_before_hud(local_player_index, rasterizer_target, &rasterizer_camera->viewport_bounds);
 		interface_draw_screen();
 		rasterizer_screen_flash();
 		halo_screen_ui_offset(TRUE);

@@ -2,6 +2,8 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #include "ios_host.h"
+#include "guest_image.h"
+#include "host_display_pin.h"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 #include <errno.h>
@@ -25,7 +27,7 @@ void host_log(int priority,const char *text) { host_logf(priority,"%s",text); }
 void host_fatal(const char *format,...) {
     va_list ap;va_start(ap,format);char text[1024];vsnprintf(text,sizeof(text),format,ap);va_end(ap);
     host_logf(HOST_LOG_ERROR,"FATAL: %s",text);
-    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,"VISR",text,NULL);exit(1);
+    if(!getenv("HALO_RUNNER"))SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,"VISR",text,NULL);exit(1);
 }
 void host_abort(const char *reason) { host_logf(HOST_LOG_ERROR,"guest abort: %s",reason);abort(); }
 void host_exit(int code) {host_logf(HOST_LOG_INFO,"game exit %d",code);exit(code);}
@@ -45,6 +47,13 @@ int main(int argc,char **argv) {
         /* tvOS apps may only write to Caches (purgeable). */
         NSString *documents=[NSSearchPathForDirectoriesInDomains(NSCachesDirectory,NSUserDomainMask,YES).firstObject stringByAppendingPathComponent:@"Halo"];
         [NSFileManager.defaultManager createDirectoryAtPath:documents withIntermediateDirectories:YES attributes:nil error:nil];
+#elif TARGET_OS_MACCATALYST
+        /* Not sandboxed, so NSDocumentDirectory would be the user's own ~/Documents:
+           HALO_DATA_ROOT (a runner's data folder), else Application Support/<bundle ID>. */
+        NSString *documents=NSProcessInfo.processInfo.environment[@"HALO_DATA_ROOT"];
+        if(!documents.length)documents=[NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory,NSUserDomainMask,YES).firstObject
+            stringByAppendingPathComponent:NSBundle.mainBundle.bundleIdentifier];
+        [NSFileManager.defaultManager createDirectoryAtPath:documents withIntermediateDirectories:YES attributes:nil error:nil];
 #else
         NSString *documents=NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject;
 #endif
@@ -52,10 +61,20 @@ int main(int argc,char **argv) {
         snprintf(save_root,sizeof(save_root),"%s/save",data_root);mkdir(save_root,0755);
         chdir(data_root);
         log_file=fopen("ios-runtime.log","w");setvbuf(stderr,NULL,_IONBF,0);
+        /* internet play's MQTT brokers (network.brokers_file, p2p_signal.c): the app's
+           list, written beside config.toml at each start, as upstream's Android app does */
+        {
+            NSString *brokers=[NSBundle.mainBundle pathForResource:@"brokers" ofType:@"txt"];
+            NSData *list=brokers?[NSData dataWithContentsOfFile:brokers]:nil;
+            if(!list||![list writeToFile:@"brokers.txt" atomically:YES])
+                host_logf(HOST_LOG_ERROR,"cannot write brokers.txt from the app bundle");
+        }
         /* Tools (tools/mac_run.py) create stderr.log to keep the guest's own log, platform_log
            and debug.gpu_stats among it, which otherwise only a debugger's console shows. */
         if(access("stderr.log",F_OK)==0){int fd=open("stderr.log",O_WRONLY|O_APPEND);if(fd>=0){dup2(fd,2);close(fd);}}
         host_logf(HOST_LOG_INFO,"Halo iOS native guest starting");
+        /* names the exact game image a result folder came from (tools/mac_run.py compare-inputs) */
+        host_logf(HOST_LOG_INFO,"guest image sha256 %s",HALO_GUEST_SHA256);
 #if TARGET_OS_VISION
         /* Closing the window is how a visionOS app is left, and an app reopened
            into a new scene would have no game window: quit (the game saves at
@@ -66,6 +85,16 @@ int main(int argc,char **argv) {
             usingBlock:^(NSNotification *notification){(void)notification;host_exit(0);}];
 #endif
         UIApplication.sharedApplication.idleTimerDisabled=YES;
+#if TARGET_OS_MACCATALYST
+        /* a runner's run (tools/mac_run.py sets HALO_RUNNER) must not slow down when its window is covered
+           or minimized: App Nap would throttle its timers and drawable presentation */
+        static id runner_activity;
+        if(getenv("HALO_RUNNER")){
+            runner_activity=[NSProcessInfo.processInfo beginActivityWithOptions:NSActivityUserInitiated|NSActivityLatencyCritical
+                reason:@"a test run"];
+            host_logf(HOST_LOG_INFO,"runner: App Nap held off");
+        }
+#endif
         host_ios_prepare_assets(data_root);
         /* the arena is the step a device can refuse (visionOS: see port/ios/README.md) */
         if(host_load_image(NULL,0))host_fatal(host_arena?"Could not map the signed game image. See ios-runtime.log in Files.":
@@ -85,6 +114,19 @@ int main(int argc,char **argv) {
             width=(480*longer/shorter)&~1;
             pixel_width=(int)(longer*density+0.5f);pixel_height=(int)(shorter*density+0.5f);
         }
+        /* The runner's pinned display (HALO_HOST_DISPLAY=1366x1024@2, what the iPad runner's SDL
+           reports): the guest's display and drawable size, whatever the window's (host_sdl.c). */
+        const char *pin_text=getenv("HALO_HOST_DISPLAY");
+        struct host_display_pin pin;
+        int pinned=host_display_pin_parse(pin_text,&pin);
+        if(pinned<0)host_fatal("HALO_HOST_DISPLAY=%s is not WIDTHxHEIGHT@SCALE (the runner pins 1366x1024@2)",pin_text);
+        if(pinned){
+            width=pin.screen_width;pixel_width=pin.pixel_width;pixel_height=pin.pixel_height;
+            host_sdl_pin_window_pixels(pixel_width,pixel_height);
+            host_logf(HOST_LOG_INFO,"display pinned to %s: %dx%d pixels, width %d",pin_text,pixel_width,pixel_height,width);
+        }
+        /* what the guest is told, under either runner (tools/mac_run.py compare-inputs) */
+        host_logf(HOST_LOG_INFO,"guest display: width %d, pixels %dx%d",width,pixel_width,pixel_height);
         char env_data[1200],env_save[1200],env_width[64],env_pixel_width[64],env_pixel_height[64];
         snprintf(env_data,sizeof(env_data),"HALO_DATA_ROOT=%s",data_root);
         snprintf(env_save,sizeof(env_save),"HALO_SAVE_ROOT=%s",save_root);

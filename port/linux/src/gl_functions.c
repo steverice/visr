@@ -10,6 +10,25 @@ void platform_log(const char *format, ...) __attribute__((format(printf, 1, 2)))
 #include "gl.h"
 
 #include <SDL3/SDL.h>
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+#if defined(TARGET_OS_MACCATALYST) && TARGET_OS_MACCATALYST
+#include <dlfcn.h>
+/* Under Mac Catalyst desktop OpenGL (libGL.dylib) can be loaded too, and its
+   glGetString comes first by name (macOS 26); take every entry point from the
+   OpenGLES framework EAGL draws with. */
+static void *gles_proc(const char *name)
+{
+	static void *gles;
+	if (!gles)
+		gles = dlopen("/System/iOSSupport/System/Library/Frameworks/OpenGLES.framework/OpenGLES", RTLD_LAZY | RTLD_NOLOAD | RTLD_FIRST);
+	return gles ? dlsym(gles, name) : NULL;
+}
+#define HALO_GL_PROC(name) gles_proc(name)
+#else
+#define HALO_GL_PROC(name) SDL_GL_GetProcAddress(name)
+#endif
 
 #ifdef GPU_GL_HOST
 /* port/ios/host/host.h */
@@ -45,7 +64,7 @@ int gl_functions_load(void)
 	int success = 1;
 
 #define GL_LOAD_FUNCTION(name) \
-	halo_##name = (__typeof__(halo_##name))SDL_GL_GetProcAddress(#name); \
+	halo_##name = (__typeof__(halo_##name))HALO_GL_PROC(#name); \
 	if (!halo_##name) \
 	{ \
 		platform_log("OpenGL function %s is unavailable", #name); \
