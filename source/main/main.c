@@ -3413,6 +3413,14 @@ void main_loop(
 				if (render_frame && !debug_no_drawing)
 				{
 					profile_render_start();
+					/* port: stereo latches its frame once, for the frame it
+					draws (port/linux/game/stereo.c). Not in
+					render_interpolation_frame_begin, which game_time_update
+					calls as well, around game_frame: a second latch a frame
+					opened and dropped a Compositor frame, cleared what the
+					drawn frame left for the next (its fade, its film, the
+					stick's turn for the vignette) and halved the film's hold */
+					halo_stereo_frame_begin();
 					render_interpolation_frame_begin();
 					main_game_render((double)main_globals.seconds_elapsed);
 					render_interpolation_frame_end();

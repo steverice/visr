@@ -565,7 +565,6 @@ void halo_render_scale_overlay(void);
 
 void render_interpolation_frame_begin(void)
 {
-	halo_stereo_frame_begin();
 	halo_render_scale_overlay();
 	interpolation_rendering = halo_interpolation_enabled();
 	interpolation_frame++;
