@@ -375,6 +375,22 @@ static id<MTLTexture> pass_depth_texture;
 
 static void pass_attachment_traffic(id<MTLTexture> texture, MTLLoadAction load, MTLStoreAction store, double bytes_per_pixel);
 
+/* debug.gl_debug: one frame in every 600 has its render passes and blits
+listed, in the order the GPU runs them, and logged at its Present, so a GPU
+trace's encoders can be matched with their targets and load and store actions;
+nil in every other frame */
+static NSMutableString *pass_log;
+
+static const char *load_name(MTLLoadAction load)
+{
+	return load == MTLLoadActionLoad ? "load" : load == MTLLoadActionClear ? "clear" : "dontcare";
+}
+
+static const char *store_name(MTLStoreAction store)
+{
+	return store == MTLStoreActionStore ? "store" : store == MTLStoreActionDontCare ? "dontcare" : "unknown";
+}
+
 /* ends the open pass. The depth-stencil target is stored, unless the pass
 ends the frame (Present): nothing reads the screen's depth after it, and at
 the display's size it's tens of megabytes of writes a frame */
@@ -387,7 +403,11 @@ static void pass_finish(BOOL frame_end)
 		[encoder setDepthStoreAction:store];
 		[encoder setStencilStoreAction:store];
 		pass_attachment_traffic(pass_depth_texture, MTLLoadActionDontCare, store, 5.0);
+		if (pass_log)
+			[pass_log appendFormat:@"; depth-stencil %s", store_name(store)];
 	}
+	if (encoder && pass_log)
+		[pass_log appendFormat:@"; %lu draws and clears", pass_commands];
 	pass_depth_texture = nil;
 	[encoder endEncoding];
 	encoder = nil;
@@ -743,6 +763,11 @@ static void gpu_metal_texture_copy_level(gpu_texture source, gpu_texture destina
 			return;
 		pass_end();
 		blit = [command_buffer() blitCommandEncoder];
+		if (metal_debug)
+			blit.label = @"copy level";
+		if (pass_log)
+			[pass_log appendFormat:@"\n  blit: copy %lux%lu of texture %u into level %u of texture %u", width, height, source,
+				level, destination];
 		[blit copyFromTexture:from->texture sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
 			sourceSize:MTLSizeMake(width, height, 1) toTexture:to->texture destinationSlice:0
 			destinationLevel:level destinationOrigin:MTLOriginMake(0, 0, 0)];
@@ -768,6 +793,11 @@ static void gpu_metal_texture_generate_mipmaps(gpu_texture texture, uint32_t bas
 			slices:NSMakeRange(0, 1)] : record->texture;
 		pass_end();
 		blit = [command_buffer() blitCommandEncoder];
+		if (metal_debug)
+			blit.label = @"mipmaps";
+		if (pass_log)
+			[pass_log appendFormat:@"\n  blit: mipmaps of texture %u (%lux%lu) from level %u, %lu levels", texture,
+				(unsigned long)record->texture.width, (unsigned long)record->texture.height, base_level, record->levels];
 		[blit generateMipmapsForTexture:levels];
 		[blit endEncoding];
 		use_texture(record);
@@ -992,6 +1022,18 @@ static BOOL pass_begin(gpu_texture color, gpu_texture depth, const struct gpu_cl
 		use_texture(depth_record);
 	}
 	pass_traffic_count(pass);
+	if (pass_log)
+	{
+		id<MTLTexture> target = pass.colorAttachments[0].texture;
+
+		[pass_log appendFormat:@"\n  pass: color %u %lux%lu %s/%s", color, (unsigned long)target.width,
+			(unsigned long)target.height, color ? load_name(pass.colorAttachments[0].loadAction) : "memoryless",
+			store_name(pass.colorAttachments[0].storeAction)];
+		if (depth)
+			[pass_log appendFormat:@", depth %u %lux%lu %s, stencil %s", depth, (unsigned long)depth_record->texture.width,
+				(unsigned long)depth_record->texture.height, load_name(pass.depthAttachment.loadAction),
+				load_name(pass.stencilAttachment.loadAction)];
+	}
 	encoder = [command_buffer() renderCommandEncoderWithDescriptor:pass];
 	metal_state_reset(&state_cache);
 	if (metal_debug)
@@ -2319,6 +2361,12 @@ static uint32_t gpu_metal_present(gpu_texture back_buffer)
 			pass.colorAttachments[0].storeAction = MTLStoreActionStore;
 			pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
 			present = [commands renderCommandEncoderWithDescriptor:pass];
+			if (metal_debug)
+				present.label = @"present";
+			if (pass_log)
+				[pass_log appendFormat:@"\n  present: texture %u %lux%lu into %ldx%ld of drawable %ldx%ld %s/%s", back_buffer,
+					(unsigned long)picture.width, (unsigned long)picture.height, width, height, window_width, window_height,
+					load_name(pass.colorAttachments[0].loadAction), store_name(pass.colorAttachments[0].storeAction)];
 			[present setRenderPipelineState:present_pipeline];
 			[present setViewport:(MTLViewport){ (double)((window_width - width) / 2), (double)((window_height - height) / 2),
 				(double)width, (double)height, 0.0, 1.0 }];
@@ -2344,6 +2392,13 @@ static uint32_t gpu_metal_present(gpu_texture back_buffer)
 		drawable = nil;
 		commit(YES);
 		frames++;
+		if (pass_log)
+		{
+			platform_log("Metal: frame %lu runs, in order:%s", frames - 1, pass_log.UTF8String);
+			pass_log = nil;
+		}
+		if (metal_debug && frames % 600 == 300)
+			pass_log = [NSMutableString string];
 		if (frames % 600 == 0 && renames)
 		{
 			platform_log("Metal: %lu renames in the last 600 frames", renames);
