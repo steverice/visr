@@ -36,7 +36,7 @@ python3 tools/ios_build.py --simulator
 python3 tools/ios_build.py --team YOUR_TEAM_ID --bundle-id com.yourname.haloce
 
 # Unsigned device IPA (no Apple account needed to build).
-python3 tools/ios_build.py --unsigned --ipa dist/Halo-CE-iOS-unsigned.ipa
+python3 tools/ios_build.py --unsigned --ipa dist/VISR-iOS-unsigned.ipa
 ```
 
 The script fetches pinned Khronos headers, SDL release-3.4.16 and musl 1.2.5,
@@ -50,7 +50,7 @@ Outputs:
 - `build/ios/app-device/Release-iphoneos/VISR.app`
 - `build/ios/app-simulator/Release-iphonesimulator/VISR.app`
 - `build/ios/app-unsigned/Release-iphoneos/VISR.app`
-- `dist/Halo-CE-iOS-unsigned.ipa` and its `.sha256` checksum when requested
+- `dist/VISR-iOS-unsigned.ipa` and its `.sha256` checksum when requested
 
 The default bundle identifier is `org.haloce.ios`. Set `--bundle-id` to one
 covered by your signing profile. `--ipa PATH` can also package a signed build;

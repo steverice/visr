@@ -33,7 +33,7 @@ The app executes signed native code without JIT or writable executable pages.
 ```sh
 brew install cmake ninja llvm lld sdl3 pkgconf
 python3 tools/ios_test.py
-python3 tools/ios_build.py --unsigned --ipa dist/Halo-CE-iOS-unsigned.ipa
+python3 tools/ios_build.py --unsigned --ipa dist/VISR-iOS-unsigned.ipa
 python3 tools/ios_build.py --simulator
 ```
 
