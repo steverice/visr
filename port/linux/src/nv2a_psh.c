@@ -426,8 +426,10 @@ static void texture_stage(struct xgpu_text *text, const struct nv2a_dialect *dia
 		xgpu_text_append(text, ";\n");
 		if (mode == _mode_bumpenvmap_luminance)
 		{
-			/* every channel, unclamped, as xemu's psh.c */
-			xgpu_text_append(text, "\t\tt%d *= bump_luminance[%d].x * t%d.b + bump_luminance[%d].y;\n",
+			/* every channel, unclamped, by the luminance in red, as xemu's
+			psh.c; xbox_textures.c loads both luminance formats (X8L8V8U8 as
+			X8R8G8B8, L6V5U5 as R6G5B5) with L in red */
+			xgpu_text_append(text, "\t\tt%d *= bump_luminance[%d].x * t%d.r + bump_luminance[%d].y;\n",
 				stage, stage, input, stage);
 		}
 		xgpu_text_append(text, "\t}\n");
