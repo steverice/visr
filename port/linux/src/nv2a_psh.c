@@ -295,7 +295,10 @@ static unsigned long stage_mode(const struct nv2a_pixel_shader_key *key, int sta
 
 /* whether a texture stage mode reads its texture: the others (NONE,
 PASSTHRU, CLIPPLANE, BRDF, DOT_ZW, DOTPRODUCT) have no texel for alpha kill
-or a color sign to act on, as in xemu's psh.c */
+or a color sign to act on. Alpha kill follows xemu's psh.c, which applies it
+only where the stage has a sampler; for the color sign it is our inference
+(the signed bits act on texels in the texture unit), since xemu does not
+implement COLORSIGN */
 static BOOL mode_samples(unsigned long mode)
 {
 	switch (mode)
