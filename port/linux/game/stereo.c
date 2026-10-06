@@ -268,6 +268,17 @@ pixels per axis against the view's, in HEAD mode and the side-by-side view
 #define HUD_RESOLUTION_MIN 0.5f
 #define HUD_RESOLUTION_MAX 1.0f
 static float hud_resolution_setting = 1.0f;
+/* display.weapon_offset_down, display.weapon_offset_back and
+display.eye_height_offset, read once (mapping_settings), world units: the
+first-person weapon moved down and back in the full view's eye passes
+(halo_stereo_weapon_offset), and the full view's eyes raised (the eye-height
+A/B). The headset's taller view shows the arms' cut edge, which the Xbox's
+kept below the frame (the stereo spec's "First-person scale and the body") */
+#define WEAPON_OFFSET_MIN 0.0f
+#define WEAPON_OFFSET_MAX 0.2f
+#define EYE_HEIGHT_OFFSET_MIN (-0.1f)
+#define EYE_HEIGHT_OFFSET_MAX 0.1f
+static float weapon_offset_down_setting, weapon_offset_back_setting, eye_height_offset_setting;
 /* the culling camera's distance back, logged under debug.gpu_stats once
 for each mode and mapping (halo_stereo_log_culling) */
 static unsigned culling_logged;
@@ -487,6 +498,16 @@ static void mapping_settings(void)
 		LOD_SCALE_MIN, LOD_SCALE_MAX, "times the Xbox's pixel scale");
 	hud_resolution_setting = clamped_setting("display.hud_resolution", (float)config_real("display.hud_resolution"),
 		HUD_RESOLUTION_MIN, HUD_RESOLUTION_MAX, "of the view's pixels per axis");
+	weapon_offset_down_setting = clamped_setting("display.weapon_offset_down",
+		(float)config_real("display.weapon_offset_down"), WEAPON_OFFSET_MIN, WEAPON_OFFSET_MAX, "units");
+	weapon_offset_back_setting = clamped_setting("display.weapon_offset_back",
+		(float)config_real("display.weapon_offset_back"), WEAPON_OFFSET_MIN, WEAPON_OFFSET_MAX, "units");
+	eye_height_offset_setting = clamped_setting("display.eye_height_offset",
+		(float)config_real("display.eye_height_offset"), EYE_HEIGHT_OFFSET_MIN, EYE_HEIGHT_OFFSET_MAX, "units");
+	if (weapon_offset_down_setting != 0.0f || weapon_offset_back_setting != 0.0f || eye_height_offset_setting != 0.0f)
+		platform_log("stereo: display.weapon_offset_down %.3f, display.weapon_offset_back %.3f, "
+			"display.eye_height_offset %.3f units", weapon_offset_down_setting, weapon_offset_back_setting,
+			eye_height_offset_setting);
 }
 
 /* SCREEN gameplay's eyes rather than HEAD-like ones: SCREEN mode, or the
@@ -1039,6 +1060,13 @@ void halo_stereo_frame_begin(void)
 		head_pitch_now = stereo_frame.head_pitch;
 	} else
 		third_person_head = 0;
+	/* display.eye_height_offset: the full view's eyes raised along the
+	camera's up (the film and SCREEN gameplay keep theirs) */
+	if (stereo_frame.eye_count == 2 && !film && !screen &&
+		(stereo_frame.mode == HALO_STEREO_HEAD || stereo_frame.mode == HALO_STEREO_SIDE_BY_SIDE)) {
+		stereo_frame.eyes[0].offset[1] += eye_height_offset_setting;
+		stereo_frame.eyes[1].offset[1] += eye_height_offset_setting;
+	}
 	/* without eyes (the space closed, a load) the next zoom logs again, and
 	no menu holds the zoomed pass back */
 	if (stereo_frame.eye_count != 2) {
@@ -1414,6 +1442,19 @@ const union real_point3d *halo_stereo_eye_position(void)
 float halo_stereo_lod_scale(void)
 {
 	return stereo_mode == HALO_STEREO_HEAD || stereo_mode == HALO_STEREO_SIDE_BY_SIDE ? lod_scale_setting : 1.0f;
+}
+
+int halo_stereo_weapon_offset(float *down, float *back)
+{
+	int layer = halo_stereo_current_layer();
+
+	*down = *back = 0.0f;
+	if ((weapon_offset_down_setting == 0.0f && weapon_offset_back_setting == 0.0f) || !halo_stereo_hud_split() ||
+		(layer != 0 && layer != 1))
+		return 0;
+	*down = weapon_offset_down_setting;
+	*back = weapon_offset_back_setting;
+	return 1;
 }
 
 float halo_stereo_hud_resolution(void)

@@ -2778,6 +2778,30 @@ static void rasterizer_first_person_eye(
 	return;
 }
 
+/* port: in HEAD mode's full view the first-person weapon's draws move down
+and back (halo_stereo_weapon_offset): the window's view as it began, its
+camera moved up by down and forward by back, the projection unchanged. The
+headset's taller view shows the arms' cut edge, which the Xbox's kept below
+the frame */
+static void rasterizer_first_person_offset(
+	real down,
+	real back)
+{
+	real_vector3d camera_move;
+	real_vector3d view_move;
+
+	camera_move.i = global_window_parameters.camera.up.i * down + global_window_parameters.camera.forward.i * back;
+	camera_move.j = global_window_parameters.camera.up.j * down + global_window_parameters.camera.forward.j * back;
+	camera_move.k = global_window_parameters.camera.up.k * down + global_window_parameters.camera.forward.k * back;
+	global_window_parameters.frustum.world_to_view = first_person_saved_world_to_view;
+	matrix4x3_transform_vector(&first_person_saved_world_to_view, &camera_move, &view_move);
+	global_window_parameters.frustum.world_to_view.position.x -= view_move.i;
+	global_window_parameters.frustum.world_to_view.position.y -= view_move.j;
+	global_window_parameters.frustum.world_to_view.position.z -= view_move.k;
+	first_person_eye_applied = TRUE;
+	return;
+}
+
 void rasterizer_set_frustum_z(
 	real z_near,
 	real z_far)
@@ -2792,9 +2816,10 @@ void rasterizer_set_frustum_z(
 		global_d3d_device);
 	/* port: in a SCREEN mode eye (gameplay or the film) the first-person
 	weapon has its own eye, nearly flat with its nearest point on the
-	screen's surface (stereo.c); the window's save call keeps the view and
-	projection, and the restore call puts them back beside the depth range.
-	Mono and HEAD mode never have a weapon eye */
+	screen's surface (stereo.c); in HEAD mode's full view its draws may move
+	down and back instead (rasterizer_first_person_offset). The window's
+	save call keeps the view and projection, and the restore call puts them
+	back beside the depth range. Mono never changes them */
 	if (z_near == -1.0f && z_far == -1.0f)
 	{
 		first_person_saved_world_to_view = global_window_parameters.frustum.world_to_view;
@@ -2821,9 +2846,13 @@ void rasterizer_set_frustum_z(
 	else if (z_near == rasterizer_globals.first_person_weapon_near_clip_distance)
 	{
 		struct halo_stereo_eye weapon_eye;
+		float down;
+		float back;
 
 		if (halo_stereo_first_person_eye(&weapon_eye))
 			rasterizer_first_person_eye(&weapon_eye);
+		else if (halo_stereo_weapon_offset(&down, &back))
+			rasterizer_first_person_offset(down, back);
 	}
 	render_camera_hack_frustum_z(
 		&global_window_parameters.frustum,

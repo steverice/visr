@@ -173,6 +173,19 @@ static const struct config_setting config_settings[] =
 		"With display.first_person_body: how far behind your eyes the legs stand,\n"
 		"in world units (0 to 0.2; 0.08 is about 24 cm), so the feet show past the\n"
 		"hips when you look down. Read at start." },
+	{ "display.weapon_offset_down", _config_real, "0.0", "HALO_WEAPON_OFFSET_DOWN", _environment_value, _platform_ios,
+		"With display.stereo = \"head\": how far the first-person weapon and arms\n"
+		"sit below where the game puts them, in world units (0 to 0.2; 0.01 is about\n"
+		"3 cm), so the headset's taller view doesn't show where the arms end. Read\n"
+		"at start." },
+	{ "display.weapon_offset_back", _config_real, "0.0", "HALO_WEAPON_OFFSET_BACK", _environment_value, _platform_ios,
+		"With display.stereo = \"head\": how far the first-person weapon and arms\n"
+		"sit closer to your eyes than where the game puts them, in world units (0\n"
+		"to 0.2). Read at start." },
+	{ "display.eye_height_offset", _config_real, "0.0", "HALO_EYE_HEIGHT_OFFSET", _environment_value, _platform_ios,
+		"With display.stereo = \"head\": how far your eyes sit above the game's\n"
+		"camera, in world units (-0.1 to 0.1; 0.03 is about 9 cm), for trying a\n"
+		"taller eye height. Not in cutscenes. Read at start." },
 	{ "display.film_depth_share", _config_real, "0.25", "HALO_FILM_DEPTH_SHARE", _environment_value, _platform_ios,
 		"With display.stereo: how deep a cutscene (a 3D film on the screen) looks:\n"
 		"how far behind the screen the far distance sits, as a share of your eye\n"

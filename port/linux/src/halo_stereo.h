@@ -375,6 +375,13 @@ from the camera, world units, and its tangents) by the weapon's own nearly
 flat mapping, its nearest point on the screen's surface
 (rasterizer_set_frustum_z); returns 0 elsewhere, HEAD mode included */
 int halo_stereo_first_person_eye(struct halo_stereo_eye *eye);
+/* in an eye's layer of HEAD mode's full view (or the side-by-side view's;
+not the film or SCREEN gameplay): display.weapon_offset_down and
+display.weapon_offset_back (world units, 0 to 0.2), how far the
+first-person weapon's draws move down along the camera's up and back along
+its forward (rasterizer_set_frustum_z); returns 0 elsewhere, or when both
+are 0. display.eye_height_offset raises the same eyes (stereo.c) */
+int halo_stereo_weapon_offset(float *down, float *back);
 /* debug.gpu_stats: logs the culling camera's distance back behind the
 center camera (render.c), once for each mode and mapping */
 void halo_stereo_log_culling(float distance_back);
