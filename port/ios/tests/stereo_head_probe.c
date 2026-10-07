@@ -61,6 +61,13 @@ static int game_letterbox, game_scripted_camera, game_third_person;
 first-person mode), the look taken away in it, and whether the camera has
 reached the player's eyes (the observer settled) */
 static int game_first_person, game_look_disabled, game_settled = 1;
+/* the player's own first-person camera with the look enabled (the
+director's first person, player_camera_control on): 0 unless a case sets it,
+so every other case's first-person camera is one without the player's look */
+static int game_player_look;
+/* the film's "expands out to the full view" lines logged, and its "didn't
+reach the player's eyes" lines */
+static int expansion_logs, settle_gave_up_logs;
 
 /* stereo.c's imports */
 const char *config_string(const char *name)
@@ -104,6 +111,10 @@ void platform_log(const char *format, ...)
 	va_end(arguments);
 	if (strstr(last_log, "is not recognized; using snap"))
 		unrecognized_logged++;
+	if (strstr(last_log, "expands out to the full view"))
+		expansion_logs++;
+	if (strstr(last_log, "didn't reach the player's eyes"))
+		settle_gave_up_logs++;
 }
 int halo_cinematic_screen(void) { return game_letterbox; }
 int halo_scripted_camera(void) { return game_scripted_camera; }
@@ -120,6 +131,7 @@ int halo_cutscene_camera_first_person(void) { return game_first_person; }
 static float game_field_of_view = 1.2217305f;
 float halo_cutscene_camera_field_of_view(void) { return game_field_of_view; }
 int halo_look_disabled_first_person(void) { return game_look_disabled; }
+int halo_player_camera_first_person(void) { return game_player_look; }
 /* the director holding the facing (a seat's entry or exit animation) */
 static int game_inhibited_facing;
 int halo_director_inhibited_facing(void) { return game_inhibited_facing; }
@@ -129,6 +141,7 @@ void halo_cutscene_state(struct halo_cutscene_state *state)
 	memset(state, 0, sizeof(*state));
 	state->letterbox = game_letterbox;
 	state->look_disabled = game_look_disabled;
+	state->player_first_person = game_player_look;
 	state->observer_finished = game_settled;
 	state->distance = game_settled ? 0.0f : 1.0f;
 }
@@ -1693,7 +1706,7 @@ static void first_person_cutscenes(void)
 		cutscene_frame();
 		passed &= on_film();
 	}
-	check(passed, "a first-person shot after it stays on the film: no flip back");
+	check(passed, "a first-person shot without the player's look after it stays on the film");
 	/* a10's two-frame gap in the letterbox, then a first-person stretch:
 	still the same cutscene */
 	game_letterbox = 0;
@@ -1715,6 +1728,235 @@ static void first_person_cutscenes(void)
 	game_letterbox = 0;
 	game_first_person = 0;
 	for (frame = 0; frame < 2 * FILM_HOLD_FRAMES; frame++)
+		cutscene_frame();
+}
+
+/* SB-b: inside a cutscene that has shown a third-person camera, the
+player's own first-person camera with the look enabled (b30's ramp shot on
+the Pelican bench) leaves the film through the film's own end path (the
+hold, the ease into a window, the expansion); from then the head drives the
+look under the letterbox, as the Warthog passenger's does. Any other camera
+in the same stretch goes back to the film */
+static void released_cutscene(void)
+{
+	float facing_yaw = 0.0f, facing_pitch = 0.0f, entry_yaw, progress = 0.0f, bars = 0.0f;
+	struct loop_frame f;
+	int frame, passed, held, expanding;
+
+	printf("the player's own first-person camera with the look, inside a cutscene:\n");
+	restart("snap", 30.0, 120.0, 0);
+	game_first_person = game_player_look = game_look_disabled = 0;
+	game_settled = 1;
+	/* b30's Pelicans: a third-person camera under the letterbox, the head
+	20 degrees off the screen's axis */
+	probe_screen_yaw = 20.0f * DEGREES;
+	game_letterbox = 1;
+	passed = 1;
+	for (frame = 0; frame < 10; frame++) {
+		loop(&facing_yaw, &facing_pitch, 20.0f, 0.0f, 0.0f);
+		passed &= on_film();
+	}
+	check(passed, "b30's Pelicans, a third-person camera under the letterbox: the film");
+	/* the ramp shot: the director's first person with the look enabled, the
+	letterbox still up */
+	game_first_person = game_player_look = 1;
+	entry_yaw = facing_yaw;
+	expansion_logs = 0;
+	passed = 1;
+	f = loop(&facing_yaw, &facing_pitch, 20.0f, 0.0f, 0.0f);
+	for (held = 1; held < 100 && halo_stereo_film(); held++) {
+		passed &= facing_yaw == entry_yaw;
+		f = loop(&facing_yaw, &facing_pitch, 20.0f, 0.0f, 0.0f);
+	}
+	expanding = halo_stereo_expansion(&progress, &bars);
+	printf("  the ramp shot: the film held %d frames; the full view's first frame: expanding %d at %.4f, the head's "
+		"direction shows the world at %.4f deg (the facing %.4f, was %.4f)\n", held, expanding, progress, f.view_yaw,
+		facing_yaw / DEGREES, entry_yaw / DEGREES);
+	check(passed && held == PORTAL_FRAMES + 1 && immersive() && expanding && progress == 0.0f,
+		"the ramp shot: the film through its hold and its ease, then the full view, expanding, the letterbox still up");
+	check(degrees_apart(f.view_yaw, entry_yaw / DEGREES + 20.0f) < 0.01f,
+		"the world the screen showed stays put: the head, 20 deg off it, sees the world 20 deg off the facing");
+	f = loop(&facing_yaw, &facing_pitch, 20.0f, 0.0f, 0.0f);
+	check(f.look_turned && degrees_apart(facing_yaw / DEGREES, entry_yaw / DEGREES + 20.0f) < 0.01f &&
+		degrees_apart(f.view_yaw, entry_yaw / DEGREES + 20.0f) < 0.01f,
+		"the look takes the 20 degrees off the screen's axis once, the view holding");
+	/* the head turns 10 degrees further left: the look follows it */
+	passed = 1;
+	for (frame = 1; frame <= 10; frame++) {
+		f = loop(&facing_yaw, &facing_pitch, 20.0f + frame, 0.0f, 0.0f);
+		passed &= immersive();
+	}
+	f = loop(&facing_yaw, &facing_pitch, 30.0f, 0.0f, 0.0f);
+	printf("  the head 10 deg further left: the facing %.4f deg from the cutscene's\n",
+		facing_yaw / DEGREES - entry_yaw / DEGREES);
+	check(passed && degrees_apart(facing_yaw / DEGREES, entry_yaw / DEGREES + 30.0f) < 0.01f &&
+		degrees_apart(f.view_yaw, entry_yaw / DEGREES + 30.0f) < 0.01f,
+		"released, under the letterbox: the head drives the look (halo_stereo_head_look takes its turn)");
+	for (frame = 0; frame < 30; frame++)
+		cutscene_frame();
+	check(expansion_logs == 1 && !halo_stereo_expansion(&progress, &bars) && immersive(),
+		"the film expands out to the full view once, then the plain full view");
+	probe_screen_yaw = 0.0f;
+
+	/* a third-person camera again in the same letterbox: the film the next
+	frame */
+	game_first_person = game_player_look = 0;
+	cutscene_frame();
+	check(on_film(), "a third-person camera again in the same cutscene: on the film the next frame");
+	for (frame = 0; frame < 10; frame++)
+		cutscene_frame();
+	/* first person with the look again: released again; the predicate
+	drops for one frame during the hold (a cut between two first-person
+	cameras), and the film holds through it and expands once */
+	game_first_person = game_player_look = 1;
+	expansion_logs = 0;
+	passed = 1;
+	for (frame = 0; frame < 5; frame++) {
+		cutscene_frame();
+		passed &= on_film();
+	}
+	game_player_look = 0;
+	cutscene_frame();
+	passed &= on_film();
+	game_player_look = 1;
+	held = frames_to_full_view(100);
+	printf("  released again, the predicate dropping a frame in the hold: the film held %d frames after it\n", held);
+	check(passed && held == PORTAL_FRAMES + 1 && immersive() && expansion_logs == 1,
+		"first person with the look again: released again; a one-frame drop in the hold keeps the film, one expansion");
+	for (frame = 0; frame < 40; frame++)
+		cutscene_frame();
+	/* the letterbox ends while released: no second expansion */
+	game_letterbox = 0;
+	expansion_logs = 0;
+	passed = 1;
+	for (frame = 0; frame < 2 * FILM_HOLD_FRAMES; frame++) {
+		cutscene_frame();
+		passed &= immersive();
+	}
+	check(passed && expansion_logs == 0 && !halo_stereo_expansion(&progress, &bars),
+		"the letterbox ending while released: the full view throughout, no second expansion");
+	/* the latch cleared: a first-person camera without the player's look
+	under the next letterbox is immersive */
+	game_player_look = 0;
+	game_letterbox = 1;
+	cutscene_frame();
+	check(immersive(), "the latch cleared with the cutscene: the next cutscene starts afresh");
+	game_letterbox = 0;
+	game_first_person = 0;
+	for (frame = 0; frame < 2 * FILM_HOLD_FRAMES; frame++)
+		cutscene_frame();
+
+	/* first person with the look disabled inside the latch: the film */
+	game_letterbox = 1;
+	cutscene_frame();
+	game_first_person = game_look_disabled = 1;
+	passed = 1;
+	for (frame = 0; frame < 60; frame++) {
+		cutscene_frame();
+		passed &= on_film();
+	}
+	check(passed, "first person with the look disabled after a third-person shot: the film, under the latch");
+	game_first_person = game_look_disabled = 0;
+	game_letterbox = 0;
+	frames_to_full_view(200);
+	for (frame = 0; frame < 40; frame++)
+		cutscene_frame();
+
+	/* a10's shape: third person, a two-frame gap in the letterbox with the
+	camera away from the eyes for a while after it, then first person with
+	the look under the letterbox, then the camera settles */
+	game_letterbox = 1;
+	for (frame = 0; frame < 10; frame++)
+		cutscene_frame();
+	game_letterbox = 0;
+	game_settled = 0;
+	expansion_logs = 0;
+	passed = 1;
+	for (frame = 0; frame < 2; frame++) {
+		cutscene_frame();
+		passed &= on_film();
+	}
+	game_letterbox = 1;
+	game_first_person = game_player_look = 1;
+	for (frame = 0; frame < 20; frame++) {
+		cutscene_frame();
+		passed &= on_film();
+	}
+	game_settled = 1;
+	held = frames_to_full_view(100);
+	printf("  a10's shape: the film held %d frames after the camera settled\n", held);
+	check(passed && held == PORTAL_FRAMES + 1 && halo_stereo_expansion(&progress, &bars) && expansion_logs == 1,
+		"a10's shape: the hold bridges the gap, the release waits on the settle, then expands once");
+	for (frame = 0; frame < 40; frame++)
+		cutscene_frame();
+	game_letterbox = 0;
+	for (frame = 0; frame < 2 * FILM_HOLD_FRAMES; frame++)
+		cutscene_frame();
+	check(expansion_logs == 1, "its letterbox's end: no second expansion");
+	game_first_person = game_player_look = 0;
+	for (frame = 0; frame < 40; frame++)
+		cutscene_frame();
+
+	/* the same, the camera never settling: the film ends through black after
+	FILM_SETTLE_SECONDS, with no expansion */
+	game_letterbox = 1;
+	for (frame = 0; frame < 10; frame++)
+		cutscene_frame();
+	game_letterbox = 0;
+	game_settled = 0;
+	expansion_logs = settle_gave_up_logs = 0;
+	for (held = 0; held < 200 && halo_stereo_film(); held++) {
+		if (held == 2) {
+			game_letterbox = 1;
+			game_first_person = game_player_look = 1;
+		}
+		cutscene_frame();
+	}
+	printf("  never settling: the film held %d frames\n", held);
+	check(held == 75 && settle_gave_up_logs == 1 && expansion_logs == 0 && !halo_stereo_expansion(&progress, &bars),
+		"the camera never settling: the film ends through black after 2.5 s, with no expansion (settle_gave_up)");
+	game_settled = 1;
+	game_letterbox = 0;
+	for (frame = 0; frame < 2 * FILM_HOLD_FRAMES; frame++)
+		cutscene_frame();
+	game_first_person = game_player_look = 0;
+	for (frame = 0; frame < 40; frame++)
+		cutscene_frame();
+
+	/* Task 12k's spike (debug.cutscene_immersive): the Pelicans immersive,
+	the ramp frame on the film (the immersive cutscene ends on the film), the
+	full view after the portal; the released frames never immersive */
+	cutscene_immersive_setting = 1;
+	cutscene_immersive_min_fov = 40.0f * DEGREES;
+	cutscene_outside_dim = 0.6f;
+	game_field_of_view = 70.0f * DEGREES;
+	game_letterbox = 1;
+	for (frame = 0; frame < 10; frame++)
+		cutscene_frame();
+	check(halo_stereo_cutscene_immersive(), "with debug.cutscene_immersive, the Pelicans: immersive");
+	game_first_person = game_player_look = 1;
+	expansion_logs = 0;
+	cutscene_frame();
+	check(on_film() && !halo_stereo_cutscene_immersive(), "the ramp frame: on the film, through the cut");
+	passed = 1;
+	for (held = 0; held < 100 && halo_stereo_film(); held++) {
+		cutscene_frame();
+		passed &= !halo_stereo_cutscene_immersive();
+	}
+	for (frame = 0; frame < 40; frame++) {
+		cutscene_frame();
+		passed &= !halo_stereo_cutscene_immersive() && immersive();
+	}
+	printf("  the spike: the film held %d frames after the ramp frame\n", held);
+	check(passed && held == PORTAL_FRAMES + 1 && expansion_logs == 1,
+		"then the full view after the portal, one expansion, and no released frame immersive");
+	game_letterbox = 0;
+	for (frame = 0; frame < 2 * FILM_HOLD_FRAMES; frame++)
+		cutscene_frame();
+	cutscene_immersive_setting = 0;
+	game_first_person = game_player_look = 0;
+	set_pose(0.0f, 0.0f, 0.0f);
+	for (frame = 0; frame < 40; frame++)
 		cutscene_frame();
 }
 
@@ -2429,6 +2671,7 @@ int main(void)
 	seat_yaw_limit();
 	seat_leftover_kept();
 	first_person_cutscenes();
+	released_cutscene();
 	look_disabled();
 	cutscene_end();
 	cutscene_expansion();

@@ -88,6 +88,18 @@ int halo_look_disabled_first_person(void)
 		(perspective == _director_perspective_scripted && scripted_camera_first_person());
 }
 
+/* The player's own first-person camera with the look enabled: the
+director's first person with player_camera_control on. Narrower than
+halo_cutscene_camera_first_person (no scripted camera), and the complement of
+halo_look_disabled_first_person for the director's first person: a camera
+whose look the player has, which the head can drive. HEAD mode releases a
+cutscene's film for it (stereo.c) */
+int halo_player_camera_first_person(void)
+{
+	return director_peek_perspective(0) == _director_perspective_first_person &&
+		!player_control_camera_control_disabled();
+}
+
 int halo_director_inhibited_facing(void)
 {
 	return director_inhibited_facing(0) ? 1 : 0;
@@ -144,6 +156,7 @@ void halo_cutscene_state(struct halo_cutscene_state *state)
 	state->perspective = director_peek_perspective(0);
 	state->script_mode = scripted_camera_mode();
 	state->look_disabled = player_control_camera_control_disabled();
+	state->player_first_person = halo_player_camera_first_person();
 	state->observer_finished = observer_command_has_finished(0);
 	state->orientation_settled = observer_orientation_settled(0);
 	state->distance = camera_distance_from_eyes();
