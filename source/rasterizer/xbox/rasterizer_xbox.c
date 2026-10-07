@@ -566,6 +566,11 @@ enum
 	RASTERIZER_STENCIL_MODE_ACCEPT,
 	RASTERIZER_STENCIL_MODE_WRITE_ALPHA_TESTED_DECAL,
 	RASTERIZER_STENCIL_MODE_REJECT_ALPHA_TESTED_DECAL,
+	/* port: head-tracked stereo's first-person body: rejected where the
+	weapon drew (value 1), as REJECT, and marks value 4 where it draws, so
+	the presenter's HUD depth skips it (host_stereo.m). Appended: the other
+	rasterizer files hard-code the values before it */
+	RASTERIZER_STENCIL_MODE_REJECT_AND_MARK,
 	NUMBER_OF_RASTERIZER_STENCIL_MODES
 };
 
@@ -2710,6 +2715,34 @@ void rasterizer_set_stencil_mode(
 			SetRenderStateSmart(
 				D3DRS_STENCILWRITEMASK,
 				0);
+			break;
+
+		/* port: the first-person body's mark (the decal write's pattern) */
+		case RASTERIZER_STENCIL_MODE_REJECT_AND_MARK:
+			SetRenderStateSmart(
+				D3DRS_STENCILENABLE,
+				TRUE);
+			SetRenderStateSmart(
+				D3DRS_STENCILFAIL,
+				D3DSTENCILOP_KEEP);
+			SetRenderStateSmart(
+				D3DRS_STENCILZFAIL,
+				D3DSTENCILOP_KEEP);
+			SetRenderStateSmart(
+				D3DRS_STENCILPASS,
+				D3DSTENCILOP_REPLACE);
+			SetRenderStateSmart(
+				D3DRS_STENCILFUNC,
+				D3DCMP_EQUAL);
+			SetRenderStateSmart(
+				D3DRS_STENCILREF,
+				4);
+			SetRenderStateSmart(
+				D3DRS_STENCILMASK,
+				1);
+			SetRenderStateSmart(
+				D3DRS_STENCILWRITEMASK,
+				4);
 			break;
 
 		default:

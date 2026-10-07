@@ -136,6 +136,7 @@ enum
 	_rasterizer_geometry_first_person_bit = 7,
 	RASTERIZER_STENCIL_MODE_WRITE = 1,
 	RASTERIZER_STENCIL_MODE_REJECT = 2,
+	RASTERIZER_STENCIL_MODE_REJECT_AND_MARK = 6, /* port: rasterizer_xbox.c */
 	_render_model_effect_type_none = 0,
 	_render_model_effect_type_active_camouflage,
 	_render_model_effect_type_modifier,
@@ -617,6 +618,12 @@ void _rasterizer_model_end(
 			rasterizer_set_stencil_mode(RASTERIZER_STENCIL_MODE_REJECT);
 			rasterizer_set_frustum_z(0.0f, 0.0f);
 		}
+		/* port: the first-person body's mark ends with its model, so the
+		transparents and decals after it see the weapon's REJECT */
+		else if (!local_do_not_change_z_stencil_states && halo_first_person_body_depth_clamp())
+		{
+			rasterizer_set_stencil_mode(RASTERIZER_STENCIL_MODE_REJECT);
+		}
 		local_parameters = NULL;
 	}
 
@@ -646,6 +653,14 @@ void _rasterizer_model_begin(
 			rasterizer_set_frustum_z(
 				rasterizer_globals.first_person_weapon_near_clip_distance,
 				rasterizer_globals.first_person_weapon_far_clip_distance);
+		}
+		/* port: head-tracked stereo's first-person body (both its passes)
+		draws where the weapon didn't, as under REJECT, and marks stencil
+		value 4, so the presenter's HUD depth skips the body as it skips the
+		weapon's value 1 */
+		else if (!do_not_change_z_stencil_states && halo_first_person_body_depth_clamp())
+		{
+			rasterizer_set_stencil_mode(RASTERIZER_STENCIL_MODE_REJECT_AND_MARK);
 		}
 
 		local_parameters = parameters;
