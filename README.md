@@ -3,12 +3,10 @@
 # VISR
 
 VISR is a native port of Halo: Combat Evolved to Apple Vision Pro, built from
-the Halo: CE decompilation and compiled for ARM64. It renders with its own Metal
-backend: the game's Direct3D 8 calls go through the port's D3D8 layer straight
-to Metal, and the Xbox GPU's shaders are translated to Metal Shading Language,
-with no emulator and no OpenGL in between. The goal is the best possible,
-best-optimized Halo on Vision Pro, true to the original game. The same app also
-runs on iPhone, iPad, Apple TV and the Mac.
+the Halo: CE decompilation. It renders natively in Metal, with no emulation in
+between, so it holds the headset's frame rate in foveated stereo. The goal is
+the best possible, best-optimized Halo on Vision Pro, true to the original game.
+The same app also runs on iPhone, iPad, Apple TV and the Mac.
 
 VISR ships no game data. You need a disc image of the original Xbox game, made
 from your own disc. VISR is an unofficial fan project, not affiliated with or
