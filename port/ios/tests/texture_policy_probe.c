@@ -11,12 +11,15 @@ static const char *const names[] = { "decal", "decals", "display", "monitor", "m
 static const char *const groups[] = { "smet" };
 static const char *const prefixes[] = { "effects\\decals\\" };
 
+static const char *const materials[] = { "rock", "cliff", "tech", "metal" };
+
 /* every damage test turned off (-1, as tools/embed_texture_policy.py writes a null), so a test that reuses this table
-does not inherit a zero share, which would call every graphic damaged */
+does not inherit a zero share, which would call every graphic damaged; no material names (material_rule adds them) */
 static struct texture_policy_table table(const struct texture_policy_override *overrides, size_t count)
 {
 	struct texture_policy_table t = { 1, 1, TEXTURE_POLICY_S4G, TEXTURE_POLICY_BPF, TEXTURE_POLICY_BPF,
-		TEXTURE_POLICY_BPF, 12, 30, 1, 3, names, 8, groups, 1, prefixes, 1, overrides, count, -1, -1, -1, 1 };
+		TEXTURE_POLICY_BPF, 12, 30, 1, 3, names, 8, groups, 1, prefixes, 1, overrides, count, -1, -1, -1, 1,
+		NULL, 0, TEXTURE_POLICY_S4G };
 	return t;
 }
 
@@ -175,6 +178,60 @@ static void embedded_damage_block(void)
 	assert(t->low == 12 && t->high == 30 && t->sigma == 1 && t->iterations == 3);
 }
 
+/* the material rule (policy.py _materials): a surface or bump named for a solid material gets material_result; a
+graphic, a companion, a pin and a bump whose base map is original do not */
+static void material_rule(void)
+{
+	static const struct texture_policy_override pinned[] = {
+		{ "levels\\b30\\bitmaps\\metal kept", -1, NULL, TEXTURE_POLICY_BPF },
+		{ "levels\\b30\\bitmaps\\dark rock", -1, NULL, TEXTURE_POLICY_ORIGINAL },
+	};
+	struct texture_policy_catalog *c = texture_policy_catalog_new();
+	struct texture_policy_table t = table(pinned, 2);
+	struct texture_policy_decision *d;
+	size_t n;
+
+	t.material_names = materials;
+	t.material_name_count = 4;
+	add(c, "levels\\b30\\bitmaps\\cliff rock", 0, 0x31, 64, DXT1, 1, 0, "senv", "env.base", "shaders\\cliff");
+	add(c, "levels\\b30\\bitmaps\\cliff rock bump", 0, 0x32, 64, P8, 2, 0, "senv", "env.bump", "shaders\\cliff");
+	add(c, "levels\\b30\\bitmaps\\sand2", 0, 0x33, 64, DXT1, 1, 0, "senv", "env.base", "shaders\\sand");
+	add(c, "levels\\b30\\bitmaps\\metal registry", 0, 0x34, 64, DXT1, 1, 0, "senv", "env.base", "shaders\\sign");
+	add(c, "levels\\b30\\bitmaps\\tech glow", 0, 0x35, 64, DXT1, 1, 0, "senv", "env.self_illumination",
+		"shaders\\cliff");
+	add(c, "levels\\b30\\bitmaps\\metal kept", 0, 0x36, 64, DXT1, 1, 0, "senv", "env.base", "shaders\\kept");
+	add(c, "levels\\b30\\bitmaps\\dark rock", 0, 0x37, 64, DXT1, 1, 0, "senv", "env.base", "shaders\\dark");
+	add(c, "levels\\b30\\bitmaps\\rock2 bump", 0, 0x38, 64, P8, 2, 0, "senv", "env.bump", "shaders\\dark");
+	add(c, "levels\\b30\\bitmaps\\Tech_Floor", 0, 0x39, 64, DXT1, 1, 0, "senv", "env.base", "shaders\\tf");
+	n = texture_policy_classify(c, &t, &d, NULL, NULL);
+	assert(n == 9);
+	assert(find(d, n, 0x31, 64)->kind == TEXTURE_POLICY_SURFACE && find(d, n, 0x31, 64)->result == TEXTURE_POLICY_S4G);
+	assert(find(d, n, 0x32, 64)->kind == TEXTURE_POLICY_BUMP && find(d, n, 0x32, 64)->result == TEXTURE_POLICY_S4G);
+	assert(find(d, n, 0x33, 64)->result == TEXTURE_POLICY_BPF);                /* sand is not in this list */
+	assert(find(d, n, 0x34, 64)->kind == TEXTURE_POLICY_GRAPHIC);              /* a graphic signal comes first */
+	assert(find(d, n, 0x35, 64)->kind == TEXTURE_POLICY_COMPANION && find(d, n, 0x35, 64)->result == TEXTURE_POLICY_BPF);
+	assert(find(d, n, 0x36, 64)->result == TEXTURE_POLICY_BPF);                /* a pin wins */
+	assert(find(d, n, 0x38, 64)->result == TEXTURE_POLICY_ORIGINAL);           /* its base map is original */
+	assert(find(d, n, 0x39, 64)->result == TEXTURE_POLICY_S4G);                /* case folds, '_' separates */
+	t.material_result = TEXTURE_POLICY_BPF;
+	free(d);
+	n = texture_policy_classify(c, &t, &d, NULL, NULL);
+	assert(find(d, n, 0x31, 64)->result == TEXTURE_POLICY_BPF && find(d, n, 0x32, 64)->result == TEXTURE_POLICY_BPF);
+	free(d);
+	texture_policy_catalog_free(c);
+}
+
+static void embedded_material_block(void)
+{
+	const struct texture_policy_table *t = &texture_policy_embedded;
+	size_t i;
+	int rock = 0;
+
+	for (i = 0; i < t->material_name_count; i++)
+		rock |= !strcmp(t->material_names[i], "rock");
+	assert(rock && t->material_result == TEXTURE_POLICY_S4G);
+}
+
 static void hand_built_table_turns_damage_off(void)
 {
 	struct texture_policy_table t = table(NULL, 0);
@@ -190,6 +247,8 @@ int main(void)
 	surfaces_companions_bumps_and_signals();
 	pins();
 	ascii_case_and_pin_logs();
+	material_rule();
+	embedded_material_block();
 	puts("texture_policy_probe: ok");
 	return 0;
 }

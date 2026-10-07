@@ -51,6 +51,12 @@ struct texture_policy_table
 	these parameters (in the cache recipe key) and the table's results stay the classifier's. */
 	float damage_share, damage_structure_loss, damage_bpf_structure_loss;
 	int damage_measure_version;
+	/* The material rule: a surface or bump (never a graphic, companion or original; a bump whose shader's base map
+	is original stays original) with a name token in material_names, tokenized as graphic_names is, gets
+	material_result. Overrides still win. */
+	const char *const *material_names;
+	size_t material_name_count;
+	enum texture_policy_result material_result;
 };
 /* port/assets/texture-policy.json, by tools/embed_texture_policy.py */
 extern const struct texture_policy_table texture_policy_embedded;

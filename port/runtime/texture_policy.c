@@ -628,7 +628,9 @@ done:
 
 /* ---------- classifying (policy.classify) */
 
-static int token_in(const char *tag, const struct texture_policy_table *t)
+/* a token of the tag's last path component (split on ' ', '_' and '-', ASCII-lowercased, trailing digits dropped) is
+in the list: policy.name_tokens */
+static int token_in(const char *tag, const char *const *list, size_t count)
 {
 	const char *name = strrchr(tag, '\\');
 	char token[128];
@@ -642,8 +644,8 @@ static int token_in(const char *tag, const struct texture_policy_table *t)
 			while (length && ascii_digit((unsigned char)token[length - 1]))
 				length--;
 			token[length] = 0;
-			for (i = 0; length && i < t->graphic_name_count; i++)
-				if (!strcmp(token, t->graphic_names[i]))
+			for (i = 0; length && i < count; i++)
+				if (!strcmp(token, list[i]))
 					return 1;
 			length = 0;
 			if (!*name)
@@ -674,7 +676,18 @@ static int graphic(const struct entry *e, const struct texture_policy_table *t)
 		if (has_group(e, t->graphic_groups[i]))
 			return 1;
 	for (i = 0; i < e->tag_count; i++)
-		if (token_in(e->tags[i].tag, t))
+		if (token_in(e->tags[i].tag, t->graphic_names, t->graphic_name_count))
+			return 1;
+	return 0;
+}
+
+/* the material rule's signal (policy._materials) */
+static int material(const struct entry *e, const struct texture_policy_table *t)
+{
+	size_t i;
+
+	for (i = 0; i < e->tag_count; i++)
+		if (token_in(e->tags[i].tag, t->material_names, t->material_name_count))
 			return 1;
 	return 0;
 }
@@ -771,7 +784,7 @@ size_t texture_policy_classify(struct texture_policy_catalog *c, const struct te
 		else if (graphic(e, t))
 			results[i] = t->graphic, kinds[i] = TEXTURE_POLICY_GRAPHIC;
 		else
-			results[i] = t->surface, kinds[i] = TEXTURE_POLICY_SURFACE;
+			results[i] = material(e, t) ? t->material_result : t->surface, kinds[i] = TEXTURE_POLICY_SURFACE;
 		decided[i] = 1;
 	}
 	for (i = 0; i < c->count; i++)   /* rules 3 and 4: an original base map in any shader that uses it */
@@ -796,7 +809,7 @@ size_t texture_policy_classify(struct texture_policy_catalog *c, const struct te
 		if (original)
 			results[i] = TEXTURE_POLICY_ORIGINAL, kinds[i] = TEXTURE_POLICY_KIND_ORIGINAL;
 		else if (e->treatment == TEXTURE_POLICY_BUMP_MAP)
-			results[i] = t->bump, kinds[i] = TEXTURE_POLICY_BUMP;
+			results[i] = material(e, t) ? t->material_result : t->bump, kinds[i] = TEXTURE_POLICY_BUMP;
 		else
 			results[i] = t->companion, kinds[i] = TEXTURE_POLICY_COMPANION;
 		decided[i] = 1;

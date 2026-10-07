@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "policy_version": 3,
+  "policy_version": 4,
   "results": {"graphic": "s4g", "surface": "bpf", "companion": "bpf", "bump": "bpf"},
   "fallback": {"low": 12, "high": 30, "sigma": 1.0, "iterations": 3},
   "damage": {"share": 0.10, "structure_loss": null, "bpf_structure_loss": null, "measure_version": 1},
@@ -9,6 +9,11 @@
                     "keypad", "label", "glyph", "font", "logo", "insignia", "patches"],
   "graphic_groups": ["smet"],
   "decal_surface_prefixes": ["effects\\decals\\"],
+  "material_names": ["rock", "rocks", "cliff", "cliffs", "boulder", "stone", "terrain", "ground", "dirt", "sand", "beach",
+                     "mud", "gravel", "tree", "trees", "trunk", "bark", "leaf", "leaves", "leafy", "pine", "snowpine",
+                     "metal", "steel", "copper", "chrome", "iron", "panel", "panels", "floor", "wall", "tile", "tiles",
+                     "tech", "circuits", "ceramic"],
+  "material_result": "s4g",
   "overrides": [
     {"tag": "levels\\a10\\bitmaps\\tech rack mount", "result": "s4g",
      "reason": "amber keypad sheet (frames 2160, 2280, 5880, 6120); user 2026-10-04"},
@@ -52,6 +57,8 @@
      "reason": "user audit 2026-10-06"},
     {"tag": "levels\\b30\\devices\\interior tech objects\\holo control room display\\bitmaps\\self illuminated edge", "index": 0, "hash": "07edbf0e395b91b9", "result": "s4g",
      "reason": "user audit 2026-10-06"},
+    {"tag": "levels\\b40\\bitmaps\\b40_cliff_snow", "index": 0, "hash": "411450df75fe5af6", "result": "bpf",
+     "reason": "user audit 2026-10-07: marked bpf; 'cliff' would make it a material key"},
     {"tag": "levels\\d40\\bitmaps\\chrome pipes", "index": 0, "hash": "94b09850ff5d666e", "result": "s4g",
      "reason": "user audit 2026-10-06"},
     {"tag": "levels\\d40\\bitmaps\\d40_terrain", "index": 0, "hash": "3007642173688d32", "result": "s4g",

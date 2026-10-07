@@ -46,6 +46,16 @@ def damage_values(source: Path, damage) -> str:
     return f"{', '.join(values)}, {version}"
 
 
+def material_values(source: Path, raw: dict, lines: list[str]) -> str:
+    """"material_names" and "material_result" as the table's last three fields"""
+    names, result = raw.get("material_names"), raw.get("material_result")
+    if not isinstance(names, list) or not all(isinstance(n, str) and n for n in names):
+        raise SystemExit(f"embed_texture_policy: {source}: material_names must be a list of non-empty strings")
+    if result not in RESULTS:
+        raise SystemExit(f"embed_texture_policy: {source}: material_result must be one of {sorted(RESULTS)}")
+    return f"{array('material_names', names, lines)}, {RESULTS[result]}"
+
+
 def main() -> None:
     source, output = Path(sys.argv[1]), Path(sys.argv[2])
     raw = json.loads(source.read_text())
@@ -57,6 +67,7 @@ def main() -> None:
     names = array("graphic_names", raw["graphic_names"], lines)
     groups = array("graphic_groups", raw["graphic_groups"], lines)
     prefixes = array("decal_surface_prefixes", raw["decal_surface_prefixes"], lines)
+    materials = material_values(source, raw, lines)
     if raw["overrides"]:
         lines.append("static const struct texture_policy_override overrides[] = {")
         for o in raw["overrides"]:
@@ -71,7 +82,7 @@ def main() -> None:
               f"\t{raw['schema']}, {raw['policy_version']},",
               f"\t{RESULTS[r['graphic']]}, {RESULTS[r['surface']]}, {RESULTS[r['companion']]}, {RESULTS[r['bump']]},",
               f"\t{float(f['low'])}f, {float(f['high'])}f, {float(f['sigma'])}f, {int(f['iterations'])},",
-              f"\t{names}, {groups}, {prefixes},", f"\t{overrides},", f"\t{damage} }};", ""]
+              f"\t{names}, {groups}, {prefixes},", f"\t{overrides},", f"\t{damage},", f"\t{materials} }};", ""]
     text = "\n".join(lines)
     if not output.is_file() or output.read_text() != text:
         output.parent.mkdir(parents=True, exist_ok=True)
