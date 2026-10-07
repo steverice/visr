@@ -258,6 +258,27 @@ static const struct config_setting config_settings[] =
 		"With display.stereo = \"head\": how far ahead the HUD, the crosshair and the\n"
 		"menus rest, in meters, 1 to 4. Every piece keeps its size in your view at\n"
 		"any distance; only how near it looks changes. Read at start." },
+	{ "display.hud_depth", _config_boolean, "true", "HALO_HUD_DEPTH", _environment_value, _platform_ios,
+		"With display.stereo = \"head\": bring each HUD piece (the crosshair, the\n"
+		"corners) nearer while something under it is nearer than its resting\n"
+		"distance, so it always looks in front of what it covers. Off: the HUD\n"
+		"stays at display.hud_distance. Read at start." },
+	{ "display.hud_depth_share", _config_real, "0.85", "HALO_HUD_DEPTH_SHARE", _environment_value, _platform_ios,
+		"With display.hud_depth: how near a piece comes, as a share of the\n"
+		"distance to the nearest thing under it, 0.5 to 1. Read at start." },
+	{ "display.hud_depth_floor", _config_real, "0.3", "HALO_HUD_DEPTH_FLOOR", _environment_value, _platform_ios,
+		"With display.hud_depth: the nearest a piece comes, in meters, below\n"
+		"display.hud_distance. Read at start." },
+	{ "display.hud_depth_pull_in", _config_real, "0.1", "HALO_HUD_DEPTH_PULL_IN", _environment_value, _platform_ios,
+		"With display.hud_depth: the seconds a piece takes to come from its\n"
+		"resting distance to the nearest, 0 to 5. Read at start." },
+	{ "display.hud_depth_relax", _config_real, "1.0", "HALO_HUD_DEPTH_RELAX", _environment_value, _platform_ios,
+		"With display.hud_depth: the seconds a piece takes to go back from the\n"
+		"nearest to its resting distance, 0 to 5. Read at start." },
+	{ "display.hud_depth_relax_delay", _config_real, "0.5", "HALO_HUD_DEPTH_RELAX_DELAY", _environment_value,
+		_platform_ios,
+		"With display.hud_depth: the seconds a piece waits, once nothing near is\n"
+		"under it, before it goes back, 0 to 5. Read at start." },
 	{ "display.hud_resolution", _config_real, "1.0", "HALO_HUD_RESOLUTION", _environment_value, _platform_ios,
 		"HEAD mode and the side-by-side view: the pixels the HUD, the crosshair and\n"
 		"the menus are drawn with, as a fraction of the view's along each axis, 0.5\n"

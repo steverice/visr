@@ -281,11 +281,28 @@ void host_stereo_hud_ui(float aspect, float distance, struct host_stereo_hud_qua
 	quad->frame = HOST_STEREO_HUD_LEVEL;
 }
 
+int host_stereo_hud_piece(const struct host_stereo_hud_quad *quad)
+{
+	size_t index;
+	int member;
+
+	if (quad->catch_all)
+		return HOST_STEREO_HUD_PIECE_NONE;
+	if (quad->layer == HOST_STEREO_HUD_LAYER_RETICLE)
+		return HOST_STEREO_HUD_PIECE_RETICLE;
+	/* a group's: its slot's (the pieces after the reticle are the slots,
+	in order) */
+	for (index = 0; index < SLOT_COUNT; index++)
+		for (member = 0; member < slots[index].group_count; member++)
+			if (quad->layer == HOST_STEREO_HUD_LAYER_GROUP + slots[index].groups[member])
+				return HOST_STEREO_HUD_PIECE_RETICLE + 1 + (int)index;
+	return HOST_STEREO_HUD_PIECE_NONE;
+}
+
 int host_stereo_hud_layout(float layout_width, int ui, const float reticle[3], const float hud_tangents[2],
 	const float (*group_extent)[4], const struct host_stereo_hud_placement *placement,
-	struct host_stereo_hud_quad *quads)
+	const float piece_distance[HOST_STEREO_HUD_PIECE_COUNT], struct host_stereo_hud_quad *quads)
 {
-	float scale;
 	size_t index;
 	int count = 0;
 
@@ -293,24 +310,27 @@ int host_stereo_hud_layout(float layout_width, int ui, const float reticle[3], c
 		layout_width = 640.0f;
 	if (!placement)
 		placement = &default_placement;
-	if (host_stereo_hud_reticle(layout_width, NULL, reticle, placement->distance, &quads[count]))
+	if (host_stereo_hud_reticle(layout_width, NULL, reticle,
+		piece_distance ? piece_distance[HOST_STEREO_HUD_PIECE_RETICLE] : placement->distance, &quads[count]))
 		count++;
-	/* meters a line on the HUD's sphere (the line scale exactly 1 at
-	HOST_STEREO_HUD_LINE_DISTANCE) */
-	scale = HOST_STEREO_HUD_METERS_PER_LINE * placement->scale * (placement->distance / HOST_STEREO_HUD_LINE_DISTANCE);
 	for (index = 0; index < SLOT_COUNT; index++)
 	{
 		const struct slot *slot = &slots[index];
-		float content[4], center[3], right[3], upward[3], across, up;
+		float content[4], center[3], right[3], upward[3], across, up, scale;
+		float distance = piece_distance ? piece_distance[HOST_STEREO_HUD_PIECE_RETICLE + 1 + index] :
+			placement->distance;
 		int member;
 
 		if (!slot_content(slot, group_extent, layout_width, content))
 			continue;
+		/* meters a line on the slot's sphere (the line scale exactly 1 at
+		HOST_STEREO_HUD_LINE_DISTANCE) */
+		scale = HOST_STEREO_HUD_METERS_PER_LINE * placement->scale * (distance / HOST_STEREO_HUD_LINE_DISTANCE);
 		across = (float)slot->x * placement->across;
 		up = slot->height == HEIGHT_CORNER_UP ? placement->up : slot->height == HEIGHT_MESSAGES_UP ?
 			placement->messages_up : -placement->tracker_down;
 		/* the slot's drawn rectangle with its outer corner at the angles */
-		corner_plane(placement->distance, across * DEGREES, up * DEGREES, slot->x, slot->y, (content[2] - content[0]) / 2.0f * scale,
+		corner_plane(distance, across * DEGREES, up * DEGREES, slot->x, slot->y, (content[2] - content[0]) / 2.0f * scale,
 			(content[3] - content[1]) / 2.0f * scale, center, right, upward);
 		/* each group, with its margin, where it is in the slot's rectangle,
 		on the slot's plane */
@@ -411,4 +431,139 @@ float host_stereo_cut_brightness(struct host_stereo_cut *cut, int shown, int cov
 	brightness = cut->elapsed / HOST_STEREO_CUT_SECONDS;
 	cut->elapsed += frame_seconds;
 	return brightness;
+}
+
+static const struct host_stereo_hud_depth_settings default_depth_settings = HOST_STEREO_HUD_DEPTH_SETTINGS_DEFAULT;
+
+int host_stereo_hud_depth_settings_clamp(struct host_stereo_hud_depth_settings *settings)
+{
+	int changed = 0;
+	float distance = settings->distance;
+
+	if (!(distance >= HOST_STEREO_HUD_DISTANCE_MIN && distance <= HOST_STEREO_HUD_DISTANCE_MAX))
+	{
+		settings->distance = distance != distance ? default_depth_settings.distance :
+			fmaxf(HOST_STEREO_HUD_DISTANCE_MIN, fminf(HOST_STEREO_HUD_DISTANCE_MAX, distance));
+		changed = 1;
+	}
+	changed |= clamp_setting(&settings->share, 0.5f, 1.0f, default_depth_settings.share);
+	changed |= clamp_setting(&settings->floor, HOST_STEREO_HUD_DEPTH_FLOOR_MIN,
+		HOST_STEREO_HUD_DEPTH_FLOOR_SHARE_MAX * settings->distance, default_depth_settings.floor);
+	changed |= clamp_setting(&settings->pull_in, 0.0f, 5.0f, default_depth_settings.pull_in);
+	changed |= clamp_setting(&settings->relax, 0.0f, 5.0f, default_depth_settings.relax);
+	changed |= clamp_setting(&settings->relax_delay, 0.0f, 5.0f, default_depth_settings.relax_delay);
+	return changed;
+}
+
+/* a rate in diopters a second covering span diopters in seconds (at once
+when seconds is 0) */
+static float diopter_rate(float span, float seconds)
+{
+	return seconds > 0.0f ? span / seconds : INFINITY;
+}
+
+float host_stereo_hud_depth_ease(struct host_stereo_hud_depth_state *state, float nearest, float dt,
+	const struct host_stereo_hud_depth_settings *settings)
+{
+	float rest = 1.0f / settings->distance, span = 1.0f / settings->floor - rest;
+	float current = fmaxf(state->diopters, rest), target;
+
+	if (!settings->enabled)
+	{
+		state->diopters = 0.0f;
+		state->waited = 0.0f;
+		return settings->distance;
+	}
+	if (!(dt > 0.0f))
+		return 1.0f / current;
+	/* nothing near: rest */
+	target = nearest > 0.0f && nearest < INFINITY ? 1.0f / fmaxf(settings->floor, fminf(settings->distance,
+		settings->share * nearest)) : rest;
+	if (target >= current)
+	{
+		/* in front of what's under it, at once */
+		state->waited = 0.0f;
+		current = fminf(target, current + diopter_rate(span, settings->pull_in) * dt);
+	}
+	else
+	{
+		state->waited += dt;
+		if (state->waited > settings->relax_delay)
+			current = fmaxf(target, current - diopter_rate(span, settings->relax) * dt);
+	}
+	state->diopters = current;
+	return current <= rest ? settings->distance : 1.0f / current;
+}
+
+/* a column-major 4x4 times a point (w 1) or another matrix */
+static void transform_point(const float m[16], const float p[3], float out[4])
+{
+	int row;
+
+	for (row = 0; row < 4; row++)
+		out[row] = m[row] * p[0] + m[4 + row] * p[1] + m[8 + row] * p[2] + m[12 + row];
+}
+
+static void multiply(const float a[16], const float b[16], float out[16])
+{
+	int row, column;
+
+	for (column = 0; column < 4; column++)
+		for (row = 0; row < 4; row++)
+			out[column * 4 + row] = a[row] * b[column * 4] + a[4 + row] * b[column * 4 + 1] +
+				a[8 + row] * b[column * 4 + 2] + a[12 + row] * b[column * 4 + 3];
+}
+
+int host_stereo_hud_footprint(const struct host_stereo_hud_quad *quad, const float clip_from_device[16],
+	const float device_from_level[16], const float tangents[4], float rectangle[4])
+{
+	float clip_from_frame[16], margin = HOST_STEREO_HUD_DEPTH_MARGIN_DEGREES * DEGREES;
+	float across = tangents[0] + tangents[1], down = tangents[2] + tangents[3];
+	float left, right, top, bottom;
+	int corner, axis;
+
+	if (quad->frame == HOST_STEREO_HUD_LEVEL && device_from_level)
+		multiply(clip_from_device, device_from_level, clip_from_frame);
+	else
+		memcpy(clip_from_frame, clip_from_device, sizeof(clip_from_frame));
+	rectangle[0] = rectangle[1] = INFINITY;
+	rectangle[2] = rectangle[3] = -INFINITY;
+	for (corner = 0; corner < 4; corner++)
+	{
+		float x = corner & 1 ? 1.0f : -1.0f, y = corner & 2 ? 1.0f : -1.0f, point[3], clip[4], u, v;
+
+		for (axis = 0; axis < 3; axis++)
+			point[axis] = quad->center[axis] + x * quad->x_axis[axis] + y * quad->y_axis[axis];
+		transform_point(clip_from_frame, point, clip);
+		if (!(clip[3] > 1e-6f))
+			return 0;
+		u = (clip[0] / clip[3] + 1.0f) / 2.0f;
+		v = (1.0f - clip[1] / clip[3]) / 2.0f;
+		rectangle[0] = fminf(rectangle[0], u);
+		rectangle[1] = fminf(rectangle[1], v);
+		rectangle[2] = fmaxf(rectangle[2], u);
+		rectangle[3] = fmaxf(rectangle[3], v);
+	}
+	/* the margin, as angles through the view's tangents: u at tangent t
+	right of center is (t + left) / (left + right), v at t up is
+	(up - t) / (up + down) */
+	if (!(across > 0.0f) || !(down > 0.0f))
+		return 0;
+	left = atanf(rectangle[0] * across - tangents[0]) - margin;
+	right = atanf(rectangle[2] * across - tangents[0]) + margin;
+	top = atanf(tangents[2] - rectangle[1] * down) + margin;
+	bottom = atanf(tangents[2] - rectangle[3] * down) - margin;
+	rectangle[0] = fmaxf(0.0f, (tanf(fmaxf(left, -1.5f)) + tangents[0]) / across);
+	rectangle[2] = fminf(1.0f, (tanf(fminf(right, 1.5f)) + tangents[0]) / across);
+	rectangle[1] = fmaxf(0.0f, (tangents[2] - tanf(fminf(top, 1.5f))) / down);
+	rectangle[3] = fminf(1.0f, (tangents[2] - tanf(fmaxf(bottom, -1.5f))) / down);
+	return rectangle[2] > rectangle[0] && rectangle[3] > rectangle[1];
+}
+
+void host_stereo_hud_footprint_screen(const float rectangle[4], float width, float height, float screen[4])
+{
+	screen[0] = rectangle[0] * width;
+	screen[1] = rectangle[1] * height;
+	screen[2] = rectangle[2] * width;
+	screen[3] = rectangle[3] * height;
 }

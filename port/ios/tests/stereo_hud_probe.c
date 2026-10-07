@@ -76,7 +76,7 @@ static void print_quads(float width, int ui, const float reticle[3])
 	int count, index;
 
 	sample_extents(width, extents);
-	count = host_stereo_hud_layout(width, ui, reticle, hud_tangents, (const float (*)[4])extents, NULL, quads);
+	count = host_stereo_hud_layout(width, ui, reticle, hud_tangents, (const float (*)[4])extents, NULL, NULL, quads);
 	for (index = 0; index < count; index++)
 	{
 		const struct host_stereo_hud_quad *q = &quads[index];
@@ -122,7 +122,7 @@ static void catch_all_checks(float width)
 	char what[200];
 
 	sample_extents(width, extents);
-	count = host_stereo_hud_layout(width, 0, ahead, hud_tangents, (const float (*)[4])extents, NULL, quads);
+	count = host_stereo_hud_layout(width, 0, ahead, hud_tangents, (const float (*)[4])extents, NULL, NULL, quads);
 	all = &quads[count - 1];
 	x = all->center[0] + (2.0f * u - 1.0f) * all->x_axis[0];
 	y = all->center[1] + (1.0f - 2.0f * v) * all->y_axis[1];
@@ -135,15 +135,15 @@ static void catch_all_checks(float width)
 	check(all->catch_all && all->layer == HOST_STEREO_HUD_LAYER_HUD && all->source[0] == 0.0f &&
 		all->source[1] == 0.0f && all->source[2] == 1.0f && all->source[3] == 1.0f &&
 		fabsf(across - game_across) < 1e-5f && fabsf(up - game_up) < 1e-5f, what);
-	count = host_stereo_hud_layout(width, 0, seat, hud_tangents, (const float (*)[4])extents, NULL, quads);
+	count = host_stereo_hud_layout(width, 0, seat, hud_tangents, (const float (*)[4])extents, NULL, NULL, quads);
 	check(quads[0].layer == HOST_STEREO_HUD_LAYER_RETICLE &&
 		fabsf(atan2f(quads[0].center[0], -quads[0].center[2]) / DEGREES - 60.0f) < 0.01f,
 		"in a seat the crosshairs' layer is centered along the aim");
 	count = host_stereo_hud_layout(width, 0, (const float[3]){ 0.0f, 0.0f, 1.0f }, hud_tangents,
-		(const float (*)[4])extents, NULL, quads);
+		(const float (*)[4])extents, NULL, NULL, quads);
 	check(!quad_of(quads, count, HOST_STEREO_HUD_LAYER_RETICLE) && quads[count - 1].catch_all,
 		"with the aim behind, there's no reticle quad, and the rest stays");
-	check(host_stereo_hud_layout(width, 0, ahead, NULL, (const float (*)[4])extents, NULL, quads) == count,
+	check(host_stereo_hud_layout(width, 0, ahead, NULL, (const float (*)[4])extents, NULL, NULL, quads) == count,
 		"without the HUD pass's projection there's no catch-all");
 }
 
@@ -289,7 +289,7 @@ static void layout_checks(float width)
 	char what[200];
 
 	sample_extents(width, extents);
-	count = host_stereo_hud_layout(width, 0, ahead, hud_tangents, (const float (*)[4])extents, NULL, quads);
+	count = host_stereo_hud_layout(width, 0, ahead, hud_tangents, (const float (*)[4])extents, NULL, NULL, quads);
 	printf("layout %.0f lines across (%.3f:1)\n", width, width / 480.0f);
 	check(count == 1 + HALO_HUD_GROUP_COUNT, "a quad for the reticle, each group that drew (all but the seats) and the catch-all");
 	check(quads[0].frame == HOST_STEREO_HUD_HEAD && quads[0].layer == HOST_STEREO_HUD_LAYER_RETICLE,
@@ -377,7 +377,7 @@ static void layout_checks(float width)
 		memcpy(wide, extents, sizeof(wide));
 		wide[HALO_HUD_GROUP_WEAPON][2] += 80.0f;
 		wide[HALO_HUD_GROUP_PROMPT][2] = fminf(width - 10.0f, wide[HALO_HUD_GROUP_PROMPT][2] + 160.0f);
-		n = host_stereo_hud_layout(width, 0, ahead, hud_tangents, (const float (*)[4])wide, NULL, quads);
+		n = host_stereo_hud_layout(width, 0, ahead, hud_tangents, (const float (*)[4])wide, NULL, NULL, quads);
 		wide_weapon = quad_of(quads, n, HOST_STEREO_HUD_LAYER_GROUP + HALO_HUD_GROUP_WEAPON);
 		wide_prompt = quad_of(quads, n, HOST_STEREO_HUD_LAYER_GROUP + HALO_HUD_GROUP_PROMPT);
 		content_box(wide_weapon, 1.0f, wide_box);
@@ -424,7 +424,7 @@ static void layout_checks(float width)
 				driver[HALO_HUD_GROUP_SEATS][1] = 92.0f;
 				driver[HALO_HUD_GROUP_SEATS][3] = 200.0f;
 			}
-			n = host_stereo_hud_layout(width, 0, ahead, hud_tangents, (const float (*)[4])driver, NULL, quads);
+			n = host_stereo_hud_layout(width, 0, ahead, hud_tangents, (const float (*)[4])driver, NULL, NULL, quads);
 			seat_unit = quad_of(quads, n, HOST_STEREO_HUD_LAYER_GROUP + HALO_HUD_GROUP_UNIT);
 			seats = quad_of(quads, n, HOST_STEREO_HUD_LAYER_GROUP + HALO_HUD_GROUP_SEATS);
 			cannon = quad_of(quads, n, HOST_STEREO_HUD_LAYER_GROUP + HALO_HUD_GROUP_WEAPON);
@@ -466,13 +466,13 @@ static void layout_checks(float width)
 
 		memcpy(some, extents, sizeof(some));
 		memset(some[HALO_HUD_GROUP_PROMPT], 0, sizeof(some[0]));
-		count = host_stereo_hud_layout(width, 0, ahead, hud_tangents, (const float (*)[4])some, NULL, quads);
+		count = host_stereo_hud_layout(width, 0, ahead, hud_tangents, (const float (*)[4])some, NULL, NULL, quads);
 		check(count == HALO_HUD_GROUP_COUNT && !quad_of(quads, count, HOST_STEREO_HUD_LAYER_GROUP + HALO_HUD_GROUP_PROMPT),
 			"an empty group has no quad");
 		check(corner_at(quad_of(quads, count, HOST_STEREO_HUD_LAYER_GROUP + HALO_HUD_GROUP_MESSAGES), 1.0f, -1, 1,
 			-defaults.across, defaults.messages_up, "messages alone"),
 			"without a prompt, the messages' top left corner is at -28 across, +12 up");
-		check(host_stereo_hud_layout(width, 0, ahead, hud_tangents, NULL, NULL, quads) == 2,
+		check(host_stereo_hud_layout(width, 0, ahead, hud_tangents, NULL, NULL, NULL, quads) == 2,
 			"without the groups' rectangles, only the reticle and the catch-all");
 	}
 	catch_all_checks(width);
@@ -495,7 +495,7 @@ static void placement_checks(void)
 	{
 		struct host_stereo_hud_placement placement = { 20.0f, 25.0f, 18.0f, 10.0f, 1.0f, 2.0f };
 
-		count = host_stereo_hud_layout(width, 0, ahead, hud_tangents, (const float (*)[4])extents, &placement, quads);
+		count = host_stereo_hud_layout(width, 0, ahead, hud_tangents, (const float (*)[4])extents, &placement, NULL, quads);
 		check(corner_at(quad_of(quads, count, HOST_STEREO_HUD_LAYER_GROUP + HALO_HUD_GROUP_WEAPON), 1.0f, -1, 1, -20.0f,
 			25.0f, "weapon") &&
 			corner_at(quad_of(quads, count, HOST_STEREO_HUD_LAYER_GROUP + HALO_HUD_GROUP_UNIT), 1.0f, 1, 1, 20.0f, 25.0f,
@@ -512,8 +512,8 @@ static void placement_checks(void)
 		int natural_count, sized = 1, corners;
 
 		placement.scale = 2.0f;
-		natural_count = host_stereo_hud_layout(width, 0, ahead, hud_tangents, (const float (*)[4])extents, NULL, natural);
-		count = host_stereo_hud_layout(width, 0, ahead, hud_tangents, (const float (*)[4])extents, &placement, quads);
+		natural_count = host_stereo_hud_layout(width, 0, ahead, hud_tangents, (const float (*)[4])extents, NULL, NULL, natural);
+		count = host_stereo_hud_layout(width, 0, ahead, hud_tangents, (const float (*)[4])extents, &placement, NULL, quads);
 		for (index = 1; index < count - 1 && count == natural_count; index++)
 			sized &= on_the_sphere(&quads[index], width, 2.0f) &&
 				fabsf(length3(quads[index].x_axis) - 2.0f * length3(natural[index].x_axis)) < 1e-5f;
@@ -541,7 +541,7 @@ static void placement_checks(void)
 			"a setting that isn't a number takes its default");
 		/* at the edge, every corner of every group stays inside 40 degrees */
 		placement = (struct host_stereo_hud_placement){ 40.0f, 40.0f, 40.0f, 40.0f, 2.0f, 2.0f };
-		count = host_stereo_hud_layout(width, 0, ahead, hud_tangents, (const float (*)[4])extents, &placement, quads);
+		count = host_stereo_hud_layout(width, 0, ahead, hud_tangents, (const float (*)[4])extents, &placement, NULL, quads);
 		for (index = 1; index < count - 1; index++)
 		{
 			float box[4];
@@ -568,7 +568,7 @@ static void placement_checks(void)
 		size_t y, p, r;
 		float still = 0.0f, turned = 1e9f;
 
-		count = host_stereo_hud_layout(width, 0, ahead, hud_tangents, (const float (*)[4])extents, NULL, quads);
+		count = host_stereo_hud_layout(width, 0, ahead, hud_tangents, (const float (*)[4])extents, NULL, NULL, quads);
 		for (y = 0; y < 2; y++)
 			for (p = 0; p < 3; p++)
 				for (r = 0; r < 2; r++)
@@ -668,7 +668,7 @@ static void distance_checks(void)
 	char what[240];
 
 	sample_extents(width, extents);
-	natural_count = host_stereo_hud_layout(width, 1, ahead, hud_tangents, (const float (*)[4])extents, NULL, natural);
+	natural_count = host_stereo_hud_layout(width, 1, ahead, hud_tangents, (const float (*)[4])extents, NULL, NULL, natural);
 	host_stereo_hud_zoom(zoom_tangents, HOST_STEREO_HUD_DISTANCE_DEFAULT, &natural_zoom);
 	for (d = 0; d < sizeof(distances) / sizeof(distances[0]); d++)
 	{
@@ -676,7 +676,7 @@ static void distance_checks(void)
 		float distance = distances[d], worst_angle = 0.0f, worst_length = 0.0f;
 
 		placement.distance = distance;
-		count = host_stereo_hud_layout(width, 1, ahead, hud_tangents, (const float (*)[4])extents, &placement, quads);
+		count = host_stereo_hud_layout(width, 1, ahead, hud_tangents, (const float (*)[4])extents, &placement, NULL, quads);
 		host_stereo_hud_zoom(zoom_tangents, distance, &zoom);
 		for (index = 0; index < count && count == natural_count; index++)
 		{
@@ -715,6 +715,252 @@ static void distance_checks(void)
 	}
 }
 
+/* depth-adaptive placement (host_stereo_hud_depth_ease): with the
+defaults at 90 Hz, each piece rests at the distance, pulls in to 0.85 of
+what's nearest under it within 0.1 s, never nearer than that or the floor,
+and relaxes back over 1 s after holding 0.5 s */
+#define DEPTH_FRAME (1.0f / 90.0f)
+static void depth_ease_checks(void)
+{
+	struct host_stereo_hud_depth_settings settings = HOST_STEREO_HUD_DEPTH_SETTINGS_DEFAULT;
+	struct host_stereo_hud_depth_state state = HOST_STEREO_HUD_DEPTH_STATE_INITIAL, before;
+	float distance = 0.0f, last_diopters, t, reached, held, back;
+	int frame, monotone = 1, never_nearer = 1, floor_kept = 1;
+	char what[240];
+
+	check(!host_stereo_hud_depth_settings_clamp(&settings), "the depth settings' defaults pass their clamp unchanged");
+	for (frame = 0; frame < 90; frame++)
+		distance = host_stereo_hud_depth_ease(&state, INFINITY, DEPTH_FRAME, &settings);
+	check(distance == 2.0f, "with nothing near under a piece it rests at 2.00 m");
+	/* something 1 m away under it: 0.85 m, in diopters at once */
+	last_diopters = 1.0f / distance;
+	reached = -1.0f;
+	for (frame = 1, t = DEPTH_FRAME; frame <= 45; frame++, t += DEPTH_FRAME)
+	{
+		distance = host_stereo_hud_depth_ease(&state, 1.0f, DEPTH_FRAME, &settings);
+		monotone &= 1.0f / distance >= last_diopters - 1e-6f;
+		never_nearer &= distance >= 0.85f - 1e-5f;
+		last_diopters = 1.0f / distance;
+		if (reached < 0.0f && fabsf(distance - 0.85f) <= 0.01f)
+			reached = t;
+	}
+	snprintf(what, sizeof(what), "something 1 m under it: 0.85 +- 0.01 m after %.3f s (within 0.1 s and a frame), "
+		"monotone in diopters, never nearer than 0.85 m", reached);
+	check(reached >= 0.0f && reached <= 0.1f + DEPTH_FRAME + 1e-4f && monotone && never_nearer, what);
+	/* 0.2 m: the floor */
+	for (frame = 0; frame < 45; frame++)
+	{
+		distance = host_stereo_hud_depth_ease(&state, 0.2f, DEPTH_FRAME, &settings);
+		floor_kept &= distance >= 0.3f - 1e-5f;
+	}
+	check(fabsf(distance - 0.3f) < 1e-4f && floor_kept, "something 0.2 m under it: the floor, 0.30 m, and never nearer");
+	/* back to far: holds, then relaxes */
+	held = -1.0f;
+	back = -1.0f;
+	for (frame = 1, t = DEPTH_FRAME; frame <= 250; frame++, t += DEPTH_FRAME)
+	{
+		float now = host_stereo_hud_depth_ease(&state, INFINITY, DEPTH_FRAME, &settings);
+
+		if (held < 0.0f && now > 0.3f + 1e-4f)
+			held = t - DEPTH_FRAME;
+		if (back < 0.0f && now >= 2.0f - 1e-4f)
+			back = t;
+		distance = now;
+	}
+	snprintf(what, sizeof(what), "back to far: it holds %.3f s (0.5 +- a frame), then is at 2.00 m %.3f s later "
+		"(within 1.0 s and a frame)", held, back - held);
+	check(fabsf(held - 0.5f) <= DEPTH_FRAME + 1e-4f && back > 0.0f && back - held <= 1.0f + DEPTH_FRAME + 1e-4f &&
+		distance == 2.0f, what);
+	/* one frame of something near pulls in at once */
+	distance = host_stereo_hud_depth_ease(&state, 1.0f, DEPTH_FRAME, &settings);
+	check(distance < 2.0f - 1e-3f, "one frame of something 1 m under it pulls the piece in at once");
+	before = state;
+	check(host_stereo_hud_depth_ease(&state, 0.4f, 0.0f, &settings) == distance && !memcmp(&state, &before,
+		sizeof(state)), "a frame of 0 s changes nothing");
+	{
+		struct host_stereo_hud_depth_state far_state = state, odd_state = state, rest = HOST_STEREO_HUD_DEPTH_STATE_INITIAL;
+		float far_distance = host_stereo_hud_depth_ease(&far_state, INFINITY, DEPTH_FRAME, &settings);
+		float odd_distance = host_stereo_hud_depth_ease(&odd_state, NAN, DEPTH_FRAME, &settings);
+
+		check(odd_distance == far_distance && !memcmp(&odd_state, &far_state, sizeof(far_state)) &&
+			host_stereo_hud_depth_ease(&rest, NAN, DEPTH_FRAME, &settings) == 2.0f &&
+			host_stereo_hud_depth_ease(&rest, 0.0f, DEPTH_FRAME, &settings) == 2.0f,
+			"a nearest that isn't a number (or isn't positive) is far");
+	}
+	{
+		struct host_stereo_hud_depth_settings off = settings;
+		struct host_stereo_hud_depth_state pulled = state;
+
+		off.enabled = 0;
+		check(host_stereo_hud_depth_ease(&pulled, 0.5f, DEPTH_FRAME, &off) == 2.0f,
+			"with display.hud_depth off every piece rests at the distance");
+	}
+	/* the clamp: the floor below the distance, the share 0.5 to 1, the
+	seconds 0 to 5, not a number the default */
+	{
+		struct host_stereo_hud_depth_settings odd = settings, high = settings;
+
+		high.distance = 1.0f;
+		high.floor = 1.5f;
+		odd.share = 2.0f;
+		odd.pull_in = -1.0f;
+		odd.relax = 9.0f;
+		odd.relax_delay = NAN;
+		odd.floor = NAN;
+		check(host_stereo_hud_depth_settings_clamp(&high) && high.floor < high.distance && high.floor > 0.0f,
+			"a floor above the distance clamps below it");
+		check(host_stereo_hud_depth_settings_clamp(&odd) && odd.share == 1.0f && odd.pull_in == 0.0f &&
+			odd.relax == 5.0f && odd.relax_delay == 0.5f && odd.floor == 0.3f,
+			"the share clamps to 0.5 to 1, the seconds to 0 to 5, and a value that isn't a number takes its default");
+	}
+}
+
+/* the layout with a distance for each piece: every quad keeps its angular
+extents, each piece's quads sit at its distance, and without distances the
+quads are byte for byte the resting layout's */
+static void depth_layout_checks(void)
+{
+	const float ahead[3] = { 0.0f, 0.0f, -1.0f };
+	const float pieces[HOST_STEREO_HUD_PIECE_COUNT] = { 0.5f, 0.4f, 1.0f, 2.0f, 0.3f };
+	const float rest[HOST_STEREO_HUD_PIECE_COUNT] = { 2.0f, 2.0f, 2.0f, 2.0f, 2.0f };
+	const float width = 854.0f;
+	struct host_stereo_hud_quad natural[HOST_STEREO_HUD_MAXIMUM_QUADS], quads[HOST_STEREO_HUD_MAXIMUM_QUADS];
+	float extents[HALO_HUD_GROUP_COUNT][4], worst_angle = 0.0f, worst_length = 0.0f;
+	int natural_count, count, index, piece_seen[HOST_STEREO_HUD_PIECE_COUNT] = { 0 }, all_seen = 1;
+	char what[240];
+
+	sample_extents(width, extents);
+	natural_count = host_stereo_hud_layout(width, 1, ahead, hud_tangents, (const float (*)[4])extents, NULL, NULL,
+		natural);
+	count = host_stereo_hud_layout(width, 1, ahead, hud_tangents, (const float (*)[4])extents, NULL, pieces, quads);
+	for (index = 0; index < count && count == natural_count; index++)
+	{
+		int piece = host_stereo_hud_piece(&quads[index]), layer = quads[index].layer;
+		float distance = piece >= 0 ? pieces[piece] : HOST_STEREO_HUD_DISTANCE_DEFAULT;
+		float wanted = length3(natural[index].center) * distance / HOST_STEREO_HUD_DISTANCE_DEFAULT;
+
+		if (piece >= 0)
+			piece_seen[piece] = 1;
+		if (layer != HOST_STEREO_HUD_LAYER_GROUP + HALO_HUD_GROUP_PROMPT &&
+			layer != HOST_STEREO_HUD_LAYER_GROUP + HALO_HUD_GROUP_MESSAGES)
+			wanted = distance;
+		worst_angle = fmaxf(worst_angle, corner_miss(&quads[index], &natural[index]));
+		worst_length = fmaxf(worst_length, fabsf(length3(quads[index].center) - wanted));
+	}
+	for (index = 0; index < HOST_STEREO_HUD_PIECE_COUNT; index++)
+		all_seen &= piece_seen[index];
+	snprintf(what, sizeof(what), "pieces at 0.5, 0.4, 1.0, 2.0 and 0.3 m: every quad keeps its angular extents "
+		"(worst %.5f degrees) and its piece's distance (worst %.6f m); the catch-all and the UI stay at 2 m",
+		worst_angle, worst_length);
+	check(count == natural_count && all_seen && worst_angle < 0.01f && worst_length < 1e-4f &&
+		host_stereo_hud_piece(&quads[count - 1]) == HOST_STEREO_HUD_PIECE_NONE &&
+		host_stereo_hud_piece(&quads[count - 2]) == HOST_STEREO_HUD_PIECE_NONE, what);
+	count = host_stereo_hud_layout(width, 1, ahead, hud_tangents, (const float (*)[4])extents, NULL, rest, quads);
+	check(count == natural_count && !memcmp(quads, natural, (size_t)count * sizeof(quads[0])),
+		"every piece at the resting distance, or no distances, is byte for byte the resting layout");
+}
+
+/* a view's projection from its half tangents (left, right, up, down, as
+view_tangents in host_stereo.m), column-major, w = -z */
+static void projection_of(const float tangents[4], float clip[16])
+{
+	float l = tangents[0], r = tangents[1], u = tangents[2], d = tangents[3];
+
+	memset(clip, 0, 16 * sizeof(float));
+	clip[0] = 2.0f / (l + r);
+	clip[5] = 2.0f / (u + d);
+	clip[8] = (r - l) / (l + r);
+	clip[9] = (u - d) / (u + d);
+	clip[11] = -1.0f;
+	clip[14] = 0.1f;
+}
+
+/* the footprint (host_stereo_hud_footprint): a quad's rectangle in the
+view's normalized picture coordinates (u right, v down), grown by
+HOST_STEREO_HUD_DEPTH_MARGIN_DEGREES through the view's tangents */
+static void footprint_checks(void)
+{
+	const float tangents[4] = { 1.76f, 1.01f, 1.0f, 1.05f };
+	const float margin = HOST_STEREO_HUD_DEPTH_MARGIN_DEGREES * DEGREES;
+	float clip[16], rectangle[4], expected[4];
+	float half = 2.0f * tanf(3.5f * DEGREES);
+	struct host_stereo_hud_quad reticle;
+	char what[240];
+
+	projection_of(tangents, clip);
+	memset(&reticle, 0, sizeof(reticle));
+	reticle.center[2] = -2.0f;
+	reticle.x_axis[0] = half;
+	reticle.y_axis[1] = half;
+	reticle.frame = HOST_STEREO_HUD_HEAD;
+	expected[0] = (tanf(-3.5f * DEGREES - margin) + tangents[0]) / (tangents[0] + tangents[1]);
+	expected[2] = (tanf(3.5f * DEGREES + margin) + tangents[0]) / (tangents[0] + tangents[1]);
+	expected[1] = (tangents[2] - tanf(3.5f * DEGREES + margin)) / (tangents[2] + tangents[3]);
+	expected[3] = (tangents[2] + tanf(3.5f * DEGREES + margin)) / (tangents[2] + tangents[3]);
+	check(host_stereo_hud_footprint(&reticle, clip, NULL, tangents, rectangle), "a 7 degree reticle ahead has a footprint");
+	snprintf(what, sizeof(what), "its footprint is %.5f..%.5f by %.5f..%.5f (expected %.5f..%.5f by %.5f..%.5f: "
+		"7 degrees and a degree each side)", rectangle[0], rectangle[2], rectangle[1], rectangle[3], expected[0],
+		expected[2], expected[1], expected[3]);
+	check(fabsf(rectangle[0] - expected[0]) < 1e-5f && fabsf(rectangle[1] - expected[1]) < 1e-5f &&
+		fabsf(rectangle[2] - expected[2]) < 1e-5f && fabsf(rectangle[3] - expected[3]) < 1e-5f, what);
+	/* the weapon's group, its top left corner at -28 across and 20 up on
+	the level frame, with the head turned 10 degrees right of the level
+	frame's yaw: the footprint's left edge at -18 less the margin */
+	{
+		const float ahead[3] = { 0.0f, 0.0f, -1.0f };
+		struct host_stereo_hud_quad quads[HOST_STEREO_HUD_MAXIMUM_QUADS];
+		float extents[HALO_HUD_GROUP_COUNT][4], level[16] = { 0 }, yaw = 10.0f * DEGREES;
+		const struct host_stereo_hud_quad *weapon;
+		float left0, left10;
+		int count;
+
+		sample_extents(640.0f, extents);
+		count = host_stereo_hud_layout(640.0f, 0, ahead, hud_tangents, (const float (*)[4])extents, NULL, NULL, quads);
+		weapon = quad_of(quads, count, HOST_STEREO_HUD_LAYER_GROUP + HALO_HUD_GROUP_WEAPON);
+		/* the level frame in the device's: a direction at across a there is
+		at a + yaw in the device's */
+		level[0] = cosf(yaw);
+		level[2] = sinf(yaw);
+		level[5] = 1.0f;
+		level[8] = -sinf(yaw);
+		level[10] = cosf(yaw);
+		level[15] = 1.0f;
+		host_stereo_hud_footprint(weapon, clip, NULL, tangents, rectangle);
+		/* the quad's outer edge (its margin's lines in) is a little out of
+		the content's -28 degree corner */
+		left0 = atanf(rectangle[0] * (tangents[0] + tangents[1]) - tangents[0]) / DEGREES;
+		host_stereo_hud_footprint(weapon, clip, level, tangents, rectangle);
+		left10 = atanf(rectangle[0] * (tangents[0] + tangents[1]) - tangents[0]) / DEGREES;
+		{
+			/* the quad's own outer edge, from its corners */
+			float angles[4][2], edge;
+
+			corner_angles(weapon, angles);
+			edge = fminf(angles[0][0], angles[2][0]);
+			snprintf(what, sizeof(what), "a level quad lands where corner_plane put it: its footprint's left edge at "
+				"%.4f degrees (its quad's %.4f less the margin), %.4f with the level frame turned 10 degrees", left0,
+				edge, left10);
+			check(fabsf(left0 - (edge - HOST_STEREO_HUD_DEPTH_MARGIN_DEGREES)) < 1e-3f &&
+				fabsf(left10 - (edge + 10.0f - HOST_STEREO_HUD_DEPTH_MARGIN_DEGREES)) < 1e-3f, what);
+		}
+	}
+	{
+		struct host_stereo_hud_quad behind = reticle;
+
+		behind.center[2] = 2.0f;
+		check(!host_stereo_hud_footprint(&behind, clip, NULL, tangents, rectangle), "a quad behind the view has none");
+	}
+	{
+		float screen[4];
+
+		host_stereo_hud_footprint(&reticle, clip, NULL, tangents, rectangle);
+		host_stereo_hud_footprint_screen(rectangle, 1888.0f, 1792.0f, screen);
+		check(screen[0] == rectangle[0] * 1888.0f && screen[1] == rectangle[1] * 1792.0f &&
+			screen[2] == rectangle[2] * 1888.0f && screen[3] == rectangle[3] * 1792.0f,
+			"the screen rectangle the host maps to physical texels is the footprint times the screen, unchanged");
+	}
+}
+
 static void ui_checks(float aspect)
 {
 	struct host_stereo_hud_quad quad;
@@ -738,8 +984,8 @@ static void ui_checks(float aspect)
 
 		sample_extents(aspect * 480.0f, extents);
 		piece_count = host_stereo_hud_layout(aspect * 480.0f, 0, ahead, hud_tangents, (const float (*)[4])extents,
-			NULL, pieces);
-		count = host_stereo_hud_layout(aspect * 480.0f, 1, ahead, hud_tangents, (const float (*)[4])extents, NULL, quads);
+			NULL, NULL, pieces);
+		count = host_stereo_hud_layout(aspect * 480.0f, 1, ahead, hud_tangents, (const float (*)[4])extents, NULL, NULL, quads);
 		check(count == piece_count + 1 && count <= HOST_STEREO_HUD_MAXIMUM_QUADS &&
 			!memcmp(quads, pieces, (size_t)piece_count * sizeof(quads[0])) &&
 			quads[count - 1].layer == HOST_STEREO_HUD_LAYER_UI && quads[count - 1].frame == HOST_STEREO_HUD_LEVEL &&
@@ -953,6 +1199,9 @@ int main(int argc, char **argv)
 	placement_checks();
 	zoom_checks();
 	distance_checks();
+	depth_ease_checks();
+	depth_layout_checks();
+	footprint_checks();
 	level_checks();
 	cut_checks();
 	printf("%s\n", failures ? "stereo_hud_probe: FAILED" : "stereo_hud_probe: PASS");

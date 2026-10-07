@@ -167,6 +167,25 @@ before the HUD's pieces and the reticle, which stay over it; 0 (no quad)
 without positive tangents */
 int host_stereo_hud_zoom(const float tangents[2], float distance, struct host_stereo_hud_quad *quad);
 
+/* The HUD's pieces that step in front of what they cover (the stereo
+spec's "The HUD and UI in head-tracked stereo"): the reticle and each
+corner's groups, which share a plane. Each rests at the placement's
+distance and comes nearer while something under it is nearer
+(host_stereo_hud_depth_ease); the catch-all, the UI's quad and the zoom
+stay at the resting distance */
+enum
+{
+	HOST_STEREO_HUD_PIECE_NONE = -1,
+	HOST_STEREO_HUD_PIECE_RETICLE,
+	HOST_STEREO_HUD_PIECE_COUNTERS,    /* the weapon's counters and a driver's seat labels, top left */
+	HOST_STEREO_HUD_PIECE_METERS,      /* the unit's meters, top right */
+	HOST_STEREO_HUD_PIECE_MESSAGES,    /* the prompt and the messages, left */
+	HOST_STEREO_HUD_PIECE_TRACKER,     /* the motion tracker, bottom left */
+	HOST_STEREO_HUD_PIECE_COUNT
+};
+/* which piece a layout's quad belongs to, or HOST_STEREO_HUD_PIECE_NONE */
+int host_stereo_hud_piece(const struct host_stereo_hud_quad *quad);
+
 /* the quads for a HEAD-mode frame's HUD laid out layout_width lines across,
 given each HUD group's rectangle (group_extent: x0, y0, x1, y1 in layout
 lines, the guest's gpu_stereo_present hud_group_extent; an empty one, or
@@ -177,11 +196,65 @@ host_stereo_hud_placement_clamp), then, given the HUD pass's half tangents acros
 and up (the guest's halo_stereo_hud_tangents; NULL or 0: none), the
 catch-all: the HUD layer whole, head-locked at that projection; and last,
 with ui, the UI layer whole on the UI's quad, over them. Every quad rests at
-the placement's distance. Returns the count;
-quads holds HOST_STEREO_HUD_MAXIMUM_QUADS */
+the placement's distance, but each piece's at piece_distance[piece] given
+them (NULL: all at rest), its size scaled with it so its angles stay.
+Returns the count; quads holds HOST_STEREO_HUD_MAXIMUM_QUADS */
 int host_stereo_hud_layout(float layout_width, int ui, const float reticle[3], const float hud_tangents[2],
 	const float (*group_extent)[4], const struct host_stereo_hud_placement *placement,
-	struct host_stereo_hud_quad *quads);
+	const float piece_distance[HOST_STEREO_HUD_PIECE_COUNT], struct host_stereo_hud_quad *quads);
+
+/* Depth-adaptive placement: each piece's distance is
+clamp(share x the nearest depth under it, floor, the resting distance),
+eased in diopters: pulling in at (1/floor - 1/distance) / pull_in diopters a
+second at once, relaxing out relax_delay after the last frame that asked
+for the current distance or nearer, at (1/floor - 1/distance) / relax.
+display.hud_depth, _share, _floor (meters), _pull_in, _relax and
+_relax_delay (seconds), read at start (host_stereo.m); distance is the
+placement's. host_stereo_hud_depth_settings_clamp clamps the floor below
+the distance (HOST_STEREO_HUD_DEPTH_FLOOR_MIN up), the share to 0.5 to 1
+and the seconds to 0 to 5; a value that isn't a number takes its default.
+Returns 1 if anything changed */
+struct host_stereo_hud_depth_settings
+{
+	int enabled;
+	float share, floor, pull_in, relax, relax_delay;
+	float distance;
+};
+#define HOST_STEREO_HUD_DEPTH_SETTINGS_DEFAULT { 1, 0.85f, 0.3f, 0.1f, 1.0f, 0.5f, HOST_STEREO_HUD_DISTANCE_DEFAULT }
+#define HOST_STEREO_HUD_DEPTH_FLOOR_MIN 0.1f
+/* the floor's most, as a share of the distance */
+#define HOST_STEREO_HUD_DEPTH_FLOOR_SHARE_MAX 0.9f
+int host_stereo_hud_depth_settings_clamp(struct host_stereo_hud_depth_settings *settings);
+
+/* a piece's ease: its distance in diopters (0: at rest) and the seconds
+since a frame last asked for its distance or nearer */
+struct host_stereo_hud_depth_state
+{
+	float diopters, waited;
+};
+#define HOST_STEREO_HUD_DEPTH_STATE_INITIAL { 0.0f, 0.0f }
+/* a frame dt seconds long with nearest (meters; not a number, 0 or less, or
+infinite: nothing near) under the piece: its distance (meters). A frame of
+0 seconds changes nothing; with the settings off it's the distance */
+float host_stereo_hud_depth_ease(struct host_stereo_hud_depth_state *state, float nearest, float dt,
+	const struct host_stereo_hud_depth_settings *settings);
+
+/* how far, in degrees, a piece's footprint reaches past its quad */
+#define HOST_STEREO_HUD_DEPTH_MARGIN_DEGREES 1.0f
+/* A quad's footprint in a view: its corners through clip_from_device (the
+view's projection from the device's frame, column-major; for a
+HOST_STEREO_HUD_LEVEL quad times device_from_level, NULL: the same frame),
+their rectangle in the view's normalized picture coordinates (u0, v0, u1,
+v1; u right, v down: the eye's picture fills its view, so this is where the
+game's picture and depth are under it), grown by
+HOST_STEREO_HUD_DEPTH_MARGIN_DEGREES through the view's half tangents
+(left, right, up, down) and kept inside the view. 0 (none) when a corner is
+behind the eyes or the rectangle is outside the view */
+int host_stereo_hud_footprint(const struct host_stereo_hud_quad *quad, const float clip_from_device[16],
+	const float device_from_level[16], const float tangents[4], float rectangle[4]);
+/* a footprint in a screen width by height (the eye's picture's, which a
+foveated eye's rate map maps to physical texels): x0, y0, x1, y1 */
+void host_stereo_hud_footprint_screen(const float rectangle[4], float width, float height, float screen[4]);
 
 /* the UI's quad for a picture of the given aspect (width over height): the
 whole picture, centered ahead distance away (the placement's), as large as

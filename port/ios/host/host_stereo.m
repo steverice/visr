@@ -122,6 +122,8 @@ static id<MTLTexture> blur_targets[2][2];
 #define BLUR_FORMAT MTLPixelFormatRGBA16Float
 static MTLPixelFormat pipeline_color, pipeline_depth;
 static id<MTLDepthStencilState> depth_always;
+/* the HUD's depth reduction (hud_depth_encode); nil: the pieces rest */
+static id<MTLComputePipelineState> hud_depth_pipeline;
 static id<MTLSamplerState> linear_sampler, nearest_sampler;
 
 static NSString *const shader_source =
@@ -323,6 +325,53 @@ static NSString *const shader_source =
 	"	if (u.decode_srgb)\n"
 	"		color.rgb = select(pow((color.rgb + 0.055) / 1.055, 2.4), color.rgb / 12.92, color.rgb <= 0.04045);\n"
 	"	return float4(color.rgb * u.brightness, covered);\n"
+	"}\n"
+	/* the HUD's depth (host_stereo_hud_depth_ease): one threadgroup for each
+	of a view's pieces' rectangles of the eye's depth (physical texels, x0 y0
+	x1 y1, the end excluded), each thread striding it; the largest depth
+	(reverse-Z: the nearest) of the texels whose stencil has neither the
+	weapon's value 1 nor the first-person body's value 4, and how many were
+	skipped, a simd reduction then the threadgroup's. An empty rectangle
+	gives 0, the far plane */
+	"struct hud_depth_result { float depth; uint skipped; };\n"
+	"kernel void hud_depth_reduce(depth2d<float, access::read> depth [[texture(0)]],\n"
+	"	texture2d<uint, access::read> stencil [[texture(1)]], constant uint4 *rectangles [[buffer(0)]],\n"
+	"	constant uint &use_stencil [[buffer(1)]], device hud_depth_result *results [[buffer(2)]],\n"
+	"	uint group [[threadgroup_position_in_grid]], uint item [[thread_index_in_threadgroup]],\n"
+	"	uint threads [[threads_per_threadgroup]], uint lane [[thread_index_in_simdgroup]],\n"
+	"	uint simd_group [[simdgroup_index_in_threadgroup]], uint simds [[simdgroups_per_threadgroup]])\n"
+	"{\n"
+	"	threadgroup float depths[32];\n"
+	"	threadgroup uint skips[32];\n"
+	"	uint4 r = rectangles[group];\n"
+	"	uint width = r.z > r.x ? r.z - r.x : 0, count = width * (r.w > r.y ? r.w - r.y : 0);\n"
+	"	float nearest = 0.0;\n"
+	"	uint skipped = 0;\n"
+	"	for (uint i = item; i < count; i += threads)\n"
+	"	{\n"
+	"		uint2 at = uint2(r.x + i % width, r.y + i / width);\n"
+	"		if (use_stencil != 0 && (stencil.read(at).r & 5u) != 0)\n"
+	"			skipped++;\n"
+	"		else\n"
+	"			nearest = max(nearest, depth.read(at));\n"
+	"	}\n"
+	"	nearest = simd_max(nearest);\n"
+	"	skipped = simd_sum(skipped);\n"
+	"	if (lane == 0)\n"
+	"	{\n"
+	"		depths[simd_group] = nearest;\n"
+	"		skips[simd_group] = skipped;\n"
+	"	}\n"
+	"	threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+	"	if (item == 0)\n"
+	"	{\n"
+	"		for (uint s = 1; s < simds; s++)\n"
+	"		{\n"
+	"			nearest = max(nearest, depths[s]);\n"
+	"			skipped += skips[s];\n"
+	"		}\n"
+	"		results[group] = hud_depth_result{ nearest, skipped };\n"
+	"	}\n"
 	"}\n";
 
 /* the eye depth's floor when the game's planes aren't usable: the
@@ -726,6 +775,14 @@ static BOOL prepare(id<MTLDevice> device, MTLPixelFormat color, MTLPixelFormat d
 	}
 	pipeline_color = color;
 	pipeline_depth = depth;
+	{
+		id<MTLFunction> reduce = [library newFunctionWithName:@"hud_depth_reduce"];
+
+		hud_depth_pipeline = reduce ? [device newComputePipelineStateWithFunction:reduce error:&error] : nil;
+		if (!hud_depth_pipeline)
+			host_logf(HOST_LOG_ERROR, "stereo: the HUD depth's pipeline failed, so the HUD rests at its distance: %s",
+				error.description.UTF8String);
+	}
 	/* the eyes write the game's depth as it is; the HUD draws over them,
 	depth test off */
 	MTLDepthStencilDescriptor *depth_descriptor = [MTLDepthStencilDescriptor new];
@@ -1421,6 +1478,260 @@ static int cutscene_hud_quad(const float forward[3], const float up[3], const fl
 	return 1;
 }
 
+/* debug.gpu_stats, read once */
+static int gpu_stats_logging(void)
+{
+	static int stats = -1;
+
+	if (stats < 0)
+	{
+		char value[16];
+
+		host_config_string("debug.gpu_stats", "false", value, sizeof(value));
+		stats = strcmp(value, "true") == 0;
+	}
+	return stats;
+}
+
+/* the HUD's depth: display.hud_depth, _share, _floor, _pull_in, _relax and
+_relax_delay, read once, at the first present, resting at the placement's
+distance (host_stereo_hud_depth_settings_clamp) */
+static const struct host_stereo_hud_depth_settings *hud_depth_settings(void)
+{
+	static struct host_stereo_hud_depth_settings settings = HOST_STEREO_HUD_DEPTH_SETTINGS_DEFAULT;
+	static int read;
+
+	if (!read)
+	{
+		char value[16];
+
+		host_config_string("display.hud_depth", "true", value, sizeof(value));
+		settings.enabled = !strcmp(value, "true");
+		settings.share = (float)host_config_real("display.hud_depth_share", settings.share);
+		settings.floor = (float)host_config_real("display.hud_depth_floor", settings.floor);
+		settings.pull_in = (float)host_config_real("display.hud_depth_pull_in", settings.pull_in);
+		settings.relax = (float)host_config_real("display.hud_depth_relax", settings.relax);
+		settings.relax_delay = (float)host_config_real("display.hud_depth_relax_delay", settings.relax_delay);
+		settings.distance = hud_placement()->distance;
+		if (host_stereo_hud_depth_settings_clamp(&settings))
+			host_logf(HOST_LOG_INFO, "stereo: a display.hud_depth_* setting is outside its range; clamped");
+		host_logf(HOST_LOG_INFO, "stereo: HUD depth %s: each piece at %.2f of the nearest under it, %.2f to %.2f m, "
+			"pulling in over %.2f s, relaxing over %.2f s after %.2f s", settings.enabled ? "on" : "off",
+			settings.share, settings.floor, settings.distance, settings.pull_in, settings.relax, settings.relax_delay);
+		read = 1;
+	}
+	return &settings;
+}
+
+/* The nearest depth under each piece (host_stereo_hud.h), from the eyes'
+depth after the guest's frame: a ring of result buffers, each the
+hud_depth_reduce kernel's for both eyes' pieces, encoded in the views'
+command buffer before the views and published by its completion handler;
+host_stereo_present reads the newest published at its start (a frame or
+two late, inside the pull-in's time) */
+#define HUD_DEPTH_RING 3
+#define HUD_DEPTH_THREADS 256
+struct hud_depth_result
+{
+	float depth;
+	uint32_t skipped;
+};
+static id<MTLBuffer> hud_depth_buffers[HUD_DEPTH_RING];
+static float hud_depth_near[HUD_DEPTH_RING], hud_depth_far[HUD_DEPTH_RING];
+static unsigned long hud_depth_serial[HUD_DEPTH_RING], hud_depth_encoded, hud_depth_read;
+static _Atomic int hud_depth_busy[HUD_DEPTH_RING];
+static _Atomic int hud_depth_newest = -1;
+/* each eye's depth's stencil, viewed X32_Stencil8, and the texture bound
+in its place when the depth has no stencil plane */
+static id<MTLTexture> hud_depth_stencil_source[2], hud_depth_stencil_view[2], hud_depth_no_stencil;
+static int hud_depth_stencil_logged = -1;
+/* each piece's ease, its distance, the nearest under it (meters; infinite:
+none measured) and the weapon's and body's texels skipped there, and the
+distance its last log line gave */
+static struct host_stereo_hud_depth_state hud_depth_states[HOST_STEREO_HUD_PIECE_COUNT];
+static float hud_depth_distance[HOST_STEREO_HUD_PIECE_COUNT];
+static float hud_depth_nearest[HOST_STEREO_HUD_PIECE_COUNT] = { INFINITY, INFINITY, INFINITY, INFINITY, INFINITY };
+static unsigned long hud_depth_skipped[HOST_STEREO_HUD_PIECE_COUNT];
+static float hud_depth_logged[HOST_STEREO_HUD_PIECE_COUNT];
+static const char *const hud_piece_names[HOST_STEREO_HUD_PIECE_COUNT] = { "reticle", "counters", "meters",
+	"messages", "tracker" };
+
+/* the newest published result, once: each piece's nearest over the two
+views, in meters (depth 0, the sky or nothing drawn, is the far plane) */
+static void hud_depth_take(void)
+{
+	int newest = atomic_load(&hud_depth_newest);
+
+	if (newest < 0 || hud_depth_serial[newest] == hud_depth_read)
+		return;
+	hud_depth_read = hud_depth_serial[newest];
+	const struct hud_depth_result *results = hud_depth_buffers[newest].contents;
+	float near = hud_depth_near[newest], far = hud_depth_far[newest];
+
+	for (int piece = 0; piece < HOST_STEREO_HUD_PIECE_COUNT; piece++)
+	{
+		const struct hud_depth_result *left = &results[piece], *right = &results[HOST_STEREO_HUD_PIECE_COUNT + piece];
+		float depth = fmaxf(left->depth, right->depth);
+
+		hud_depth_nearest[piece] = !(near > 0.0f) || !(far > near) ? INFINITY : depth > 0.0f ?
+			near * far / (depth * (far - near) + near) : far;
+		hud_depth_skipped[piece] = left->skipped + right->skipped;
+	}
+}
+
+/* an eye's depth's stencil as a texture the kernel reads, or nil when it
+has no stencil plane */
+static id<MTLTexture> hud_depth_stencil(int eye, id<MTLTexture> depth)
+{
+	if (depth.pixelFormat != MTLPixelFormatDepth32Float_Stencil8)
+		return nil;
+	if (hud_depth_stencil_source[eye] != depth)
+	{
+		hud_depth_stencil_source[eye] = depth;
+		hud_depth_stencil_view[eye] = [depth newTextureViewWithPixelFormat:MTLPixelFormatX32_Stencil8];
+	}
+	return hud_depth_stencil_view[eye];
+}
+
+/* encodes the reduction of each view's pieces' footprints (the quads,
+host_stereo_hud_footprint) over its eye's depth into commands, unless every
+buffer of the ring is in use or is the newest result */
+static void hud_depth_encode(id<MTLCommandBuffer> commands, cp_drawable_t drawable, size_t views,
+	const struct host_stereo_hud_quad *quads, int quad_count, simd_float4x4 level, id<MTLTexture> const *colors,
+	id<MTLTexture> const *depths, float near_meters, float far_meters) API_AVAILABLE(visionos(26.0))
+{
+	int slot = -1, newest = atomic_load(&hud_depth_newest);
+
+	for (int candidate = 0; candidate < HUD_DEPTH_RING && slot < 0; candidate++)
+		if (candidate != newest && !atomic_load(&hud_depth_busy[candidate]))
+			slot = candidate;
+	if (slot < 0)
+		return;
+	if (!hud_depth_buffers[slot])
+		hud_depth_buffers[slot] = [commands.device newBufferWithLength:2 * HOST_STEREO_HUD_PIECE_COUNT *
+			sizeof(struct hud_depth_result) options:MTLResourceStorageModeShared];
+	if (!hud_depth_no_stencil)
+	{
+		MTLTextureDescriptor *descriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatR8Uint
+			width:1 height:1 mipmapped:NO];
+
+		descriptor.usage = MTLTextureUsageShaderRead;
+		hud_depth_no_stencil = [commands.device newTextureWithDescriptor:descriptor];
+	}
+	if (!hud_depth_buffers[slot] || !hud_depth_no_stencil)
+		return;
+	memset(hud_depth_buffers[slot].contents, 0, hud_depth_buffers[slot].length);
+	id<MTLComputeCommandEncoder> compute = [commands computeCommandEncoder];
+	NSUInteger width = hud_depth_pipeline.threadExecutionWidth;
+	NSUInteger threads = MIN((NSUInteger)HUD_DEPTH_THREADS, hud_depth_pipeline.maxTotalThreadsPerThreadgroup) / width *
+		width;
+	int stenciled = 0;
+
+	[compute setComputePipelineState:hud_depth_pipeline];
+	for (size_t view_index = 0; view_index < views && view_index < 2; view_index++)
+	{
+		cp_view_t view = cp_drawable_get_view(drawable, view_index);
+		int eye = view_index == 0 ? 0 : 1;
+		simd_float4x4 projection = cp_drawable_compute_projection(drawable, cp_axis_direction_convention_right_up_back,
+			view_index);
+		simd_float4x4 clip_from_device = simd_mul(projection, simd_inverse(cp_view_get_transform(view)));
+		simd_float4 t = view_tangents(drawable, view_index);
+		const float tangents[4] = { t.x, t.y, t.z, t.w };
+		float clip[16], device_from_level[16], footprint[HOST_STEREO_HUD_PIECE_COUNT][4];
+		int found[HOST_STEREO_HUD_PIECE_COUNT] = { 0 };
+		uint32_t rectangles[HOST_STEREO_HUD_PIECE_COUNT][4];
+		id<MTLTexture> depth = depths[eye], stencil = hud_depth_stencil(eye, depth);
+		uint32_t use_stencil = stencil != nil;
+		/* foveated eye passes: the depth is in the map's physical layout */
+		id<MTLRasterizationRateMap> map = eye_rate_maps[eye] && colors[eye].width ==
+			(NSUInteger)foveated_allocated_width && colors[eye].height == (NSUInteger)foveated_allocated_height ?
+			eye_rate_maps[eye] : nil;
+		MTLSize physical = map ? [map physicalSizeForLayer:0] : MTLSizeMake(depth.width, depth.height, 1);
+
+		memcpy(clip, &clip_from_device, sizeof(clip));
+		memcpy(device_from_level, &level, sizeof(device_from_level));
+		/* each piece's rectangle: the union of its quads' footprints */
+		for (int index = 0; index < quad_count; index++)
+		{
+			int piece = host_stereo_hud_piece(&quads[index]);
+			float rectangle[4];
+
+			if (piece < 0 || !host_stereo_hud_footprint(&quads[index], clip, device_from_level, tangents, rectangle))
+				continue;
+			if (!found[piece])
+				memcpy(footprint[piece], rectangle, sizeof(rectangle));
+			else
+			{
+				footprint[piece][0] = fminf(footprint[piece][0], rectangle[0]);
+				footprint[piece][1] = fminf(footprint[piece][1], rectangle[1]);
+				footprint[piece][2] = fmaxf(footprint[piece][2], rectangle[2]);
+				footprint[piece][3] = fmaxf(footprint[piece][3], rectangle[3]);
+			}
+			found[piece] = 1;
+		}
+		/* in the eye's texels: the screen's through the rate map (separable,
+		so a rectangle stays one), kept inside its physical region */
+		for (int piece = 0; piece < HOST_STEREO_HUD_PIECE_COUNT; piece++)
+		{
+			float screen[4], x0, y0, x1, y1;
+
+			memset(rectangles[piece], 0, sizeof(rectangles[piece]));
+			if (!found[piece])
+				continue;
+			if (map)
+			{
+				host_stereo_hud_footprint_screen(footprint[piece], (float)picture_width, (float)picture_height, screen);
+				MTLCoordinate2D top_left = foveation_physical(map, 0, screen[0], screen[1]);
+				MTLCoordinate2D bottom_right = foveation_physical(map, 0, screen[2], screen[3]);
+
+				x0 = top_left.x;
+				y0 = top_left.y;
+				x1 = bottom_right.x;
+				y1 = bottom_right.y;
+			}
+			else
+			{
+				host_stereo_hud_footprint_screen(footprint[piece], (float)depth.width, (float)depth.height, screen);
+				x0 = screen[0];
+				y0 = screen[1];
+				x1 = screen[2];
+				y1 = screen[3];
+			}
+			rectangles[piece][0] = (uint32_t)fmaxf(0.0f, floorf(x0));
+			rectangles[piece][1] = (uint32_t)fmaxf(0.0f, floorf(y0));
+			rectangles[piece][2] = (uint32_t)fminf((float)physical.width, ceilf(x1));
+			rectangles[piece][3] = (uint32_t)fminf((float)physical.height, ceilf(y1));
+		}
+		[compute setTexture:depth atIndex:0];
+		[compute setTexture:stencil ? stencil : hud_depth_no_stencil atIndex:1];
+		[compute setBytes:rectangles length:sizeof(rectangles) atIndex:0];
+		[compute setBytes:&use_stencil length:sizeof(use_stencil) atIndex:1];
+		[compute setBuffer:hud_depth_buffers[slot] offset:(NSUInteger)eye * HOST_STEREO_HUD_PIECE_COUNT *
+			sizeof(struct hud_depth_result) atIndex:2];
+		[compute dispatchThreadgroups:MTLSizeMake(HOST_STEREO_HUD_PIECE_COUNT, 1, 1)
+			threadsPerThreadgroup:MTLSizeMake(threads, 1, 1)];
+		stenciled |= use_stencil;
+	}
+	[compute endEncoding];
+	if (stenciled != hud_depth_stencil_logged)
+	{
+		host_logf(HOST_LOG_INFO, "stereo: HUD depth: %s", stenciled ? "the eyes' depth has a stencil plane: the "
+			"weapon's (value 1) and the first-person body's (value 4) texels are skipped" : "the eyes' depth has no "
+			"stencil plane: nothing is skipped");
+		hud_depth_stencil_logged = stenciled;
+	}
+	hud_depth_near[slot] = near_meters;
+	hud_depth_far[slot] = far_meters;
+	hud_depth_serial[slot] = ++hud_depth_encoded;
+	atomic_store(&hud_depth_busy[slot], 1);
+	[commands addCompletedHandler:^(id<MTLCommandBuffer> completed)
+	{
+		if (completed.status == MTLCommandBufferStatusCompleted)
+			atomic_store(&hud_depth_newest, slot);
+		atomic_store(&hud_depth_busy[slot], 0);
+	}];
+}
+
 /* the immersive cutscene's presenter GPU time (Task 12k, Step 3): the blur's
 and the views' command buffers summed for each frame, logged under
 debug.gpu_stats over every CUTSCENE_TIMED_FRAMES frames: mean and worst */
@@ -1575,8 +1886,58 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 		simd_float2 depth_range = stereo_depth_range(near_meters, far_meters, &depth_scale, &depth_floor);
 		float layout_width = (hud_aspect > 0.0f ? hud_aspect : 4.0f / 3.0f) * HOST_STEREO_HUD_LINES;
 		struct host_stereo_hud_quad quads[HOST_STEREO_HUD_MAXIMUM_QUADS];
+		/* the zoomed picture, in place of the eyes' over the whole view, under
+		the HUD; the guest passes it only when its pass ran, which waits
+		while a menu holds the HUD layer */
+		struct host_stereo_hud_quad zoom_quad;
+		int zoom_shown = zoom && !expanding && host_stereo_hud_zoom(zoom_tangents, hud_placement()->distance,
+			&zoom_quad);
+		/* each HUD piece in front of the nearest thing under it (the newest
+		measure of the eyes' depth), eased; at rest over the zoomed picture,
+		the immersive cutscene and the expanding window, where the pieces
+		aren't over the world */
+		const struct host_stereo_hud_depth_settings *depth_settings = hud_depth_settings();
+		int depth_measured = depth_settings->enabled && hud_depth_pipeline && hud_shown && !zoom_shown && !expanding &&
+			!(cutscene && hud && !hud_ui) && depth_range.x > 0.0f && left_depth;
+		NSTimeInterval now = [NSProcessInfo processInfo].systemUptime;
+		static NSTimeInterval depth_last_at, depth_first_at;
+		float dt = depth_last_at > 0.0 ? (float)fmin(fmax(now - depth_last_at, 0.0), 0.25) : 0.0f;
+
+		if (depth_last_at <= 0.0)
+		{
+			depth_first_at = now;
+			for (int piece = 0; piece < HOST_STEREO_HUD_PIECE_COUNT; piece++)
+				hud_depth_logged[piece] = depth_settings->distance;
+		}
+		depth_last_at = now;
+		hud_depth_take();
+		for (int piece = 0; piece < HOST_STEREO_HUD_PIECE_COUNT; piece++)
+		{
+			if (!depth_measured)
+			{
+				hud_depth_nearest[piece] = INFINITY;
+				hud_depth_skipped[piece] = 0;
+			}
+			hud_depth_distance[piece] = host_stereo_hud_depth_ease(&hud_depth_states[piece], hud_depth_nearest[piece],
+				dt, depth_settings);
+			/* debug.gpu_stats: a line each frame a piece moves more than 5 cm
+			from its last line */
+			if (gpu_stats_logging() && fabsf(hud_depth_distance[piece] - hud_depth_logged[piece]) > 0.05f)
+			{
+				char nearest[24];
+
+				if (isfinite(hud_depth_nearest[piece]))
+					snprintf(nearest, sizeof(nearest), "%.2f m", hud_depth_nearest[piece]);
+				else
+					snprintf(nearest, sizeof(nearest), "none");
+				host_logf(HOST_LOG_INFO, "stereo: HUD depth: frame %lu t %.3f %s at %.2f m (nearest %s under it, %lu "
+					"texels of weapon or body skipped)", stereo_presents, now - depth_first_at, hud_piece_names[piece],
+					hud_depth_distance[piece], nearest, hud_depth_skipped[piece]);
+				hud_depth_logged[piece] = hud_depth_distance[piece];
+			}
+		}
 		int quad_count = hud_shown ? host_stereo_hud_layout(layout_width, hud_ui, reticle, hud_tangents,
-			hud_group_extent, hud_placement(), quads) : 0;
+			hud_group_extent, hud_placement(), depth_settings->enabled ? hud_depth_distance : NULL, quads) : 0;
 		/* the immersive cutscene (Task 12k): the HUD layer (its titles and
 		bars) whole on the director's frame, as on the film's screen, at the
 		HUD's distance; a menu keeps the usual layout */
@@ -1603,12 +1964,6 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 		the game's picture in mono, where it multiplies the gamma-encoded
 		color: about the 2.2 power of that in linear light */
 		float ui_keep = 1.0f - fmaxf(0.0f, fminf(1.0f, ui_dim));
-		/* the zoomed picture, in place of the eyes' over the whole view, under
-		the HUD; the guest passes it only when its pass ran, which waits
-		while a menu holds the HUD layer */
-		struct host_stereo_hud_quad zoom_quad;
-		int zoom_shown = zoom && !expanding && host_stereo_hud_zoom(zoom_tangents, hud_placement()->distance,
-			&zoom_quad);
 		/* outside the expanding window the theater's surroundings show: the
 		dark, or the room */
 		double clear_alpha = expanding && !host_theater_dark() ? 0.0 : 1.0;
@@ -1664,6 +2019,11 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 			}
 			commands = [queue commandBuffer];
 			views = cp_drawable_get_view_count(drawable);
+			/* the nearest depth under each HUD piece, for a later frame: before
+			the views, which overwrite nothing it reads */
+			if (depth_measured && index == 0)
+				hud_depth_encode(commands, drawable, views, quads, quad_count, level, colors, depths, near_meters,
+					far_meters);
 			/* the comfort vignette's angles, the same for every view: full at
 			the nearest edge of any view's frustum */
 			float vignette_outer = 0.0f;
