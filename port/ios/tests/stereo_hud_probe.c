@@ -961,6 +961,68 @@ static void footprint_checks(void)
 	}
 }
 
+/* whether a direction (across, up in degrees, from the view's center)
+lands inside a footprint in the view of projection_of(tangents) */
+static int footprint_holds(const float rectangle[4], const float tangents[4], float across, float up)
+{
+	float u = (tanf(across * DEGREES) + tangents[0]) / (tangents[0] + tangents[1]);
+	float v = (tangents[2] - tanf(up * DEGREES) / cosf(across * DEGREES)) / (tangents[2] + tangents[3]);
+
+	return u >= rectangle[0] && u <= rectangle[2] && v >= rectangle[1] && v <= rectangle[3];
+}
+
+/* the reticle's depth is measured under the crosshair only
+(host_stereo_hud_depth_quad): a square HOST_STEREO_HUD_RETICLE_DEPTH_LINES
+across, about 7 degrees, centered on the crosshair wherever the reticle is
+drawn; a wall at the layer's edge isn't under it, something under the
+crosshair is; every other piece is measured as drawn */
+static void reticle_depth_checks(void)
+{
+	const float tangents[4] = { 1.76f, 1.01f, 1.0f, 1.05f };
+	const float ahead[3] = { 0.0f, 0.0f, -1.0f };
+	const float width = 854.0f;
+	float clip[16], rectangle[4], extents[HALO_HUD_GROUP_COUNT][4], degrees, half;
+	struct host_stereo_hud_quad quads[HOST_STEREO_HUD_MAXIMUM_QUADS], measured;
+	int count, index, others = 1;
+	char what[240];
+
+	projection_of(tangents, clip);
+	sample_extents(width, extents);
+	count = host_stereo_hud_layout(width, 0, ahead, hud_tangents, (const float (*)[4])extents, NULL, NULL, quads);
+	host_stereo_hud_depth_quad(&quads[0], width, &measured);
+	host_stereo_hud_footprint(&measured, clip, NULL, tangents, rectangle);
+	half = atanf(length3(measured.x_axis) / -measured.center[2]) / DEGREES;
+	degrees = 2.0f * half;
+	snprintf(what, sizeof(what), "the reticle's depth square is %.2f degrees across (%.0f lines), centered on the "
+		"crosshair", degrees, HOST_STEREO_HUD_RETICLE_DEPTH_LINES);
+	check(fabsf(degrees - 6.87f) < 0.05f && fabsf(length3(measured.x_axis) - length3(measured.y_axis)) < 1e-6f &&
+		!memcmp(measured.center, quads[0].center, sizeof(measured.center)), what);
+	/* the layer reaches about 21 degrees each side at 854 lines */
+	check(!footprint_holds(rectangle, tangents, 18.0f, 0.0f) && !footprint_holds(rectangle, tangents, -18.0f, 0.0f) &&
+		!footprint_holds(rectangle, tangents, 0.0f, -14.0f) && !footprint_holds(rectangle, tangents, half + 1.5f, 0.0f),
+		"a near wall at the layer's edge (18 degrees out, or 14 down) is outside it: it doesn't pull the crosshair in");
+	check(footprint_holds(rectangle, tangents, 0.0f, 0.0f) && footprint_holds(rectangle, tangents, 2.0f, -2.0f) &&
+		footprint_holds(rectangle, tangents, half + 0.5f, 0.0f),
+		"something under the crosshair (and within the margin) is inside it: it pulls the crosshair in");
+	for (index = 1; index < count; index++)
+	{
+		host_stereo_hud_depth_quad(&quads[index], width, &measured);
+		others &= !memcmp(&measured, &quads[index], sizeof(measured));
+	}
+	check(others, "every other piece's depth is measured under its whole quad");
+	/* a seat's reticle 40 degrees right: the square follows it */
+	{
+		float yaw = 40.0f * DEGREES, seat[3] = { sinf(yaw), 0.0f, -cosf(yaw) };
+
+		count = host_stereo_hud_layout(width, 0, seat, hud_tangents, (const float (*)[4])extents, NULL, NULL, quads);
+		host_stereo_hud_depth_quad(&quads[0], width, &measured);
+		host_stereo_hud_footprint(&measured, clip, NULL, tangents, rectangle);
+		check(quads[0].layer == HOST_STEREO_HUD_LAYER_RETICLE && footprint_holds(rectangle, tangents, 40.0f, 0.0f) &&
+			!footprint_holds(rectangle, tangents, 0.0f, 0.0f) && !footprint_holds(rectangle, tangents, 50.0f, 0.0f),
+			"a seat's reticle 40 degrees right: the square follows the crosshair there");
+	}
+}
+
 static void ui_checks(float aspect)
 {
 	struct host_stereo_hud_quad quad;
@@ -1202,6 +1264,7 @@ int main(int argc, char **argv)
 	depth_ease_checks();
 	depth_layout_checks();
 	footprint_checks();
+	reticle_depth_checks();
 	level_checks();
 	cut_checks();
 	printf("%s\n", failures ? "stereo_hud_probe: FAILED" : "stereo_hud_probe: PASS");

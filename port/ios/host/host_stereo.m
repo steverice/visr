@@ -331,8 +331,7 @@ static NSString *const shader_source =
 	end excluded), the largest depth (reverse-Z: the nearest) of the texels
 	whose stencil has neither the weapon's value 1 nor the first-person
 	body's value 4, and how many were skipped. HUD_DEPTH_TILES threadgroups
-	share a rectangle (the reticle's is its whole layer, a million texels or
-	more), each thread striding it; a simd reduction, the threadgroup's, then
+	share a rectangle, each thread striding it; a simd reduction, the threadgroup's, then
 	one atomic each into the piece's result (a depth's bits order as the
 	depth, which is never negative). The results start at 0: an empty
 	rectangle gives the far plane */
@@ -1605,7 +1604,7 @@ static id<MTLTexture> hud_depth_stencil(int eye, id<MTLTexture> depth)
 host_stereo_hud_footprint) over its eye's depth into commands, unless every
 buffer of the ring is in use or is the newest result */
 static void hud_depth_encode(id<MTLCommandBuffer> commands, cp_drawable_t drawable, size_t views,
-	const struct host_stereo_hud_quad *quads, int quad_count, simd_float4x4 level, id<MTLTexture> const *colors,
+	const struct host_stereo_hud_quad *quads, int quad_count, float layout_width, simd_float4x4 level, id<MTLTexture> const *colors,
 	id<MTLTexture> const *depths, float near_meters, float far_meters) API_AVAILABLE(visionos(26.0))
 {
 	int slot = -1, newest = atomic_load(&hud_depth_newest);
@@ -1662,9 +1661,12 @@ static void hud_depth_encode(id<MTLCommandBuffer> commands, cp_drawable_t drawab
 		for (int index = 0; index < quad_count; index++)
 		{
 			int piece = host_stereo_hud_piece(&quads[index]);
+			struct host_stereo_hud_quad measured;
 			float rectangle[4];
 
-			if (piece < 0 || !host_stereo_hud_footprint(&quads[index], clip, device_from_level, tangents, rectangle))
+			/* (the reticle's: only the square around the crosshair) */
+			host_stereo_hud_depth_quad(&quads[index], layout_width, &measured);
+			if (piece < 0 || !host_stereo_hud_footprint(&measured, clip, device_from_level, tangents, rectangle))
 				continue;
 			if (!found[piece])
 				memcpy(footprint[piece], rectangle, sizeof(rectangle));
@@ -2030,7 +2032,7 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 			/* the nearest depth under each HUD piece, for a later frame: before
 			the views, which overwrite nothing it reads */
 			if (depth_measured && index == 0)
-				hud_depth_encode(commands, drawable, views, quads, quad_count, level, colors, depths, near_meters,
+				hud_depth_encode(commands, drawable, views, quads, quad_count, layout_width, level, colors, depths, near_meters,
 					far_meters);
 			/* the comfort vignette's angles, the same for every view: full at
 			the nearest edge of any view's frustum */

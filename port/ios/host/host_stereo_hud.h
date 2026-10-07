@@ -252,6 +252,16 @@ HOST_STEREO_HUD_DEPTH_MARGIN_DEGREES through the view's half tangents
 behind the eyes or the rectangle is outside the view */
 int host_stereo_hud_footprint(const struct host_stereo_hud_quad *quad, const float clip_from_device[16],
 	const float device_from_level[16], const float tangents[4], float rectangle[4]);
+/* the reticle's depth footprint, in layout lines each way: a square about
+7 degrees across centered on the crosshair (its layer is centered there),
+not the whole crosshair layer, so only what's under the crosshair brings it
+nearer */
+#define HOST_STEREO_HUD_RETICLE_DEPTH_LINES 96.0f
+/* the quad whose footprint measures a piece's depth: for the reticle (laid
+out layout_width lines across) its central HOST_STEREO_HUD_RETICLE_DEPTH_LINES
+square, wherever it's drawn; any other quad as it is */
+void host_stereo_hud_depth_quad(const struct host_stereo_hud_quad *quad, float layout_width,
+	struct host_stereo_hud_quad *depth_quad);
 /* a footprint in a screen width by height (the eye's picture's, which a
 foveated eye's rate map maps to physical texels): x0, y0, x1, y1 */
 void host_stereo_hud_footprint_screen(const float rectangle[4], float width, float height, float screen[4]);

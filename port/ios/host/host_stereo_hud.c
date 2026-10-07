@@ -567,3 +567,28 @@ void host_stereo_hud_footprint_screen(const float rectangle[4], float width, flo
 	screen[2] = rectangle[2] * width;
 	screen[3] = rectangle[3] * height;
 }
+
+void host_stereo_hud_depth_quad(const struct host_stereo_hud_quad *quad, float layout_width,
+	struct host_stereo_hud_quad *depth_quad)
+{
+	float across, up;
+	int axis;
+
+	*depth_quad = *quad;
+	if (quad->layer != HOST_STEREO_HUD_LAYER_RETICLE || quad->catch_all)
+		return;
+	if (!(layout_width > 0.0f))
+		layout_width = 640.0f;
+	/* the central square's share of the layer's half extents */
+	across = fminf(1.0f, HOST_STEREO_HUD_RETICLE_DEPTH_LINES / layout_width);
+	up = fminf(1.0f, HOST_STEREO_HUD_RETICLE_DEPTH_LINES / HOST_STEREO_HUD_LINES);
+	for (axis = 0; axis < 3; axis++)
+	{
+		depth_quad->x_axis[axis] = quad->x_axis[axis] * across;
+		depth_quad->y_axis[axis] = quad->y_axis[axis] * up;
+	}
+	depth_quad->source[0] = 0.5f - across / 2.0f;
+	depth_quad->source[2] = 0.5f + across / 2.0f;
+	depth_quad->source[1] = 0.5f - up / 2.0f;
+	depth_quad->source[3] = 0.5f + up / 2.0f;
+}
