@@ -409,6 +409,23 @@ its vertical field of view (radians in, degrees logged), position, forward,
 whether it's first person, and how render_interpolation.c made it ("cut" on
 a camera cut), for Task 12k's count of telephoto shots */
 void halo_stereo_log_film_camera(const float position[3], const float forward[3], float vertical_field_of_view);
+/* Task 12k's spike, debug.cutscene_immersive (halo_stereo_cutscene.h): 1
+on a frame that renders a cutscene's third-person film immersive (HEAD mode
+or the side-by-side view); _letterbox, if the letterbox made it the film
+(cinematics.c draws the title bars then, onto the director's frame) */
+int halo_stereo_cutscene_immersive(void);
+int halo_stereo_cutscene_immersive_letterbox(void);
+/* on such a frame: the director's frame's forward and up in the eye
+camera's frame (x right, y up, z back; the eyes' frusta are the head's), its
+half tangents across and up, and debug.cutscene_outside_dim; 0 otherwise */
+int halo_stereo_cutscene_frame(float forward[3], float up[3], float tangents[2], float *dim);
+/* the side-by-side view's eye's frustum on such a frame (left, right, up,
+down tangents), for d3d8_device.c's debug screenshot of the mask; 0
+otherwise */
+int halo_stereo_side_by_side_cutscene(int eye, float tangents[4]);
+/* the cutscene camera's horizontal field of view (radians; the observer's,
+70 degrees for the game's default lens), 0 without one (cinematic_screen.c) */
+float halo_cutscene_camera_field_of_view(void);
 /* display.lod_scale in HEAD mode and the side-by-side view (1.0 otherwise):
 a multiplier on the pixel size the game picks model detail and particle
 distance by, 1.0 the Xbox's, clamped to 0.5 to 4 */

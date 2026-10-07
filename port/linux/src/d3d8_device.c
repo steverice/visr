@@ -31,6 +31,7 @@ Conventions carried over from the Xbox:
 #include "halo_display.h"
 #include "halo_stereo.h"
 #include "halo_stereo_window.h"
+#include "halo_stereo_cutscene.h"
 #include "posix.h"
 
 #include <math.h>
@@ -4327,6 +4328,160 @@ static void write_window_screenshot(struct render_target_entry *target)
 	free(pixels);
 }
 
+/* debug.screenshot_every in the side-by-side view, on Task 12k's immersive
+cutscene (debug.cutscene_immersive): what HEAD mode's presenter shows the
+left eye, with its mask (halo_stereo_cutscene.h) over the eye's fixed
+frustum. Inside the director's frame the eye's picture, sharp, with the HUD
+layer (titles, bars) whole on the frame; outside, the picture at a quarter
+of its size, blurred, desaturated and darkened by debug.cutscene_outside_dim,
+eased over the soft edge. As host_stereo.m's shader does it, in C */
+static void write_cutscene_screenshot(struct render_target_entry *target, struct render_target_entry *hud)
+{
+	const char *directory = *config_string("debug.screenshot_directory") ?
+		config_string("debug.screenshot_directory") : NULL;
+	unsigned long width = target->target.gl_width, height = target->target.gl_height;
+	unsigned long small_width = width / HALO_STEREO_CUTSCENE_BLUR_SCALE, small_height = height / HALO_STEREO_CUTSCENE_BLUR_SCALE;
+	unsigned long hud_width = hud ? hud->target.gl_width : 0, hud_height = hud ? hud->target.gl_height : 0;
+	float tangents[4], forward[3], up[3], right[3], frame[2], dim, weights[HALO_STEREO_CUTSCENE_TAPS + 1], total = 0.0f;
+	unsigned char *picture, *pixels, *hud_pixels = NULL;
+	float *small, *pass;
+	unsigned long x, y;
+	int tap, pass_index, channel;
+
+	if (!directory || !halo_stereo_side_by_side_cutscene(0, tangents) ||
+		!halo_stereo_cutscene_frame(forward, up, frame, &dim) || small_width < 1 || small_height < 1)
+		return;
+	right[0] = forward[1] * up[2] - forward[2] * up[1];
+	right[1] = forward[2] * up[0] - forward[0] * up[2];
+	right[2] = forward[0] * up[1] - forward[1] * up[0];
+	picture = malloc(width * height * 4);
+	pixels = malloc(width * height * 4);
+	small = malloc(small_width * small_height * 3 * sizeof(float));
+	pass = malloc(small_width * small_height * 3 * sizeof(float));
+	if (hud)
+		hud_pixels = malloc(hud_width * hud_height * 4);
+	if (!picture || !pixels || !small || !pass || (hud && !hud_pixels) ||
+		!gpu_texture_read(target->target.texture, picture, (uint32_t)(width * height * 4)) ||
+		(hud && !gpu_texture_read(hud->target.texture, hud_pixels, (uint32_t)(hud_width * hud_height * 4))))
+	{
+		free(picture);
+		free(pixels);
+		free(small);
+		free(pass);
+		free(hud_pixels);
+		return;
+	}
+	/* a quarter of the size each axis, each texel the mean of its 4x4 */
+	for (y = 0; y < small_height; y++)
+		for (x = 0; x < small_width; x++)
+			for (channel = 0; channel < 3; channel++)
+			{
+				float sum = 0.0f;
+				unsigned long dx, dy;
+
+				for (dy = 0; dy < HALO_STEREO_CUTSCENE_BLUR_SCALE; dy++)
+					for (dx = 0; dx < HALO_STEREO_CUTSCENE_BLUR_SCALE; dx++)
+						sum += picture[((y * HALO_STEREO_CUTSCENE_BLUR_SCALE + dy) * width + x *
+							HALO_STEREO_CUTSCENE_BLUR_SCALE + dx) * 4 + channel];
+				small[(y * small_width + x) * 3 + channel] = sum / (255.0f * HALO_STEREO_CUTSCENE_BLUR_SCALE *
+					HALO_STEREO_CUTSCENE_BLUR_SCALE);
+			}
+	/* the separable Gaussian, across then down, clamped at the edges */
+	for (tap = 0; tap <= HALO_STEREO_CUTSCENE_TAPS; tap++)
+	{
+		weights[tap] = expf(-(float)(tap * tap) / (2.0f * HALO_STEREO_CUTSCENE_SIGMA * HALO_STEREO_CUTSCENE_SIGMA));
+		total += tap ? 2.0f * weights[tap] : weights[tap];
+	}
+	for (pass_index = 0; pass_index < 2; pass_index++)
+	{
+		float *from = pass_index == 0 ? small : pass, *to = pass_index == 0 ? pass : small;
+
+		for (y = 0; y < small_height; y++)
+			for (x = 0; x < small_width; x++)
+				for (channel = 0; channel < 3; channel++)
+				{
+					float sum = 0.0f;
+
+					for (tap = -HALO_STEREO_CUTSCENE_TAPS; tap <= HALO_STEREO_CUTSCENE_TAPS; tap++)
+					{
+						long sx = (long)x + (pass_index == 0 ? tap : 0), sy = (long)y + (pass_index == 1 ? tap : 0);
+
+						sx = sx < 0 ? 0 : sx >= (long)small_width ? (long)small_width - 1 : sx;
+						sy = sy < 0 ? 0 : sy >= (long)small_height ? (long)small_height - 1 : sy;
+						sum += weights[tap < 0 ? -tap : tap] * from[((unsigned long)sy * small_width + (unsigned long)sx) * 3 +
+							channel];
+					}
+					to[(y * small_width + x) * 3 + channel] = sum / total;
+				}
+	}
+	for (y = 0; y < height; y++)
+	{
+		for (x = 0; x < width; x++)
+		{
+			/* the pixel's direction in the eye's frame (x right, y up, z back),
+			then in the director's frame's axes (z forward) */
+			float u = ((float)x + 0.5f) / (float)width, v = ((float)y + 0.5f) / (float)height;
+			float view[3] = { -tangents[0] + u * (tangents[0] + tangents[1]), tangents[2] - v * (tangents[2] + tangents[3]),
+				-1.0f };
+			float fx = view[0] * right[0] + view[1] * right[1] + view[2] * right[2];
+			float fy = view[0] * up[0] + view[1] * up[1] + view[2] * up[2];
+			float fz = view[0] * forward[0] + view[1] * forward[1] + view[2] * forward[2];
+			float outside = halo_stereo_cutscene_outside(fx, fy, fz, frame[0], frame[1], HALO_STEREO_CUTSCENE_SOFT_EDGE);
+			float blurred[3], rgb[3], dimmed[3], color[3];
+			unsigned char *out = pixels + (y * width + x) * 4;
+			const unsigned char *in = picture + (y * width + x) * 4;
+			/* the blurred picture, bilinear */
+			float sx = u * (float)small_width - 0.5f, sy = v * (float)small_height - 0.5f;
+			long x0 = (long)floorf(sx), y0 = (long)floorf(sy);
+			float ax = sx - (float)x0, ay = sy - (float)y0;
+
+			for (channel = 0; channel < 3; channel++)
+			{
+				float corners[4];
+				int corner;
+
+				for (corner = 0; corner < 4; corner++)
+				{
+					long cx = x0 + (corner & 1), cy = y0 + (corner >> 1);
+
+					cx = cx < 0 ? 0 : cx >= (long)small_width ? (long)small_width - 1 : cx;
+					cy = cy < 0 ? 0 : cy >= (long)small_height ? (long)small_height - 1 : cy;
+					corners[corner] = small[((unsigned long)cy * small_width + (unsigned long)cx) * 3 + channel];
+				}
+				blurred[channel] = (corners[0] * (1.0f - ax) + corners[1] * ax) * (1.0f - ay) +
+					(corners[2] * (1.0f - ax) + corners[3] * ax) * ay;
+			}
+			/* (BGRA: the luma's weights take red, green, blue) */
+			rgb[0] = blurred[2];
+			rgb[1] = blurred[1];
+			rgb[2] = blurred[0];
+			halo_stereo_cutscene_dimmed(rgb, dim, dimmed);
+			for (channel = 0; channel < 3; channel++)
+				color[channel] = (float)in[channel] / 255.0f * (1.0f - outside) + dimmed[2 - channel] * outside;
+			/* the HUD layer on the frame: premultiplied color, and in alpha the
+			share of the picture that still shows */
+			if (hud_pixels && fz > 0.0f && fabsf(fx / fz) <= frame[0] && fabsf(fy / fz) <= frame[1])
+			{
+				unsigned long hx = (unsigned long)((0.5f + 0.5f * fx / fz / frame[0]) * (float)(hud_width - 1) + 0.5f);
+				unsigned long hy = (unsigned long)((0.5f - 0.5f * fy / fz / frame[1]) * (float)(hud_height - 1) + 0.5f);
+				const unsigned char *h = hud_pixels + (hy * hud_width + hx) * 4;
+
+				for (channel = 0; channel < 3; channel++)
+					color[channel] = (float)h[channel] / 255.0f + color[channel] * (float)h[3] / 255.0f;
+			}
+			for (channel = 0; channel < 3; channel++)
+				out[channel] = (unsigned char)lroundf(fminf(1.0f, fmaxf(0.0f, color[channel])) * 255.0f);
+			out[3] = 0xff;
+		}
+	}
+	screenshot_file(directory, "-cutscene", pixels, width, height);
+	free(picture);
+	free(pixels);
+	free(small);
+	free(pass);
+	free(hud_pixels);
+}
+
 /* a depth target's depth as the game sees it (gpu_texture_read), or NULL if
 the backend can't read it back; the caller frees it */
 static float *depth_read(struct render_target_entry *target)
@@ -4661,6 +4816,7 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 					write_screenshot(render_target_get_layer(&device.back_buffer, 1), "-right");
 					write_depth_screenshot(render_target_get_layer(&device.depth_buffer, 0), "-left-depth");
 					write_window_screenshot(back_buffer);
+					write_cutscene_screenshot(back_buffer, hud);
 				}
 				if (hud)
 				{
@@ -4812,6 +4968,9 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 			/* HEAD mode's cutscene window, expanding from the film out to
 			the full view */
 			present.expanding = halo_stereo_expansion(&present.expansion, &present.expansion_bars);
+			/* Task 12k's immersive cutscene: the director's frame, for the mask */
+			present.cutscene = halo_stereo_cutscene_frame(present.cutscene_forward, present.cutscene_up,
+				present.cutscene_tangents, &present.cutscene_dim);
 			present.hud_ui = ui ? 1 : hud && hud_layer_ui && !halo_stereo_film_letterbox();
 			/* the next frame's zoomed pass waits while a menu holds the layer */
 			halo_stereo_set_ui_shown(present.hud_ui);

@@ -417,7 +417,10 @@ void cinematic_render(
 		{
 			static boolean bars_shown = FALSE;
 
-			bar_amount = halo_stereo_film_letterbox() ? halo_cinematic_title_bars() : 0.0f;
+			/* (and Task 12k's immersive cutscene, whose HUD layer goes on the
+			director's frame as on the film's screen) */
+			bar_amount = halo_stereo_film_letterbox() || halo_stereo_cutscene_immersive_letterbox() ?
+				halo_cinematic_title_bars() : 0.0f;
 			/* (the cutscene window's expansion carries on from the film's last) */
 			halo_stereo_set_title_bars(bar_amount);
 			/* once each time a title brings them in, and as they leave */

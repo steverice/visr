@@ -122,6 +122,16 @@ int halo_cutscene_camera_settled(void)
 	return distance >= 0.0f && distance <= HALO_CUTSCENE_SETTLED_DISTANCE && observer_orientation_settled(0);
 }
 
+/* the observer's field of view, horizontal (the game's 4:3 frame shrinks
+it by 0.85 on the tangent, render_cameras.c): a cutscene camera point's own,
+or 70 degrees (camera_scripting.c) */
+float halo_cutscene_camera_field_of_view(void)
+{
+	struct observer_result const *camera = observer_get_camera(0);
+
+	return camera ? (float)camera->field_of_view : 0.0f;
+}
+
 void halo_cutscene_state(struct halo_cutscene_state *state)
 {
 	state->letterbox = halo_cinematic_screen();

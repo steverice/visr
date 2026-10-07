@@ -205,6 +205,7 @@ int halo_scripted_camera(void) { return 0; }
 int halo_scripted_director_camera(void) { return 0; }
 int halo_third_person_camera(void) { return 0; }
 int halo_cutscene_camera_first_person(void) { return 0; }
+float halo_cutscene_camera_field_of_view(void) { return 1.2217305f; }
 int halo_look_disabled_first_person(void) { return 0; }
 int halo_cutscene_camera_settled(void) { return 1; }
 void halo_cutscene_state(struct halo_cutscene_state *state) { memset(state, 0, sizeof(*state)); }

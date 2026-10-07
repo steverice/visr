@@ -61,13 +61,20 @@ film handing over to the full view, halo_stereo_window.h) the eyes show only
 inside the window growing from the theater screen's rectangle at expansion
 (0 to 1), black on the bars it carries (expansion_bars), with the theater's
 surroundings and the script fade's tint (fade) outside it, and of the HUD
-only a menu's UI quad */
+only a menu's UI quad. With cutscene (Task 12k's immersive cutscene,
+halo_stereo_cutscene.h) the eyes are a cutscene camera turned by the head:
+inside the director's frame (cutscene_forward and cutscene_up in the
+device's frame at the render, cutscene_tangents its half tangents) they stay
+sharp, outside they show a quarter-size blur of themselves, darkened and
+desaturated by cutscene_dim, over a soft edge; the HUD layer goes whole on
+the frame (a menu keeps the usual layout) */
 void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLTexture> right,
 	id<MTLTexture> left_depth, id<MTLTexture> right_depth, __unsafe_unretained id<MTLTexture> const *hud_layers,
 	const float (*hud_group_extent)[4], float hud_aspect, int hud_ui, const float reticle[3],
 	const float hud_tangents[2], id<MTLTexture> zoom, const float zoom_tangents[2], float near_meters,
 	float far_meters, float brightness, float vignette, float ui_dim, int expanding, float expansion,
-	float expansion_bars, const float fade[4]);
+	float expansion_bars, const float fade[4], int cutscene, const float cutscene_forward[3],
+	const float cutscene_up[3], const float cutscene_tangents[2], float cutscene_dim);
 /* HEAD mode without eyes this frame (a load: a mono picture), or with a
 menu over the film (the main menu's scripted scene, the pause menu in a
 cutscene): 1 while the Compositor's frame host_stereo_frame opened can take

@@ -36,11 +36,13 @@ Elsewhere host_stereo_frame leaves the frame mono. */
 #import <Metal/Metal.h>
 #include <os/proc.h>
 #include <simd/simd.h>
+#include <stdatomic.h>
 #include "host_theater.h"
 #include "host_stereo_head.h"
 #include "host_stereo_vignette.h"
 #include "host_stereo_hud.h"
 #include "halo_stereo_window.h"
+#include "halo_stereo_cutscene.h"
 
 /* one world unit in meters */
 #define METERS_PER_UNIT 3.048f
@@ -113,6 +115,11 @@ static int head_configured(void)
 }
 
 static id<MTLRenderPipelineState> eye_pipeline, eye_foveated_pipeline, hud_pipeline;
+/* the immersive cutscene's blur (Task 12k): its pipelines, and each eye's
+two quarter-size targets (the blur ends in the first) */
+static id<MTLRenderPipelineState> blur_down_pipeline, blur_down_foveated_pipeline, blur_pipeline;
+static id<MTLTexture> blur_targets[2][2];
+#define BLUR_FORMAT MTLPixelFormatRGBA16Float
 static MTLPixelFormat pipeline_color, pipeline_depth;
 static id<MTLDepthStencilState> depth_always;
 static id<MTLSamplerState> linear_sampler, nearest_sampler;
@@ -144,7 +151,20 @@ static NSString *const shader_source =
 	HOST_STEREO_VIGNETTE_STRING(HOST_STEREO_VIGNETTE_SOURCE) "\n"
 	"struct eye_uniforms { uint decode_srgb; float depth_scale; float depth_floor; float brightness; float vignette;\n"
 	"	float4 tangents; float vignette_inner; float vignette_outer; uint expanding; float bars; float4 window;\n"
-	"	float4 tint; float tint_depth; float4x4 screen_from_view; };\n"
+	"	float4 tint; float tint_depth; float4x4 screen_from_view; uint cutscene; float4 frame;\n"
+	"	float4x4 frame_from_view; };\n"
+	/* Task 12k's immersive cutscene (halo_stereo_cutscene.h): 0 inside the
+	director's frame to 1 outside it, at the view's coordinate */
+	HALO_STEREO_CUTSCENE_STRING(HALO_STEREO_CUTSCENE_SOURCE) "\n"
+	"static float eye_outside_frame(float2 coordinate, constant eye_uniforms &u)\n"
+	"{\n"
+	"	if (!u.cutscene)\n"
+	"		return 0.0;\n"
+	"	float3 view = float3(mix(-u.tangents.x, u.tangents.y, coordinate.x), mix(u.tangents.z, -u.tangents.w,\n"
+	"		coordinate.y), -1.0);\n"
+	"	float3 f = (u.frame_from_view * float4(view, 0.0)).xyz;\n"
+	"	return halo_stereo_cutscene_outside(f.x, f.y, f.z, u.frame.x, u.frame.y, u.frame.z);\n"
+	"}\n"
 	/* the cutscene window's expansion (halo_stereo_window.h): whether the
 	view's coordinate is outside the growing window (0), inside it (1) or on
 	its bars (2); always inside while it isn't expanding */
@@ -171,9 +191,20 @@ static NSString *const shader_source =
 	/* the picture and depth at at (normalized), the vignette at the view's
 	own coordinate; black on the expanding window's bars */
 	"static eye_pixel eye_shade(float2 coordinate, float2 at, texture2d<float> picture, depth2d<float> depth,\n"
-	"	sampler linear, sampler nearest, constant eye_uniforms &u, int shown)\n"
+	"	texture2d<float> blurred, sampler linear, sampler nearest, constant eye_uniforms &u, int shown)\n"
 	"{\n"
 	"	float3 color = shown == 2 ? float3(0.0) : picture.sample(linear, at).rgb;\n"
+	/* outside the immersive cutscene's frame: the blurred picture (laid out
+	as the view, unfoveated), desaturated and darkened by the dim, as
+	halo_stereo_cutscene_dimmed */
+	"	float outside = eye_outside_frame(coordinate, u);\n"
+	"	if (outside > 0.0)\n"
+	"	{\n"
+	"		float3 blur = blurred.sample(linear, coordinate).rgb;\n"
+	"		float luma = dot(blur, float3(0.299, 0.587, 0.114));\n"
+	"		float keep = 1.0 - u.frame.w;\n"
+	"		color = mix(color, (luma + (blur - luma) * keep) * keep, outside);\n"
+	"	}\n"
 	"	if (u.decode_srgb)\n"
 	"		color = select(pow((color + 0.055) / 1.055, 2.4), color / 12.92, color <= 0.04045);\n"
 	"	float edge = u.vignette > 0.0 ? host_stereo_vignette_edge(coordinate.x, coordinate.y, u.tangents.x,\n"
@@ -184,15 +215,15 @@ static NSString *const shader_source =
 	"	return out;\n"
 	"}\n"
 	"fragment eye_pixel eye_fragment(picture_vertex in [[stage_in]], texture2d<float> picture [[texture(0)]],\n"
-	"	depth2d<float> depth [[texture(1)]], sampler linear [[sampler(0)]], sampler nearest [[sampler(1)]],\n"
-	"	constant eye_uniforms &u [[buffer(0)]])\n"
+	"	depth2d<float> depth [[texture(1)]], texture2d<float> blurred [[texture(2)]], sampler linear [[sampler(0)]],\n"
+	"	sampler nearest [[sampler(1)]], constant eye_uniforms &u [[buffer(0)]])\n"
 	"{\n"
 	"	int shown = eye_window(in.coordinate, u);\n"
 	"	if (shown == 0 && u.tint.w <= 0.0)\n"
 	"		discard_fragment();\n"
 	"	if (shown == 0)\n"
 	"		return eye_outside(u);\n"
-	"	return eye_shade(in.coordinate, in.coordinate, picture, depth, linear, nearest, u, shown);\n"
+	"	return eye_shade(in.coordinate, in.coordinate, picture, depth, blurred, linear, nearest, u, shown);\n"
 	"}\n"
 	/* foveated eye passes (foveated_eyes): the game's picture and depth were
 	rendered through the eye's rate map, so a screen point (the normalized
@@ -201,9 +232,9 @@ static NSString *const shader_source =
 	allocated larger, and what lies past that region is stale */
 	"struct eye_foveation { float2 screen; float2 physical; float2 allocated; };\n"
 	"fragment eye_pixel eye_foveated_fragment(picture_vertex in [[stage_in]], texture2d<float> picture [[texture(0)]],\n"
-	"	depth2d<float> depth [[texture(1)]], sampler linear [[sampler(0)]], sampler nearest [[sampler(1)]],\n"
-	"	constant eye_uniforms &u [[buffer(0)]], constant rasterization_rate_map_data &map [[buffer(1)]],\n"
-	"	constant eye_foveation &f [[buffer(2)]])\n"
+	"	depth2d<float> depth [[texture(1)]], texture2d<float> blurred [[texture(2)]], sampler linear [[sampler(0)]],\n"
+	"	sampler nearest [[sampler(1)]], constant eye_uniforms &u [[buffer(0)]],\n"
+	"	constant rasterization_rate_map_data &map [[buffer(1)]], constant eye_foveation &f [[buffer(2)]])\n"
 	"{\n"
 	"	int shown = eye_window(in.coordinate, u);\n"
 	"	if (shown == 0 && u.tint.w <= 0.0)\n"
@@ -213,7 +244,50 @@ static NSString *const shader_source =
 	"	rasterization_rate_map_decoder decoder(map);\n"
 	"	float2 screen = clamp(in.coordinate * f.screen, float2(0.0), f.screen - 1.0 / 256.0);\n"
 	"	float2 physical = clamp(decoder.map_screen_to_physical_coordinates(screen), float2(0.5), f.physical - 0.5);\n"
-	"	return eye_shade(in.coordinate, physical / f.allocated, picture, depth, linear, nearest, u, shown);\n"
+	"	return eye_shade(in.coordinate, physical / f.allocated, picture, depth, blurred, linear, nearest, u, shown);\n"
+	"}\n"
+	/* the immersive cutscene's blur (Task 12k): the eye's picture at a
+	quarter of its size each axis, laid out as the view (a foveated eye read
+	through its rate map, as eye_foveated_fragment), each texel the mean of
+	the 4x4 under it from four bilinear reads; then a separable Gaussian
+	across and down (halo_stereo_cutscene.h's taps and sigma) */
+	"fragment float4 blur_down_fragment(picture_vertex in [[stage_in]], texture2d<float> picture [[texture(0)]],\n"
+	"	sampler linear [[sampler(0)]])\n"
+	"{\n"
+	"	float2 texel = 1.0 / float2(picture.get_width(), picture.get_height());\n"
+	"	return 0.25 * (picture.sample(linear, in.coordinate + texel * float2(-1, -1)) +\n"
+	"		picture.sample(linear, in.coordinate + texel * float2(1, -1)) +\n"
+	"		picture.sample(linear, in.coordinate + texel * float2(-1, 1)) +\n"
+	"		picture.sample(linear, in.coordinate + texel * float2(1, 1)));\n"
+	"}\n"
+	"fragment float4 blur_down_foveated_fragment(picture_vertex in [[stage_in]], texture2d<float> picture [[texture(0)]],\n"
+	"	sampler linear [[sampler(0)]], constant rasterization_rate_map_data &map [[buffer(1)]],\n"
+	"	constant eye_foveation &f [[buffer(2)]])\n"
+	"{\n"
+	"	rasterization_rate_map_decoder decoder(map);\n"
+	"	float4 sum = float4(0.0);\n"
+	"	for (int i = 0; i < 4; i++)\n"
+	"	{\n"
+	"		float2 offset = float2((i & 1) ? 1.0 : -1.0, (i & 2) ? 1.0 : -1.0);\n"
+	"		float2 screen = clamp(in.coordinate * f.screen + offset, float2(0.0), f.screen - 1.0 / 256.0);\n"
+	"		float2 physical = clamp(decoder.map_screen_to_physical_coordinates(screen), float2(0.5), f.physical - 0.5);\n"
+	"		sum += picture.sample(linear, physical / f.allocated);\n"
+	"	}\n"
+	"	return 0.25 * sum;\n"
+	"}\n"
+	"struct blur_uniforms { float2 step; int taps; float sigma; };\n"
+	"fragment float4 blur_fragment(picture_vertex in [[stage_in]], texture2d<float> picture [[texture(0)]],\n"
+	"	sampler linear [[sampler(0)]], constant blur_uniforms &u [[buffer(0)]])\n"
+	"{\n"
+	"	float4 sum = float4(0.0);\n"
+	"	float total = 0.0;\n"
+	"	for (int tap = -u.taps; tap <= u.taps; tap++)\n"
+	"	{\n"
+	"		float weight = exp(-float(tap * tap) / (2.0 * u.sigma * u.sigma));\n"
+	"		sum += weight * picture.sample(linear, in.coordinate + float(tap) * u.step);\n"
+	"		total += weight;\n"
+	"	}\n"
+	"	return sum / total;\n"
 	"}\n"
 	/* one of the HUD's quads (host_stereo_hud.h): its texture's rectangle,
 	and its center and half extents in its frame, which clip_from_frame
@@ -564,6 +638,21 @@ struct eye_uniforms
 	simd_float4 tint;
 	float tint_depth;
 	simd_float4x4 screen_from_view;
+	/* Task 12k's immersive cutscene: on; the director's frame's half
+	tangents across and up, the soft edge (radians) and the outside's dim;
+	and the view's directions into the frame's axes (x right, y up, z
+	forward) */
+	uint32_t cutscene;
+	simd_float4 frame;
+	simd_float4x4 frame_from_view;
+};
+
+/* blur_fragment's: one tap's step (normalized), the taps each side, sigma */
+struct blur_uniforms
+{
+	simd_float2 step;
+	int32_t taps;
+	float sigma;
 };
 
 struct hud_uniforms
@@ -607,6 +696,22 @@ static BOOL prepare(id<MTLDevice> device, MTLPixelFormat color, MTLPixelFormat d
 	descriptor.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
 	if (eye_pipeline && eye_foveated_pipeline)
 		hud_pipeline = [device newRenderPipelineStateWithDescriptor:descriptor error:&error];
+	{
+		MTLRenderPipelineDescriptor *blur = [MTLRenderPipelineDescriptor new];
+
+		blur.vertexFunction = [library newFunctionWithName:@"eye_vertex"];
+		blur.colorAttachments[0].pixelFormat = BLUR_FORMAT;
+		blur.fragmentFunction = [library newFunctionWithName:@"blur_down_fragment"];
+		blur_down_pipeline = hud_pipeline ? [device newRenderPipelineStateWithDescriptor:blur error:&error] : nil;
+		blur.fragmentFunction = [library newFunctionWithName:@"blur_down_foveated_fragment"];
+		blur_down_foveated_pipeline = blur_down_pipeline ? [device newRenderPipelineStateWithDescriptor:blur
+			error:&error] : nil;
+		blur.fragmentFunction = [library newFunctionWithName:@"blur_fragment"];
+		blur_pipeline = blur_down_foveated_pipeline ? [device newRenderPipelineStateWithDescriptor:blur error:&error] :
+			nil;
+		if (hud_pipeline && !blur_pipeline)
+			hud_pipeline = nil;
+	}
 	if (!eye_pipeline || !eye_foveated_pipeline || !hud_pipeline)
 	{
 		host_logf(HOST_LOG_ERROR, "stereo: the presenter's pipelines failed: %s", error.description.UTF8String);
@@ -1274,6 +1379,160 @@ static void rotation_rows(simd_float4x4 matrix, float rows[3][3])
 		for (int column = 0; column < 3; column++)
 			rows[row][column] = matrix.columns[column][row];
 }
+
+/* the immersive cutscene's HUD quad (Task 12k): the HUD layer whole over
+the director's frame, in the device's frame, HOST_STEREO_HUD_DISTANCE away */
+static int cutscene_hud_quad(const float forward[3], const float up[3], const float tangents[2],
+	struct host_stereo_hud_quad *quads)
+{
+	struct host_stereo_hud_quad *quad = &quads[0];
+	float right[3] = { forward[1] * up[2] - forward[2] * up[1], forward[2] * up[0] - forward[0] * up[2],
+		forward[0] * up[1] - forward[1] * up[0] };
+
+	memset(quad, 0, sizeof(*quad));
+	quad->source[2] = quad->source[3] = 1.0f;
+	for (int i = 0; i < 3; i++)
+	{
+		quad->center[i] = forward[i] * HOST_STEREO_HUD_DISTANCE;
+		quad->x_axis[i] = right[i] * HOST_STEREO_HUD_DISTANCE * tangents[0];
+		quad->y_axis[i] = up[i] * HOST_STEREO_HUD_DISTANCE * tangents[1];
+	}
+	quad->frame = HOST_STEREO_HUD_HEAD;
+	quad->layer = HOST_STEREO_HUD_LAYER_HUD;
+	quad->catch_all = 1;
+	return 1;
+}
+
+/* the immersive cutscene's presenter GPU time (Task 12k, Step 3): the blur's
+and the views' command buffers summed for each frame, logged under
+debug.gpu_stats over every CUTSCENE_TIMED_FRAMES frames: mean and worst */
+#define CUTSCENE_TIMED_FRAMES 300
+static _Atomic uint64_t cutscene_gpu_nanoseconds;
+static uint64_t cutscene_gpu_counted, cutscene_gpu_worst, cutscene_gpu_sum;
+static unsigned long cutscene_gpu_frames;
+
+static void cutscene_time(id<MTLCommandBuffer> commands)
+{
+	[commands addCompletedHandler:^(id<MTLCommandBuffer> completed)
+	{
+		if (completed.GPUEndTime > completed.GPUStartTime)
+			atomic_fetch_add(&cutscene_gpu_nanoseconds,
+				(uint64_t)((completed.GPUEndTime - completed.GPUStartTime) * 1e9));
+	}];
+}
+
+/* once a frame: what completed since the last (a frame or so behind) */
+static void cutscene_time_frame(int cutscene)
+{
+	static int stats = -1;
+	uint64_t total = atomic_load(&cutscene_gpu_nanoseconds), frame = total - cutscene_gpu_counted;
+
+	if (stats < 0)
+	{
+		char value[16];
+
+		host_config_string("debug.gpu_stats", "false", value, sizeof(value));
+		stats = strcmp(value, "true") == 0;
+	}
+	cutscene_gpu_counted = total;
+	if (!cutscene || !stats)
+		return;
+	cutscene_gpu_sum += frame;
+	if (frame > cutscene_gpu_worst)
+		cutscene_gpu_worst = frame;
+	if (++cutscene_gpu_frames == CUTSCENE_TIMED_FRAMES)
+	{
+		host_logf(HOST_LOG_INFO, "stereo: the immersive cutscene's presenter (the blur and the views): GPU %.2f ms "
+			"a frame (mean of %d), worst %.2f ms", (double)cutscene_gpu_sum / 1e6 / CUTSCENE_TIMED_FRAMES,
+			CUTSCENE_TIMED_FRAMES, (double)cutscene_gpu_worst / 1e6);
+		cutscene_gpu_frames = 0;
+		cutscene_gpu_sum = cutscene_gpu_worst = 0;
+	}
+}
+
+/* the immersive cutscene's blur of both eyes into blur_targets[eye][0] (a
+quarter of the eyes' screen size, laid out as the view), in a command buffer
+of its own committed before the views'; 0 (no blur: the frame is drawn
+sharp throughout) without pipelines, a picture size or targets */
+static int cutscene_blur(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLTexture> right)
+	API_AVAILABLE(visionos(26.0))
+{
+	id<MTLTexture> colors[2] = { left, right };
+	int width = picture_width / HALO_STEREO_CUTSCENE_BLUR_SCALE, height = picture_height / HALO_STEREO_CUTSCENE_BLUR_SCALE;
+	static int logged;
+
+	if (!blur_pipeline || width < 1 || height < 1 || !colors[0] || !colors[1])
+		return 0;
+	if (!blur_targets[0][0] || (int)blur_targets[0][0].width != width || (int)blur_targets[0][0].height != height)
+	{
+		MTLTextureDescriptor *descriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:BLUR_FORMAT
+			width:(NSUInteger)width height:(NSUInteger)height mipmapped:NO];
+
+		descriptor.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+		descriptor.storageMode = MTLStorageModePrivate;
+		for (int eye = 0; eye < 2; eye++)
+			for (int target = 0; target < 2; target++)
+				blur_targets[eye][target] = [queue.device newTextureWithDescriptor:descriptor];
+		if (!blur_targets[0][0] || !blur_targets[0][1] || !blur_targets[1][0] || !blur_targets[1][1])
+			return 0;
+		if (!logged)
+		{
+			host_logf(HOST_LOG_INFO, "stereo: the immersive cutscene's blur: %dx%d targets, a %d-tap Gaussian (sigma %.1f) "
+				"each way", width, height, 2 * HALO_STEREO_CUTSCENE_TAPS + 1, (double)HALO_STEREO_CUTSCENE_SIGMA);
+			logged = 1;
+		}
+	}
+	id<MTLCommandBuffer> commands = [queue commandBuffer];
+	for (int eye = 0; eye < 2; eye++)
+	{
+		for (int step = 0; step < 3; step++)
+		{
+			MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
+			/* down into the first target, across into the second, down into the first */
+			id<MTLTexture> target = blur_targets[eye][step == 1 ? 1 : 0];
+
+			pass.colorAttachments[0].texture = target;
+			pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+			pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+			id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
+			[encoder setFragmentSamplerState:linear_sampler atIndex:0];
+			if (step == 0)
+			{
+				if (eye_rate_maps[eye] && colors[eye].width == (NSUInteger)foveated_allocated_width &&
+					colors[eye].height == (NSUInteger)foveated_allocated_height)
+				{
+					MTLSize physical = [eye_rate_maps[eye] physicalSizeForLayer:0];
+					struct eye_foveation foveation = {
+						{ (float)picture_width, (float)picture_height },
+						{ (float)physical.width, (float)physical.height },
+						{ (float)colors[eye].width, (float)colors[eye].height } };
+
+					[encoder setRenderPipelineState:blur_down_foveated_pipeline];
+					[encoder setFragmentBuffer:eye_rate_map_parameters[eye] offset:0 atIndex:1];
+					[encoder setFragmentBytes:&foveation length:sizeof(foveation) atIndex:2];
+				}
+				else
+					[encoder setRenderPipelineState:blur_down_pipeline];
+				[encoder setFragmentTexture:colors[eye] atIndex:0];
+			}
+			else
+			{
+				struct blur_uniforms uniforms = { { step == 1 ? 1.0f / (float)width : 0.0f,
+					step == 2 ? 1.0f / (float)height : 0.0f }, HALO_STEREO_CUTSCENE_TAPS, HALO_STEREO_CUTSCENE_SIGMA };
+
+				[encoder setRenderPipelineState:blur_pipeline];
+				[encoder setFragmentTexture:blur_targets[eye][step == 1 ? 0 : 1] atIndex:0];
+				[encoder setFragmentBytes:&uniforms length:sizeof(uniforms) atIndex:0];
+			}
+			[encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
+			[encoder endEncoding];
+		}
+	}
+	gpu_metal_count_gpu_time(commands);
+	cutscene_time(commands);
+	[commands commit];
+	return 1;
+}
 #endif
 
 void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLTexture> right,
@@ -1281,7 +1540,8 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 	const float (*hud_group_extent)[4], float hud_aspect, int hud_ui, const float reticle[3],
 	const float hud_tangents[2], id<MTLTexture> zoom, const float zoom_tangents[2], float near_meters,
 	float far_meters, float brightness, float vignette, float ui_dim, int expanding, float expansion,
-	float expansion_bars, const float fade[4])
+	float expansion_bars, const float fade[4], int cutscene, const float cutscene_forward[3],
+	const float cutscene_up[3], const float cutscene_tangents[2], float cutscene_dim)
 {
 	id<MTLTexture> hud = hud_layers[HOST_STEREO_HUD_LAYER_HUD];
 	/* the HUD's pieces need its layer or the UI's (a pause can leave the
@@ -1299,6 +1559,13 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 		struct host_stereo_hud_quad quads[HOST_STEREO_HUD_MAXIMUM_QUADS];
 		int quad_count = hud_shown ? host_stereo_hud_layout(layout_width, hud_ui, reticle, hud_tangents,
 			hud_group_extent, hud_placement(), quads) : 0;
+		/* the immersive cutscene (Task 12k): the HUD layer (its titles and
+		bars) whole on the director's frame, as on the film's screen, at the
+		HUD's distance; a menu keeps the usual layout */
+		if (cutscene && hud && !hud_ui)
+			quad_count = cutscene_hud_quad(cutscene_forward, cutscene_up, cutscene_tangents, quads);
+		/* and its blur, once a frame for both eyes, before the views */
+		int cutscene_blurred = cutscene && cutscene_blur(queue, left, right);
 		/* while the cutscene window expands, the HUD's pieces and the
 		crosshairs wait for it to cover the view (they would hang over the
 		room outside it); a menu's UI quad shows, as the eyes darken for it */
@@ -1431,6 +1698,22 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 				simd_float4x4 projection = cp_drawable_compute_projection(drawable,
 					cp_axis_direction_convention_right_up_back, view_index);
 
+				/* the immersive cutscene's frame as this view sees it */
+				if (cutscene_blurred)
+				{
+					simd_float4x4 device_from_view = cp_view_get_transform(view);
+					simd_float3 forward = { cutscene_forward[0], cutscene_forward[1], cutscene_forward[2] };
+					simd_float3 up = { cutscene_up[0], cutscene_up[1], cutscene_up[2] };
+					simd_float3 right = simd_cross(forward, up);
+					simd_float4x4 frame_from_device = simd_matrix_from_rows(
+						(simd_float4){ right.x, right.y, right.z, 0.0f }, (simd_float4){ up.x, up.y, up.z, 0.0f },
+						(simd_float4){ forward.x, forward.y, forward.z, 0.0f }, (simd_float4){ 0.0f, 0.0f, 0.0f, 1.0f });
+
+					eye_uniforms.cutscene = 1;
+					eye_uniforms.frame = (simd_float4){ cutscene_tangents[0], cutscene_tangents[1],
+						HALO_STEREO_CUTSCENE_SOFT_EDGE, fmaxf(0.0f, fminf(1.0f, cutscene_dim)) };
+					eye_uniforms.frame_from_view = simd_mul(frame_from_device, device_from_view);
+				}
 				/* the window this frame: from the screen as this eye sees it
 				toward the end, never smaller than its last frame's */
 				if (expanding)
@@ -1510,6 +1793,8 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 						[encoder setRenderPipelineState:eye_pipeline];
 					[encoder setFragmentTexture:colors[eye] atIndex:0];
 					[encoder setFragmentTexture:depths[eye] atIndex:1];
+					/* (the eye's own picture where no blur is read) */
+					[encoder setFragmentTexture:cutscene_blurred ? blur_targets[eye][0] : colors[eye] atIndex:2];
 					[encoder setFragmentSamplerState:linear_sampler atIndex:0];
 					[encoder setFragmentSamplerState:nearest_sampler atIndex:1];
 					[encoder setFragmentBytes:&eye_uniforms length:sizeof(eye_uniforms) atIndex:0];
@@ -1540,11 +1825,19 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 			}
 			cp_drawable_encode_present(drawable, commands);
 			gpu_metal_count_gpu_time(commands);
+			if (cutscene_blurred)
+				cutscene_time(commands);
 			[commands commit];
 		}
+		cutscene_time_frame(cutscene_blurred);
 		host_theater_frame_end();
 	}
 #else
+	(void)cutscene;
+	(void)cutscene_forward;
+	(void)cutscene_up;
+	(void)cutscene_tangents;
+	(void)cutscene_dim;
 	(void)expanding;
 	(void)expansion;
 	(void)expansion_bars;

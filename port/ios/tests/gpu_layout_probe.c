@@ -80,6 +80,11 @@ int main(void)
 	FIELD(gpu_stereo_present, expanding);
 	FIELD(gpu_stereo_present, expansion);
 	FIELD(gpu_stereo_present, expansion_bars);
+	FIELD(gpu_stereo_present, cutscene);
+	FIELD(gpu_stereo_present, cutscene_forward);
+	FIELD(gpu_stereo_present, cutscene_up);
+	FIELD(gpu_stereo_present, cutscene_tangents);
+	FIELD(gpu_stereo_present, cutscene_dim);
 	/* host_stereo_frame's (guest_host.h) */
 	SIZE(halo_stereo_eye);
 	FIELD(halo_stereo_eye, left);

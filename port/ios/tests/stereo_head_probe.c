@@ -112,6 +112,9 @@ unsigned long platform_clock_frames(void) { return ++probe_clock; }
 double halo_frame_trace_milliseconds(void) { return 0.0; }
 int halo_third_person_camera(void) { return game_third_person; }
 int halo_cutscene_camera_first_person(void) { return game_first_person; }
+/* the cutscene camera's horizontal field of view (Task 12k): 70 degrees unless a case sets it */
+static float game_field_of_view = 1.2217305f;
+float halo_cutscene_camera_field_of_view(void) { return game_field_of_view; }
 int halo_look_disabled_first_person(void) { return game_look_disabled; }
 int halo_cutscene_camera_settled(void) { return game_settled; }
 void halo_cutscene_state(struct halo_cutscene_state *state)
@@ -1738,6 +1741,104 @@ static void cutscene_rulings(void)
 		cutscene_frame();
 }
 
+
+/* the eye camera's yaw and pitch (degrees, left and up positive) after
+halo_stereo_head_orient turns a level camera at camera_yaw */
+static void immersive_orient(float camera_yaw, float *yaw, float *pitch)
+{
+	float forward[3] = { cosf(camera_yaw * DEGREES), sinf(camera_yaw * DEGREES), 0.0f }, up[3] = { 0.0f, 0.0f, 1.0f };
+
+	halo_stereo_head_orient(forward, up);
+	*yaw = atan2f(forward[1], forward[0]) / DEGREES;
+	*pitch = asinf(fmaxf(-1.0f, fminf(1.0f, forward[2]))) / DEGREES;
+}
+
+/* Task 12k's spike (debug.cutscene_immersive): a cutscene's third-person
+film frame renders immersive; the eyes are the camera turned by the head
+from the director's frame, anchored in the room as the cutscene began; a
+telephoto camera stays on the film */
+static void immersive_cutscene(void)
+{
+	float yaw, pitch, forward[3], up[3], tangents[2], dim, look_yaw, look_pitch;
+	int frame, passed;
+
+	printf("the immersive cutscene (debug.cutscene_immersive):\n");
+	restart("snap", 30.0, 120.0, 0);
+	cutscene_immersive_setting = 1;
+	cutscene_immersive_min_fov = 40.0f * DEGREES;
+	cutscene_outside_dim = 0.6f;
+	game_first_person = 0;
+	game_field_of_view = 70.0f * DEGREES;
+	/* the head 20 degrees left when the cutscene begins */
+	for (frame = 1; frame <= 10; frame++) {
+		set_pose(2.0f * frame * DEGREES, 0.0f, 0.0f);
+		cutscene_frame();
+	}
+	game_letterbox = 1;
+	cutscene_frame();
+	check(immersive() && halo_stereo_cutscene_immersive() && halo_stereo_cutscene_immersive_letterbox() &&
+		!halo_stereo_hud_split(), "a third-person cutscene camera at 70 degrees: immersive, the HUD layer whole");
+	immersive_orient(0.0f, &yaw, &pitch);
+	check(fabsf(yaw) < 0.01f && fabsf(pitch) < 0.01f, "the head where it was as the cutscene began: the camera's view");
+	check(halo_stereo_cutscene_frame(forward, up, tangents, &dim) && fabsf(forward[2] + 1.0f) < 1e-4f &&
+		fabsf(up[1] - 1.0f) < 1e-4f, "and the director's frame straight ahead of the eyes");
+	check(fabsf(tangents[0] - 0.85f * tanf(35.0f * DEGREES)) < 1e-5f &&
+		fabsf(tangents[1] - tangents[0] * 9.0f / 16.0f) < 1e-5f && fabsf(dim - 0.6f) < 1e-6f,
+		"the frame: the camera's 4:3 frame's width, 16:9; the outside's dim");
+	/* the head turns 30 degrees further left and 10 up */
+	for (frame = 1; frame <= 10; frame++) {
+		set_pose((20.0f + 3.0f * frame) * DEGREES, frame * DEGREES, 0.0f);
+		cutscene_frame();
+	}
+	immersive_orient(0.0f, &yaw, &pitch);
+	halo_stereo_cutscene_frame(forward, up, tangents, &dim);
+	printf("  the head 30 deg left, 10 up from the anchor: the eyes at %.3f, %.3f deg; the frame's forward in them "
+		"%.4f %.4f %.4f\n", yaw, pitch, forward[0], forward[1], forward[2]);
+	check(fabsf(yaw - 30.0f) < 0.01f && fabsf(pitch - 10.0f) < 0.01f, "the head turns the eyes from the camera");
+	/* (the camera's forward seen from eyes 30 left and 10 up: atan(sin 30 /
+	(cos 10 cos 30)) = 30.38 degrees right, and atan(tan 10) below) */
+	check(fabsf(atan2f(forward[0], -forward[2]) / DEGREES - 30.38f) < 0.01f &&
+		fabsf(atan2f(-forward[1], -forward[2]) / DEGREES - 10.0f) < 0.01f,
+		"the frame stays where it was in the room: right of and below the eyes' center");
+	/* a cut: the next camera faces 90 degrees left of the last; the frame
+	stays put in the room (the head's turn against it is unchanged) */
+	immersive_orient(90.0f, &yaw, &pitch);
+	{
+		float after[3];
+
+		halo_stereo_cutscene_frame(after, up, tangents, &dim);
+		check(fabsf(yaw - 120.0f) < 0.01f && fabsf(after[0] - forward[0]) < 1e-4f && fabsf(after[2] - forward[2]) < 1e-4f,
+			"a cut re-aims the new camera at the room-anchored frame");
+	}
+	check(!halo_stereo_head_look(0, 0.0f, &look_yaw, &look_pitch) || (look_yaw == 0.0f && look_pitch == 0.0f),
+		"the head never turns the look in the immersive cutscene");
+	/* a telephoto camera: the film, through the cut */
+	game_field_of_view = 30.0f * DEGREES;
+	cutscene_frame();
+	check(on_film() && !halo_stereo_cutscene_immersive(), "a 30 degree camera, under the 40 degree threshold: the film");
+	game_field_of_view = 70.0f * DEGREES;
+	cutscene_frame();
+	immersive_orient(0.0f, &yaw, &pitch);
+	check(immersive() && halo_stereo_cutscene_immersive() && fabsf(yaw - 30.0f) < 0.01f,
+		"70 degrees again: immersive, the frame still where the cutscene anchored it");
+	/* a first-person cutscene camera stays immersive as before, not this */
+	game_letterbox = 0;
+	passed = 1;
+	for (frame = 0; frame < 8 * FILM_HOLD_FRAMES; frame++) {
+		cutscene_frame();
+		passed &= !halo_stereo_film();
+	}
+	check(passed && !halo_stereo_cutscene_immersive(), "the cutscene's end: the full view, never the film");
+	/* the setting off: the film, as before */
+	cutscene_immersive_setting = 0;
+	game_letterbox = 1;
+	cutscene_frame();
+	check(on_film() && !halo_stereo_cutscene_immersive(), "debug.cutscene_immersive off: the film");
+	game_letterbox = 0;
+	for (frame = 0; frame < 8 * FILM_HOLD_FRAMES; frame++)
+		cutscene_frame();
+}
+
 int main(void)
 {
 	pole_crossing();
@@ -1768,6 +1869,7 @@ int main(void)
 	film_handover_yaw();
 	expansion_memory();
 	cutscene_rulings();
+	immersive_cutscene();
 	if (failures)
 	{
 		printf("stereo head probe: %d failed\n", failures);

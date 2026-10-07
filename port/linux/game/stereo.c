@@ -67,6 +67,7 @@ brings bars in for titles (cinematics.c), following the held film.
 
 #include "../src/halo_stereo.h"
 #include "../src/halo_stereo_window.h"
+#include "../src/halo_stereo_cutscene.h"
 
 /* port/linux/src/port_config.c */
 const char *config_string(const char *name);
@@ -229,6 +230,25 @@ struct screen_mapping_easing
 /* this frame (and the last) is the 3D film; this frame (and the last) is
 SCREEN gameplay's 3D TV */
 static int film_frame, film_last;
+/* Task 12k's spike (debug.cutscene_immersive, halo_stereo_cutscene.h): a
+cutscene's third-person film frame in HEAD mode or the side-by-side view
+renders immersive instead, unless its camera's horizontal field of view is
+under debug.cutscene_immersive_min_fov (a telephoto shot stays on the film).
+The settings (read once, mapping_settings): on, the threshold (radians), the
+outside's dim, and the side-by-side view's simulated head turn (amplitude in
+radians, period in seconds; 0: none). This frame and the last are immersive;
+whether this cutscene (one letterbox or scripted-camera stretch, as the
+third-person latch's) has anchored its frame, and the head's yaw in the room
+it anchored it at, as its first immersive frame began (a telephoto shot on
+the film between keeps it); the side-by-side head's clock (seconds); the frame's axes in
+the head's frame (x right, y up, z back) and its half tangents, as
+halo_stereo_head_orient last found them */
+static int cutscene_immersive_setting;
+static float cutscene_immersive_min_fov = 0.6981317f, cutscene_outside_dim = 0.6f;
+static float side_by_side_head_amplitude, side_by_side_head_period;
+static int cutscene_immersive, cutscene_immersive_last, cutscene_anchored;
+static float cutscene_anchor_yaw, side_by_side_head_clock;
+static float cutscene_frame_forward[3], cutscene_frame_up[3], cutscene_frame_tangents[2];
 static int gameplay_frame, gameplay_last;
 /* what this frame's mapping takes: the viewer's eye separation and the
 screen's half width (meters), the head's offset from the screen's axis
@@ -492,6 +512,29 @@ static void mapping_settings(void)
 					"(\"left,right,up,down\"); using %.1f", tangents, SIDE_BY_SIDE_TANGENT);
 		}
 	}
+	cutscene_immersive_setting = config_boolean("debug.cutscene_immersive") != 0;
+	cutscene_immersive_min_fov = clamped_setting("debug.cutscene_immersive_min_fov",
+		(float)config_real("debug.cutscene_immersive_min_fov"), 1.0f, 120.0f, "degrees") * TWO_PI / 360.0f;
+	cutscene_outside_dim = clamped_setting("debug.cutscene_outside_dim", (float)config_real("debug.cutscene_outside_dim"),
+		0.0f, 1.0f, "of the outside's brightness");
+	{
+		const char *yaw = config_string("debug.side_by_side_head_yaw");
+		float amplitude, period;
+
+		if (yaw && yaw[0] != '\0') {
+			if (sscanf(yaw, "%f,%f", &amplitude, &period) == 2 && amplitude >= 0.0f && amplitude <= 90.0f &&
+				period > 0.0f) {
+				side_by_side_head_amplitude = amplitude * TWO_PI / 360.0f;
+				side_by_side_head_period = period;
+			} else
+				platform_log("stereo: debug.side_by_side_head_yaw \"%s\" is not \"amplitude,period\" (0 to 90 "
+					"degrees, positive seconds); no head turn", yaw);
+		}
+	}
+	if (cutscene_immersive_setting)
+		platform_log("stereo: debug.cutscene_immersive: a cutscene's third-person film immersive, telephoto under "
+			"%.1f degrees across on the film, the outside dimmed by %.2f", cutscene_immersive_min_fov * 360.0f / TWO_PI,
+			cutscene_outside_dim);
 	stereo_stats = config_boolean("debug.gpu_stats") != 0;
 	head_yaw_log = config_boolean("debug.head_yaw_log") != 0;
 	lod_scale_setting = clamped_setting("display.lod_scale", (float)config_real("display.lod_scale"),
@@ -927,13 +970,37 @@ void halo_stereo_frame_begin(void)
 		film_reason = film_reason_logged;
 	}
 	if (!cutscene && film_reason != 1 && film_reason != 2)
-		cutscene_third_person = 0;
+		cutscene_third_person = cutscene_anchored = 0;
 	/* the film ends the frame after one shows the window whole */
 	portal_share = film_reason != 0 && portal_begun ? fminf(1.0f, portal_elapsed / PORTAL_SECONDS) : 0.0f;
 	if (portal_share >= 1.0f - 1e-4f)
 		portal_share = 1.0f;
 	portal_full_shown = portal_share >= 1.0f;
 	film = film_reason != 0;
+	/* Task 12k's spike: a cutscene's film frame (the third-person latch
+	holds, or its hold) in HEAD mode or the side-by-side view is immersive
+	instead, if its camera is at least debug.cutscene_immersive_min_fov
+	across; below it, the film, through the existing cut. Its reason stands
+	as the film's would (the holds read it), but nothing goes on the screen */
+	cutscene_immersive = 0;
+	if (cutscene_immersive_setting && film && !screen && (film_reason == 1 || film_reason == 2) &&
+		(stereo_mode == HALO_STEREO_HEAD || stereo_mode == HALO_STEREO_SIDE_BY_SIDE)) {
+		float field_of_view = halo_cutscene_camera_field_of_view();
+
+		if (field_of_view >= cutscene_immersive_min_fov) {
+			cutscene_immersive = 1;
+			film = 0;
+			film_reason_logged = film_reason;
+			/* the director's frame: the camera's 4:3 frame's width (the 0.85
+			the game shrinks every field of view by, render_cameras.c), 16:9 */
+			cutscene_frame_tangents[0] = 0.85f * tanf(0.5f * field_of_view);
+			cutscene_frame_tangents[1] = cutscene_frame_tangents[0] / HALO_STEREO_CUTSCENE_ASPECT;
+		}
+		if (cutscene_immersive != cutscene_immersive_last || (stereo_stats && !cutscene_immersive &&
+			film_reason != film_reason_logged))
+			platform_log("stereo: the cutscene's camera, %.1f degrees across: %s", field_of_view * 360.0f / TWO_PI,
+				cutscene_immersive ? "immersive, its frame anchored in the room" : "telephoto: on the film");
+	}
 	/* the cutscene window expands from the film's rectangle out to the full
 	view once a cutscene's film has held until the camera reached the eyes,
 	at the letterbox bars' rate (halo_stereo_window.h); the film again, or
@@ -971,6 +1038,14 @@ void halo_stereo_frame_begin(void)
 	if (stereo_mode == HALO_STEREO_SIDE_BY_SIDE) {
 		int width = 0, height = 0;
 		int eye;
+
+		/* the side-by-side view's simulated head (debug.side_by_side_head_yaw):
+		its clock runs while a cutscene is immersive, from 0 at its start */
+		if (cutscene_immersive && !cutscene_anchored) {
+			cutscene_anchor_yaw = side_by_side_head_clock = 0.0f;
+			cutscene_anchored = 1;
+		} else if (cutscene_anchored)
+			side_by_side_head_clock += time_delta;
 
 		platform_video_drawable_size(&width, &height);
 		if (width <= 0 || height <= 0) {
@@ -1041,11 +1116,20 @@ void halo_stereo_frame_begin(void)
 				eyes[0].offset[2] * (eyes[0].left + eyes[0].right) * 0.5f * METERS_PER_UNIT, head_offset, time_delta);
 		}
 		third_person_begin();
-		head_look_frame = stereo_frame.mode == HALO_STEREO_HEAD && stereo_frame.eye_count == 2 && !third_person_head;
+		/* (the immersive cutscene's head turns the picture only, as the film
+		does nothing to the look) */
+		head_look_frame = stereo_frame.mode == HALO_STEREO_HEAD && stereo_frame.eye_count == 2 && !third_person_head &&
+			!cutscene_immersive;
 		if (stereo_frame.mode == HALO_STEREO_HEAD && stereo_frame.eye_count == 2)
 			head_yaw_now = remainderf(head_yaw_now + stereo_frame.head_yaw, TWO_PI);
 		else
 			head_log_last_known = 0;
+		/* the immersive cutscene's frame is anchored where the head pointed
+		as it began */
+		if (cutscene_immersive && !cutscene_anchored) {
+			cutscene_anchor_yaw = head_yaw_now;
+			cutscene_anchored = 1;
+		}
 		/* HEAD mode: the look takes this frame's yaw in next frame
 		(player_control runs before the render), with any the paused frames
 		before it gathered (the look doesn't run while the game is paused,
@@ -1073,6 +1157,10 @@ void halo_stereo_frame_begin(void)
 		zoom_logged = -1;
 		ui_shown_last = 0;
 	}
+	/* without eyes, nothing is immersive */
+	if (stereo_frame.eye_count != 2)
+		cutscene_immersive = 0;
+	cutscene_immersive_last = cutscene_immersive;
 	if (expansion_on && (stereo_frame.eye_count != 2 ||
 		(stereo_frame.mode != HALO_STEREO_HEAD && stereo_frame.mode != HALO_STEREO_SIDE_BY_SIDE)))
 		expansion_on = 0;
@@ -1102,8 +1190,43 @@ int halo_stereo_screen_gameplay(void)
 
 int halo_stereo_hud_split(void)
 {
+	/* (the immersive cutscene's HUD layer, its titles and bars, goes whole
+	on the director's frame, as on the film's screen) */
 	return stereo_frame.eye_count == 2 && (stereo_frame.mode == HALO_STEREO_HEAD ||
-		stereo_frame.mode == HALO_STEREO_SIDE_BY_SIDE) && !halo_stereo_film() && !halo_stereo_screen_gameplay();
+		stereo_frame.mode == HALO_STEREO_SIDE_BY_SIDE) && !halo_stereo_film() && !halo_stereo_screen_gameplay() &&
+		!cutscene_immersive;
+}
+
+int halo_stereo_cutscene_immersive(void)
+{
+	return cutscene_immersive && stereo_frame.eye_count == 2;
+}
+
+int halo_stereo_cutscene_immersive_letterbox(void)
+{
+	return halo_stereo_cutscene_immersive() && film_reason == 1;
+}
+
+int halo_stereo_cutscene_frame(float forward[3], float up[3], float tangents[2], float *dim)
+{
+	if (!halo_stereo_cutscene_immersive())
+		return 0;
+	memcpy(forward, cutscene_frame_forward, sizeof(cutscene_frame_forward));
+	memcpy(up, cutscene_frame_up, sizeof(cutscene_frame_up));
+	memcpy(tangents, cutscene_frame_tangents, sizeof(cutscene_frame_tangents));
+	*dim = cutscene_outside_dim;
+	return 1;
+}
+
+int halo_stereo_side_by_side_cutscene(int eye, float tangents[4])
+{
+	if (stereo_mode != HALO_STEREO_SIDE_BY_SIDE || eye < 0 || eye > 1 || !halo_stereo_cutscene_immersive())
+		return 0;
+	tangents[0] = side_by_side_tangents[eye == 0 ? 0 : 1];
+	tangents[1] = side_by_side_tangents[eye == 0 ? 1 : 0];
+	tangents[2] = side_by_side_tangents[2];
+	tangents[3] = side_by_side_tangents[3];
+	return 1;
 }
 
 int halo_stereo_screen_framing(void)
@@ -1162,16 +1285,16 @@ void halo_stereo_log_film_camera(const float position[3], const float forward[3]
 	static const char *const perspectives[] = {"first person", "third person", "scripted", "neutral"};
 	struct halo_cutscene_state state;
 
-	if (!stereo_stats || !halo_stereo_film())
+	if (!stereo_stats || !(halo_stereo_film() || halo_stereo_cutscene_immersive()))
 		return;
 	halo_cutscene_state(&state);
 	platform_log("stereo: film camera: frame %lu: vertical field of view %.3f deg, at %.4f %.4f %.4f, forward "
-		"%.4f %.4f %.4f, perspective %s, first person %d, camera %s, film %s",
+		"%.4f %.4f %.4f, perspective %s, first person %d, camera %s, %s %s",
 		head_log_frame, vertical_field_of_view * 360.0f / TWO_PI, position[0], position[1], position[2],
 		forward[0], forward[1], forward[2],
 		state.perspective >= 0 && state.perspective < 4 ? perspectives[state.perspective] : "?",
 		halo_cutscene_camera_first_person(), camera_noted && camera_source ? camera_source : "unnoted",
-		film_reasons[film_reason]);
+		halo_stereo_cutscene_immersive() ? "immersive" : "film", film_reasons[film_reason]);
 }
 
 int halo_stereo_cut_covered(void)
@@ -1596,6 +1719,65 @@ static void head_yaw_log_frame(float camera_yaw, float eye_yaw)
 	head_log_last_known = 1;
 }
 
+/* Task 12k's immersive cutscene: the cutscene camera turned by the head
+from the director's frame, which sits level in the room at the yaw the head
+had as the cutscene began (cutscene_anchor_yaw); each cut re-aims the new
+camera at it, since the turn is the head's against the room, not the
+camera's. HEAD mode's head, or the side-by-side view's simulated one. The
+frame's axes go to cutscene_frame_forward and _up, in the eye camera's
+frame (x right, y up, z back), for the presenter's mask */
+static void cutscene_orient(float forward[3], float up[3])
+{
+	float camera_forward[3] = { forward[0], forward[1], forward[2] };
+	float camera_up[3] = { up[0], up[1], up[2] };
+	float camera_left[3], eye_right[3];
+	float yaw = 0.0f, pitch = 0.0f, roll = 0.0f;
+	int i;
+
+	normalize(camera_forward);
+	/* the camera's up, square to its forward; its left (z up: up x forward) */
+	{
+		float along = camera_up[0] * camera_forward[0] + camera_up[1] * camera_forward[1] +
+			camera_up[2] * camera_forward[2];
+
+		for (i = 0; i < 3; i++)
+			camera_up[i] -= along * camera_forward[i];
+		normalize(camera_up);
+	}
+	camera_left[0] = camera_up[1] * camera_forward[2] - camera_up[2] * camera_forward[1];
+	camera_left[1] = camera_up[2] * camera_forward[0] - camera_up[0] * camera_forward[2];
+	camera_left[2] = camera_up[0] * camera_forward[1] - camera_up[1] * camera_forward[0];
+	if (stereo_frame.mode == HALO_STEREO_HEAD) {
+		yaw = remainderf(head_yaw_now - cutscene_anchor_yaw, TWO_PI);
+		pitch = stereo_frame.head_pitch;
+		roll = stereo_frame.head_roll;
+	} else if (side_by_side_head_period > 0.0f)
+		yaw = side_by_side_head_amplitude * sinf(TWO_PI * side_by_side_head_clock / side_by_side_head_period);
+	for (i = 0; i < 3; i++) {
+		forward[i] = cosf(pitch) * (cosf(yaw) * camera_forward[i] + sinf(yaw) * camera_left[i]) +
+			sinf(pitch) * camera_up[i];
+		up[i] = -sinf(pitch) * (cosf(yaw) * camera_forward[i] + sinf(yaw) * camera_left[i]) +
+			cosf(pitch) * camera_up[i];
+	}
+	rotate(up, forward, -roll);
+	normalize(forward);
+	normalize(up);
+	/* the eye camera's right (z up: forward x up), and the frame's axes in
+	the eye camera's frame: x right, y up, z back */
+	eye_right[0] = forward[1] * up[2] - forward[2] * up[1];
+	eye_right[1] = forward[2] * up[0] - forward[0] * up[2];
+	eye_right[2] = forward[0] * up[1] - forward[1] * up[0];
+	cutscene_frame_forward[0] = camera_forward[0] * eye_right[0] + camera_forward[1] * eye_right[1] +
+		camera_forward[2] * eye_right[2];
+	cutscene_frame_forward[1] = camera_forward[0] * up[0] + camera_forward[1] * up[1] + camera_forward[2] * up[2];
+	cutscene_frame_forward[2] = -(camera_forward[0] * forward[0] + camera_forward[1] * forward[1] +
+		camera_forward[2] * forward[2]);
+	cutscene_frame_up[0] = camera_up[0] * eye_right[0] + camera_up[1] * eye_right[1] + camera_up[2] * eye_right[2];
+	cutscene_frame_up[1] = camera_up[0] * up[0] + camera_up[1] * up[1] + camera_up[2] * up[2];
+	cutscene_frame_up[2] = -(camera_up[0] * forward[0] + camera_up[1] * forward[1] + camera_up[2] * forward[2]);
+	reticle_set(NULL, NULL, NULL);
+}
+
 void halo_stereo_head_orient(float forward[3], float up[3])
 {
 	float yaw, pitch, camera_yaw;
@@ -1617,6 +1799,10 @@ void halo_stereo_head_orient(float forward[3], float up[3])
 		return;
 	}
 
+	if (halo_stereo_cutscene_immersive()) {
+		cutscene_orient(forward, up);
+		return;
+	}
 	if (stereo_frame.mode != HALO_STEREO_HEAD || stereo_frame.eye_count != 2)
 		return;
 	camera_yaw = atan2f(forward[1], forward[0]);

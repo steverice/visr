@@ -598,6 +598,30 @@ static const struct config_setting config_settings[] =
 	{ "debug.screen_lean", _config_real, "0.0", "HALO_SCREEN_LEAN", _environment_value, _platform_ios,
 		"With debug.side_by_side_screen: a fixed lean of the head, in meters to the\n"
 		"right (up to 0.25), as if you leaned in front of the screen." },
+	{ "debug.cutscene_immersive", _config_boolean, "false", "HALO_CUTSCENE_IMMERSIVE", _environment_set_is_true,
+		_platform_ios,
+		"A spike: in HEAD mode (and the side-by-side view), a cutscene's third-person\n"
+		"film frame renders immersive instead of on the 3D-film screen: the eyes\n"
+		"are the cutscene camera turned by the head, the director's 16:9 frame is\n"
+		"anchored in the room where the head pointed as the cutscene began, and\n"
+		"outside it the picture is blurred, darkened and desaturated." },
+	{ "debug.cutscene_immersive_min_fov", _config_real, "40.0", "HALO_CUTSCENE_IMMERSIVE_MIN_FOV", _environment_value,
+		_platform_ios,
+		"With debug.cutscene_immersive: the narrowest shot that renders immersive,\n"
+		"as the camera's horizontal field of view in degrees (70 for the game's\n"
+		"default lens; the director's frame spans that across its width). A\n"
+		"narrower (telephoto) shot falls back to the 3D-film screen." },
+	{ "debug.cutscene_outside_dim", _config_real, "0.6", "HALO_CUTSCENE_OUTSIDE_DIM", _environment_value,
+		_platform_ios,
+		"With debug.cutscene_immersive: how much the blurred picture outside the\n"
+		"director's frame is darkened and desaturated, 0 (not at all) to 1\n"
+		"(black)." },
+	{ "debug.side_by_side_head_yaw", _config_string, "\"\"", "HALO_SIDE_BY_SIDE_HEAD_YAW", _environment_value,
+		_platform_ios,
+		"With display.stereo = \"side_by_side\" and debug.cutscene_immersive: a head\n"
+		"that turns side to side in the immersive cutscene, as \"amplitude,period\"\n"
+		"(degrees, seconds), so the Mac shows the room-anchored frame; empty for\n"
+		"none." },
 	{ "debug.head_yaw_log", _config_boolean, "false", "HALO_HEAD_YAW_LOG", _environment_set_is_true, _platform_ios,
 		"HEAD mode: log a line each frame while the head turns (\"stereo: head\n"
 		"yaw\"): the head's yaw from the frame's predicted pose, the yaw the eye\n"

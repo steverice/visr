@@ -487,6 +487,17 @@ struct gpu_stereo_present
 	int32_t expanding;
 	float expansion;
 	float expansion_bars;
+	/* Task 12k's spike, the immersive cutscene (halo_stereo_cutscene.h): 1
+	on a frame whose eyes show a cutscene's camera turned by the head; the
+	director's frame's forward and up in the eyes' frame (the head's at the
+	render: x right, y up, z back), its half tangents across and up, and how
+	much the blurred outside is darkened and desaturated (0 to 1). The HUD
+	layer goes whole on the frame, as on the film's screen */
+	int32_t cutscene;
+	float cutscene_forward[3];
+	float cutscene_up[3];
+	float cutscene_tangents[2];
+	float cutscene_dim;
 };
 
 /* presents a stereo frame as gpu_present does a mono one (and returns the
