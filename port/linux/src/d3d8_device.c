@@ -615,6 +615,8 @@ struct xgpu_render_target *xgpu_render_target_find(unsigned long data)
 	return best ? &best->target : NULL;
 }
 
+/* counts draws and clears into render targets (xgpu_render_target.written) */
+static unsigned long render_target_write_serial;
 
 /* the pixels per unit of the bound targets (render_target_get) */
 static float target_scale[2] = { 1.0f, 1.0f };
@@ -636,7 +638,10 @@ static BOOL draw_targets(gpu_texture *color_texture, gpu_texture *depth_texture)
 	if (!color && !depth)
 		return FALSE;
 	if (color)
+	{
 		color->last_rendered = device.frame + 1;
+		color->target.written = ++render_target_write_serial;
+	}
 	/* viewports and clears are in the targets' units (render_target_get) */
 	target_scale[0] = color ? color->target.scale[0] : depth->target.scale[0];
 	target_scale[1] = color ? color->target.scale[1] : depth->target.scale[1];
@@ -1774,14 +1779,24 @@ static void sampler_state_fill(int stage, BOOL mipmapped, BOOL hires, struct gpu
 
 The game renders some textures one mip level at a time, each level being a
 surface of its own (the water's ripple map). Sampling such a texture needs
-every level in one GL texture, so the levels' render targets are copied into
-a mipmapped composite whenever it is bound. */
+every level in one texture, so the levels' render targets are copied into a
+mipmapped composite. Each draw of the water binds it, some maps (a30) more
+than once a frame, so the copy (and the mipmaps of the levels the game did not
+render) is redone only once a level's target has been drawn into since the
+last one. */
+
+#define MIP_COMPOSITE_LEVELS 16
 
 struct mip_composite
 {
 	struct mip_composite *next;
 	unsigned long data, width, height, levels;
 	gpu_texture texture;
+	/* the levels last copied, and each one's target's texture and written
+	serial then */
+	unsigned long rendered_levels;
+	gpu_texture level_sources[MIP_COMPOSITE_LEVELS];
+	unsigned long level_written[MIP_COMPOSITE_LEVELS];
 };
 
 static struct mip_composite *mip_composites;
@@ -1789,7 +1804,9 @@ static struct mip_composite *mip_composites;
 static gpu_texture mip_composite_get(const struct xgpu_texture_description *description, unsigned long data)
 {
 	struct mip_composite *composite;
+	struct xgpu_render_target *targets[MIP_COMPOSITE_LEVELS];
 	unsigned long level, rendered_levels = 0;
+	BOOL changed;
 
 	for (composite = mip_composites; composite; composite = composite->next)
 	{
@@ -1818,10 +1835,11 @@ static gpu_texture mip_composite_get(const struct xgpu_texture_description *desc
 			texture.levels = (uint32_t)description->levels;
 			composite->texture = gpu_texture_create(&texture);
 		}
+		composite->rendered_levels = ~0UL;
 		composite->next = mip_composites;
 		mip_composites = composite;
 	}
-	for (level = 0; level < description->levels; level++)
+	for (level = 0; level < description->levels && level < MIP_COMPOSITE_LEVELS; level++)
 	{
 		unsigned long width = description->width >> level ? description->width >> level : 1;
 		unsigned long height = description->height >> level ? description->height >> level : 1;
@@ -1831,8 +1849,23 @@ static gpu_texture mip_composite_get(const struct xgpu_texture_description *desc
 		if (!target || target->width != width || target->height != height ||
 			target->gl_width != width || target->gl_height != height)
 			break;
-		gpu_texture_copy_level(target->texture, composite->texture, (uint32_t)level);
+		targets[level] = target;
 		rendered_levels++;
+	}
+	changed = rendered_levels != composite->rendered_levels;
+	for (level = 0; level < rendered_levels && !changed; level++)
+	{
+		changed = targets[level]->texture != composite->level_sources[level] ||
+			targets[level]->written != composite->level_written[level];
+	}
+	if (!changed)
+		return composite->texture;
+	composite->rendered_levels = rendered_levels;
+	for (level = 0; level < rendered_levels; level++)
+	{
+		composite->level_sources[level] = targets[level]->texture;
+		composite->level_written[level] = targets[level]->written;
+		gpu_texture_copy_level(targets[level]->texture, composite->texture, (uint32_t)level);
 	}
 	/* levels the game did not render come from the ones it did */
 	if (rendered_levels < description->levels)
