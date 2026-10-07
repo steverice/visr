@@ -736,7 +736,8 @@ static size_t body_seat_log_node(char *line, size_t length, size_t size, const c
 }
 
 /* debug.gpu_stats, once a second of game time while the unit has a parent,
-whether or not a body draws: the seat, its parent, the animation state, the
+whether or not a body draws: the seat (with its yaw bounds off its marker, in
+degrees: 0 to 0 has none), its parent, the animation state, the
 camera, and the pelvis, spine, knees, feet, spine1 and head in the seat's
 frame (forward along the unit's world facing made horizontal, right, down),
 with the facing's angle from the root parent's forward (positive to its
@@ -803,9 +804,10 @@ static void first_person_body_seat_log(long object_index, const float camera[3])
 	if (root_length > 1e-4f)
 		angle = atan2f(root_forward->i * facing[1] - root_forward->j * facing[0],
 			root_forward->i * facing[0] + root_forward->j * facing[1]) * 57.29578f;
-	written = (size_t)snprintf(line, size, "first_person_body: seat \"%s\" flags 0x%lx on %s (type %d), state %d: "
-		"camera (%.3f %.3f %.3f) pitch %.1f; in the seat's frame (forward along the facing made horizontal, right, "
-		"down):", seat->label, (unsigned long)seat->flags, tag_get_name(parent->definition_index),
+	written = (size_t)snprintf(line, size, "first_person_body: seat \"%s\" flags 0x%lx yaw %.1f to %.1f on %s "
+		"(type %d), state %d: camera (%.3f %.3f %.3f) pitch %.1f; in the seat's frame (forward along the facing made "
+		"horizontal, right, down):", seat->label, (unsigned long)seat->flags, seat->yaw_minimum * 57.29578f,
+		seat->yaw_maximum * 57.29578f, tag_get_name(parent->definition_index),
 		(int)parent->object.type, (int)unit->unit.animation.state, camera[0], camera[1], camera[2],
 		asinf(view->forward.k > 1.0f ? 1.0f : view->forward.k < -1.0f ? -1.0f : view->forward.k) * 57.29578f);
 	if (model_index != NONE) {
