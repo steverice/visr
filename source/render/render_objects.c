@@ -483,8 +483,8 @@ static void render_object_list(
 	while (object_index != NONE)
 	{
 		struct object_datum *object = object_get(object_index);
-		/* port: in head-tracked stereo the player's own unit draws as legs below
-		the view, without its torso or children, in its own pass after the
+		/* port: in head-tracked stereo the player's own unit draws below the
+		view, without its head or children, in its own pass after the
 		first-person weapon (render_first_person_body), and casts its shadow
 		(port/linux/game/first_person_body.c) */
 		boolean first_person_body = halo_first_person_body(object_index) && !render.camera.mirrored;
@@ -539,8 +539,10 @@ static void render_object_list(
 						node_matrices,
 						node_count,
 						&object->object.forward.i,
+						&render.camera.position.x,
+						first_person_weapon_visible(render.local_player_index),
 						data->shadow);
-					if (!data->shadow)
+					if (!data->shadow && !halo_first_person_body_fill())
 					{
 						halo_first_person_body_log(object_index, node_matrices, node_count);
 					}
@@ -1267,8 +1269,11 @@ static void process_rendered_objects(
 
 /* port: head-tracked stereo's body: the player's unit, which the object
 pass skipped as in mono, drawn alone after the first-person weapon
-(port/linux/game/first_person_body.c). Never in a mirror's window, where the
-object pass draws the whole player already */
+(port/linux/game/first_person_body.c), then again with the cull reversed
+for the inside faces its cut neck shows, in a flat dark color
+(halo_first_person_body_fill, rasterizer_xbox_models.c), both under the
+weapon pass's stencil reject. Never in a mirror's window, where the object
+pass draws the whole player already */
 static void render_first_person_body(
 	struct object_render_data *data)
 {
@@ -1290,6 +1295,9 @@ static void render_first_person_body(
 			first_person_body_pass = TRUE;
 			data->object_index = object_index;
 			render_object(data);
+			halo_first_person_body_set_fill(TRUE);
+			render_object(data);
+			halo_first_person_body_set_fill(FALSE);
 			first_person_body_pass = FALSE;
 			break;
 		}

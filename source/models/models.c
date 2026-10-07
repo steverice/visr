@@ -398,7 +398,9 @@ static void render_model_parts(
 						{
 							if (shader_type_is_transparent(shader->base.type))
 							{
-								if (pass==_render_model_pass_transparent)
+								/* port: the first-person body's inside faces draw
+								only its solid parts (halo_first_person_body_fill) */
+								if (pass==_render_model_pass_transparent && !halo_first_person_body_fill())
 								{
 									/* port: the root's matrix for a node the model
 									doesn't have (a map's index) */
@@ -447,7 +449,7 @@ static void render_model_parts(
 							else if (shader->base.type==_shader_type_model &&
 								TEST_FLAG(((struct shader_model_definition *)shader_get_and_verify_type(shader, _shader_type_model))->flags, _shader_model_alpha_blended_decal_bit))
 							{
-								if (pass==_render_model_pass_decal)
+								if (pass==_render_model_pass_decal && !halo_first_person_body_fill())
 								{
 									match_assert("c:\\halo\\SOURCE\\models\\models.c", 491, !TEST_FLAG(flags, _render_model_shadow_bit));
 

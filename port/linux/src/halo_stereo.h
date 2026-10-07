@@ -313,29 +313,39 @@ look took */
 float halo_stereo_head_yaw_taken(void);
 void halo_stereo_camera_head_yaw(float head_yaw, float fraction, const char *source);
 /* The first-person body (port/linux/game/first_person_body.c): nonzero
-while object_index is the local player's unit, drawn as legs below the view
-in first person: HEAD mode or the side-by-side view, an eye layer, not the
+while object_index is the local player's unit, drawn below the view in
+first person: HEAD mode or the side-by-side view, an eye layer, not the
 film or SCREEN gameplay, the director's first person (not a scripted
 camera), display.first_person_body, and a pose the game drives under the
 camera (on foot, no custom animation, not dead, the pelvis under the
 camera). render_objects.c draws it after the first-person weapon, under
-that weapon's stencil */
+that weapon's stencil, then again for its inside faces
+(halo_first_person_body_fill) */
 int halo_first_person_body(long object_index);
 /* the render-only node matrices for that body, set back along the facing
 (facing: the unit's forward; only its horizontal part counts) by
-display.first_person_body_offset: the body's with the torso (the spine's
-subtree) collapsed to the spine node (a model with no spine node: the head
-to its parent), or with shadow, the whole silhouette for its shadow. Each
-in its own static array, valid until the next call of the same kind;
-node_count is the smaller of the model's nodes and the object's node
-matrices; returns matrices unchanged if the model's nodes aren't
+display.first_person_body_offset: the body's with the neck and head
+collapsed to spine1 (a model with no neck node: the head to its parent),
+with collapse_arms (while the first-person weapon shows) the arms from the
+upper arms down collapsed too, and the spine's bend clamped so no kept node
+comes within 0.1 units of camera; or with shadow, the whole silhouette for
+its shadow. Each in its own static array, valid until the next call of the
+same kind; node_count is the smaller of the model's nodes and the object's
+node matrices; returns matrices unchanged if the model's nodes aren't
 recognized */
 struct real_matrix4x3;
 const struct real_matrix4x3 *halo_first_person_body_matrices(long model_index,
-	const struct real_matrix4x3 *matrices, short node_count, const float facing[3], int shadow);
-/* debug.gpu_stats, once a second of game time: the camera and the drawn
-pelvis and feet in the camera's frame */
+	const struct real_matrix4x3 *matrices, short node_count, const float facing[3], const float camera[3],
+	int collapse_arms, int shadow);
+/* debug.gpu_stats, once a second of game time: the camera, the drawn
+pelvis and feet in the camera's frame, and the kept chest's nearest
+distance to the camera with the bend clamp's angle */
 void halo_first_person_body_log(long object_index, const struct real_matrix4x3 *drawn, short node_count);
+/* 1 while render_objects.c draws the body's inside faces: the second pass,
+with the cull reversed, which the model rasterizer
+(rasterizer_xbox_models.c) draws in a flat dark color */
+void halo_first_person_body_set_fill(int on);
+int halo_first_person_body_fill(void);
 /* the eye cameras' near and far planes in world units, for the presenter's
 depth (d3d8_device.c), set by the eye loop each stereo frame */
 void halo_stereo_set_depth_range(float z_near, float z_far);

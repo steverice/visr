@@ -165,9 +165,10 @@ static const struct config_setting config_settings[] =
 		"gets. Higher is sharper and costs more frame time and memory. In place of\n"
 		"display.render_scale for the eyes. Set when the immersive space opens." },
 	{ "display.first_person_body", _config_boolean, "true", "HALO_FIRST_PERSON_BODY", _environment_set_is_true, _platform_ios,
-		"With display.stereo = \"head\": draw the Master Chief's legs below the\n"
-		"view (no torso, head or third-person arms), so looking down shows your\n"
-		"feet. On foot only: none in a seat or while a script animates him." },
+		"With display.stereo = \"head\": draw the Master Chief's body below the\n"
+		"view (no head or neck, and no third-person arms while you hold a weapon),\n"
+		"so looking down shows your chest and feet. On foot only: none in a seat\n"
+		"or while a script animates him." },
 	{ "display.first_person_body_offset", _config_real, "0.08", "HALO_FIRST_PERSON_BODY_OFFSET", _environment_value,
 		_platform_ios,
 		"With display.first_person_body: how far behind your eyes the legs stand,\n"
