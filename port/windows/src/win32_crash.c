@@ -729,9 +729,12 @@ static void crash_uploader(void)
 
 /* ---------- the crashed game */
 
+/* this tree's builds send no crash reports and never ask to: no minidump,
+no reporter or uploader, and nothing sent to Sentry; a crash still writes
+its backtrace to debug.txt and the log */
 static int crash_reports_enabled(void)
 {
-	return HALO_BUILD_NUMBER > 0 || GetEnvironmentVariableW(L"HALO_CRASH_REPORTS_ANY_BUILD", NULL, 0) > 0;
+	return 0;
 }
 
 /* starts this executable again with the option and its arguments, with no
@@ -900,13 +903,15 @@ static void crash_reports_install(void)
 	{
 		unsigned long process_id = 0, thread_id = 0, exception_pointers = 0;
 
-		if (swscanf(arguments, L" %lu %lu %lx", &process_id, &thread_id, &exception_pointers) == 3)
+		if (crash_reports_enabled()
+			&& swscanf(arguments, L" %lu %lu %lx", &process_id, &thread_id, &exception_pointers) == 3)
 			crash_reporter((DWORD)process_id, (DWORD)thread_id, (ULONG_PTR)exception_pointers);
 		ExitProcess(0);
 	}
 	if (crash_option(CRASH_UPLOAD_OPTION))
 	{
-		crash_uploader();
+		if (crash_reports_enabled())
+			crash_uploader();
 		ExitProcess(0);
 	}
 
