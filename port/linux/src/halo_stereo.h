@@ -293,17 +293,25 @@ inside the bounds; what the bounds refuse of the head's share stays out of
 the yaw the look took (halo_stereo_head_yaw_taken), the eye cameras add it
 (halo_stereo_head_orient) and the next look asks for it again, so the aim
 stops at the bound while the view follows the head. What they refuse of the
-rest is dropped, as in mono. Returns 1 */
+rest is dropped, as in mono. Returns 1. The yaw the eye cameras keep has two
+sources: what a seat's bounds refuse, and the head's turn through a
+vehicle's third-person entry or exit camera, kept from the camera's end
+until the camera holds the facing (halo_stereo_camera_posed); the look asks
+for either only after a frame whose camera held the facing */
 int halo_stereo_seat_yaw_clamp(short local_player_index, float *desired_yaw, float yaw_before, float delta_yaw,
 	float marker_yaw, float yaw_minimum, float yaw_maximum);
 /* render_interpolation.c, once a frame: whether player one's camera holds
-the facing (posed from it, camera_facing_posed, or the direct camera). A
-seat's held-back yaw the look took into the facing this frame turns the
-eye cameras' camera only if it does; otherwise (the seat's exit glide) the
-view would step back by it, so above 2 degrees HEAD mode's full view goes
-black (halo_stereo_cut_requested) until the camera reaches the eyes
-(halo_cutscene_camera_settled) */
-void halo_stereo_camera_posed(int posed);
+the facing with the look's yaw as of now (holds_facing): the observer posed
+from the facing this frame, the direct camera, or a blend of two cameras
+both posed from it; not a glide, a chase camera or a blend with one side
+not posed from it. The next frame's look gives the facing the yaw the eye
+cameras kept only after such a frame, so the camera that shows it turns
+with it. The cut is the fallback: a kept yaw the look took into the facing
+this frame on a camera that doesn't hold it (the camera changed in the
+fold's tick) would step the view back by it, so above 2 degrees HEAD mode's
+full view goes black (halo_stereo_cut_requested) until the camera reaches
+the eyes (halo_cutscene_camera_settled) */
+void halo_stereo_camera_posed(int holds_facing);
 /* 1 while that cut holds: the presenter keeps the full view black, and
 fades it in through the ordinary cut when it ends (gpu_stereo_present's
 cut_requested) */
@@ -538,8 +546,9 @@ director's first person, player_camera_control on): a cutscene's film is
 released for it, even after a third-person shot (stereo.c) */
 int halo_player_camera_first_person(void);
 /* 1 while the director holds player one's facing (director_inhibited_facing:
-a seat's entry or exit animation): player_control drops the frame's turn,
-so the look hands it none of a seat's held-back yaw (stereo.c) */
+the debug camera's controls, director_update_controls): player_control drops
+the frame's turn, so the look hands it none of the yaw the eye cameras kept
+(stereo.c) */
 int halo_director_inhibited_facing(void);
 /* the camera has reached the player's eyes after a cutscene: the observer's
 command finished, or the camera within this many world units of the unit's

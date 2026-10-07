@@ -198,14 +198,26 @@ taken (head_yaw_taken, halo_stereo_head_look) */
 static float head_yaw_now, head_yaw_taken;
 /* a seat's yaw limit (halo_stereo_seat_yaw_clamp): the head's yaw the look
 handed the game on this call of player_control_update (once a frame), which
-the seat's clamp consumes; and the part of it the clamp refused (radians,
-held to -pi..pi), which the eye cameras add, so the view follows the head
-past the limit while the aim stays at it, and which every later look asks
-for again until the aim can take it */
+the seat's clamp consumes. And the yaw the eye cameras show that the look
+hasn't given the facing (radians, held to -pi..pi): what a seat's limit
+refused, and the head's turn through a third-person camera
+(third_person_begin), held until the camera holds the facing
+(camera_held_facing). The eye cameras add it, so the view follows the head
+past the limit while the aim stays at it, and the view doesn't move when a
+vehicle's camera ends; every look asks for it again once the camera holds
+the facing, until the aim can take it */
 static float head_request, head_seat_leftover;
+/* the last report of halo_stereo_camera_posed: the previous frame's camera
+held the facing with the look's yaw as of then (the look runs before the
+render), so a leftover the look gives the facing now turns that camera with
+it. 0 until a report. And the frames the eye cameras have carried a
+leftover the look didn't ask for (the camera's end, and each look that
+waited since), for the fold's log line */
+static int camera_held_facing, fold_wait_frames;
 /* the leftover the look folded into the facing this frame that the seat's
-clamp didn't take back (in the seat it refuses it again): a fold landing on
-a camera not posed from the facing (a seat's exit glide) would step the view
+clamp didn't take back (in the seat it refuses it again): the look folds
+only after a frame whose camera held the facing, but a fold landing on a
+camera that doesn't (one changed in the fold's tick) would step the view
 back by it, so the full view goes black until the camera settles
 (halo_stereo_camera_posed, halo_stereo_cut_requested); the cut's seconds so
 far */
@@ -339,12 +351,6 @@ turn. The turn is the head's since the camera began: its yaw since then
 the view by however far the head was turned */
 static int third_person_head;
 static float third_person_yaw, third_person_pitch_from;
-/* the head's yaw in the seat, handed to the look once on the first frame
-after a head-tracked third-person camera ends, if that frame is head-tracked
-first person: the game glides its camera from the boom to the eyes over
-camera_change_pause, so the view is continuous only if the look turns by
-it (radians; zero otherwise) */
-static float third_person_handover;
 /* why the view is on the screen: none, the letterbox, a scripted camera, a
 third-person camera; logged as it changes */
 static const char *const film_reasons[] = {"none", "a cutscene", "a scripted camera", "a third-person camera"};
@@ -784,8 +790,11 @@ one, and the head's turn since its camera began. The look last took the
 head's pose of the last frame if that frame was head-tracked first person
 (head_pitch_known), so the turn starts from there, this frame's yaw already
 in it; otherwise (after the film) from the head's pose now. The next
-first-person frame keeps the view where it was: the look takes the head's
-turn in the seat once (third_person_handover), then follows the head */
+first-person frame keeps the view where it was: the eye cameras keep the
+head's turn in the seat (head_seat_leftover) until the camera holds the
+facing (the game glides it from the boom to the eyes, or to the seat's own
+camera, over camera_change_pause and the observer's settle), and then the
+look asks for it; meanwhile the look follows the head */
 static void third_person_begin(void)
 {
 	int head_frame = stereo_frame.mode == HALO_STEREO_HEAD && stereo_frame.eye_count == 2;
@@ -807,13 +816,20 @@ static void third_person_begin(void)
 	} else if (third_person) {
 		third_person_yaw = remainderf(third_person_yaw + stereo_frame.head_yaw, TWO_PI);
 	}
-	third_person_handover = 0.0f;
 	if (!third_person && third_person_head) {
-		if (stereo_frame.mode == HALO_STEREO_HEAD && stereo_frame.eye_count == 2)
-			third_person_handover = third_person_yaw;
-		platform_log("stereo: the head-tracked third-person or look-less camera ended; the look takes the head's %.1f "
-			"degrees",
-			third_person_handover * 180.0f / 3.14159265f);
+		/* (the leftover is zero through a third-person camera: its start
+		folded it in, and halo_stereo_frame_begin zeroes it each frame. Into
+		the film or a closed space nothing is handed over) */
+		float kept = 0.0f;
+
+		if (stereo_frame.mode == HALO_STEREO_HEAD && stereo_frame.eye_count == 2) {
+			kept = third_person_yaw;
+			head_seat_leftover = kept;
+			fold_wait_frames = 1;
+		}
+		platform_log("stereo: the head-tracked third-person or look-less camera ended; the eyes keep the head's %.1f "
+			"degrees until the camera holds the facing",
+			kept * 180.0f / 3.14159265f);
 	}
 	/* a snap armed in third person (the stick swings the boom there) doesn't
 	fire when the look is the head's again: the stick comes back first */
@@ -1210,13 +1226,15 @@ void halo_stereo_frame_begin(void)
 		and the eye cameras turn by it meanwhile, halo_stereo_head_orient);
 		the look's pitch follows the head's. SCREEN mode, the film and HEAD
 		mode's third person have neither: a turn the look never took there is
-		dropped, and so is the yaw a seat's limit refused (head_seat_leftover,
+		dropped, and so is the yaw the eye cameras kept (head_seat_leftover,
 		which third_person_begin folded into a third-person camera's turn) */
 		head_pending_yaw = head_look_frame ?
-			remainderf(head_pending_yaw + stereo_frame.head_yaw + third_person_handover + film_handover, TWO_PI) :
+			remainderf(head_pending_yaw + stereo_frame.head_yaw + film_handover, TWO_PI) :
 			0.0f;
-		if (!head_look_frame)
+		if (!head_look_frame) {
 			head_seat_leftover = 0.0f;
+			fold_wait_frames = 0;
+		}
 		head_pitch_known = head_look_frame;
 		head_pitch_now = stereo_frame.head_pitch;
 		/* a seat's exit cut (halo_stereo_camera_posed) holds until the camera
@@ -1722,16 +1740,29 @@ int halo_stereo_head_look(short gamepad_index, float current_pitch, float *yaw, 
 			snap_pending = 0.0f;
 		return 0;
 	}
-	/* the head's yaw since the look last ran, and all a seat's limit refused
-	so far: in a seat the clamp refuses what the limit still holds back
-	(halo_stereo_seat_yaw_clamp); elsewhere the game takes it all. Not while
-	the director holds the facing (a seat's entry or exit animation): the
-	game drops the frame's turn there, so the leftover stays the eyes' until
-	a look the game takes */
-	if (halo_director_inhibited_facing()) {
+	/* the head's yaw since the look last ran, and all the eye cameras kept
+	(head_seat_leftover): in a seat the clamp refuses what the limit still
+	holds back (halo_stereo_seat_yaw_clamp); elsewhere the game takes it all.
+	The leftover only once the last frame's camera held the facing
+	(camera_held_facing), so the camera that shows the fold turns with it: a
+	glide to the eyes or a seat's camera, a chase camera or a blend with one
+	of them, never turned by the facing, would step the view back by it. And
+	not while the director holds the facing (the debug camera's controls,
+	director_update_controls): the game drops the frame's turn there, so the
+	leftover stays the eyes' until a look the game takes */
+	if (!camera_held_facing || halo_director_inhibited_facing()) {
 		head_request = head_pending_yaw;
 		head_fold = 0.0f;
+		if (head_seat_leftover != 0.0f)
+			fold_wait_frames++;
 	} else {
+		/* (logged when the leftover waited for the camera: the request; in
+		a seat the clamp may let only part of it through, which the yaw
+		log's left column shows) */
+		if (head_seat_leftover != 0.0f && fold_wait_frames > 0)
+			platform_log("stereo: the look asks for the %.1f degrees the eyes kept, after %d frames: the camera holds "
+				"the facing", head_seat_leftover * RADIANS_TO_DEGREES, fold_wait_frames);
+		fold_wait_frames = 0;
 		head_request = head_pending_yaw + head_seat_leftover;
 		head_fold = head_seat_leftover;
 		head_seat_leftover = 0.0f;
@@ -1816,12 +1847,15 @@ int halo_stereo_seat_yaw_clamp(short local_player_index, float *desired_yaw, flo
 	return 1;
 }
 
-void halo_stereo_camera_posed(int posed)
+void halo_stereo_camera_posed(int holds_facing)
 {
-	/* the look folded a seat's leftover into the facing and the camera isn't
-	posed from it (the seat's exit glide starts from the seat camera's own
-	yaw): the full view goes black until the camera reaches the eyes */
-	if (!posed && !seat_cut_requested && fabsf(head_fold) > SEAT_CUT_FOLD &&
+	/* (for the next frame's look) */
+	camera_held_facing = holds_facing != 0;
+	/* the look folded a leftover into the facing and the camera doesn't hold
+	it (the camera changed in the fold's tick: a death, a cutscene, the
+	glide of a seat left that tick): the full view goes black until the
+	camera reaches the eyes */
+	if (!holds_facing && !seat_cut_requested && fabsf(head_fold) > SEAT_CUT_FOLD &&
 		stereo_frame.mode == HALO_STEREO_HEAD && stereo_frame.eye_count == 2 && !third_person_head) {
 		seat_cut_requested = 1;
 		seat_cut_elapsed = 0.0f;
@@ -2014,9 +2048,10 @@ void halo_stereo_head_orient(float forward[3], float up[3])
 		(render_interpolation.c says how much, halo_stereo_camera_head_yaw:
 		as of the later tick it blends, or as of now); since then the look
 		took more (taken less held: none for a camera posed this frame), and
-		it hasn't taken the rest yet (pending: this frame's, the paused
-		frames', and the seat's on leaving one), nor what a seat's limit
-		holds back (head_seat_leftover). Left positive, as the
+		it hasn't taken the rest yet (pending: this frame's and the paused
+		frames'), nor what the eye cameras keep (head_seat_leftover: what a
+		seat's limit holds back, the head's turn through a vehicle's camera
+		until the camera holds the facing). Left positive, as the
 		game's yaw. Then the head's own pitch, inside the game's limit, so
 		the camera is level when the head is, whatever the look's pitch was */
 		float held = camera_noted ? camera_head_yaw : head_yaw_taken;

@@ -68,6 +68,10 @@ static int game_player_look;
 /* the film's "expands out to the full view" lines logged, and its "didn't
 reach the player's eyes" lines */
 static int expansion_logs, settle_gave_up_logs;
+/* the last "the eyes keep the head's" line (a third-person camera's end) and
+the last "the look asks for the" line (the fold that follows it), kept apart
+from last_log, which debug.head_yaw_log's line overwrites in the same frame */
+static char eyes_keep_log[256], look_asks_log[256];
 
 /* stereo.c's imports */
 const char *config_string(const char *name)
@@ -115,6 +119,10 @@ void platform_log(const char *format, ...)
 		expansion_logs++;
 	if (strstr(last_log, "didn't reach the player's eyes"))
 		settle_gave_up_logs++;
+	if (strstr(last_log, "the eyes keep the head's"))
+		memcpy(eyes_keep_log, last_log, sizeof(eyes_keep_log));
+	if (strstr(last_log, "the look asks for the"))
+		memcpy(look_asks_log, last_log, sizeof(look_asks_log));
 }
 int halo_cinematic_screen(void) { return game_letterbox; }
 int halo_scripted_camera(void) { return game_scripted_camera; }
@@ -337,6 +345,8 @@ static void restart(const char *turn, double snap_angle, double smooth_turn_spee
 	head_yaw_now = head_yaw_taken = 0.0f;
 	head_request = head_seat_leftover = head_fold = 0.0f;
 	seat_cut_requested = 0;
+	camera_held_facing = 0;
+	fold_wait_frames = 0;
 	set_pose(0.0f, 0.0f, 0.0f);
 	/* a frame with the Compositor's eyes: the head drives the view */
 	halo_stereo_frame_begin();
@@ -725,7 +735,8 @@ static void oriented(float yaw, float pitch, float *oriented_yaw, float *oriente
 /* one frame of the game's loop with the head at (yaw, pitch) degrees and the
 stick at (stick_yaw, stick_pitch): the stick, then the look (which adds to
 the facing what the head and stick hand it), then the frame and the render's
-camera, which faces the facing (the chase camera points along it). Returns
+camera, which faces the facing (the chase camera points along it) and is
+reported as holding it (halo_stereo_camera_posed). Returns
 the stick's yaw and pitch as the game keeps them, and the view's angles */
 struct loop_frame { float stick_yaw, stick_pitch, view_yaw, view_pitch; int look_turned; };
 
@@ -744,6 +755,8 @@ static struct loop_frame loop(float *facing_yaw, float *facing_pitch, float yaw,
 	}
 	set_pose(yaw * DEGREES, pitch * DEGREES, 0.0f);
 	halo_stereo_frame_begin();
+	/* (the camera faces the facing, posed from it) */
+	halo_stereo_camera_posed(1);
 	oriented(*facing_yaw, *facing_pitch, &result.view_yaw, &result.view_pitch);
 	return result;
 }
@@ -836,6 +849,32 @@ static void third_person(void)
 	seated_view_yaw = f.view_yaw;
 	seated_facing_yaw = facing_yaw;
 	f = loop(&facing_yaw, &facing_pitch, 70.0f, -5.0f, 0.0f);
+	/* the camera's end: the eyes keep the seat's 30 degrees until the look
+	gives them to the facing, so the crosshair stays on the aim, as a seat's */
+	{
+		float reticle[3], length, game[3], view[3], apart;
+
+		halo_stereo_reticle(reticle);
+		length = sqrtf(reticle[0] * reticle[0] + reticle[1] * reticle[1] + reticle[2] * reticle[2]);
+		game[0] = cosf(facing_pitch) * cosf(facing_yaw);
+		game[1] = cosf(facing_pitch) * sinf(facing_yaw);
+		game[2] = sinf(facing_pitch);
+		view[0] = cosf(f.view_pitch * DEGREES) * cosf(f.view_yaw * DEGREES);
+		view[1] = cosf(f.view_pitch * DEGREES) * sinf(f.view_yaw * DEGREES);
+		view[2] = sinf(f.view_pitch * DEGREES);
+		apart = acosf(fminf(1.0f, game[0] * view[0] + game[1] * view[1] + game[2] * view[2])) / DEGREES;
+		printf("  the camera's end: the crosshair %.4f %.4f %.4f, %.3f deg off center (the aim and the view %.3f deg "
+			"apart, the yaw %.3f)\n", reticle[0], reticle[1], reticle[2], acosf(-reticle[2] / length) / DEGREES, apart,
+			f.view_yaw - facing_yaw / DEGREES);
+		check(fabsf(length - 1.0f) < 1e-4f && reticle[0] > 0.4f &&
+			fabsf(acosf(-reticle[2] / length) / DEGREES - apart) < 0.01f &&
+			fabsf(f.view_yaw - facing_yaw / DEGREES - 30.0f) < 0.01f,
+			"the camera's end: the crosshair on the aim, 30 degrees right of the view's center, as a seat's");
+	}
+	printf("  first person again: the view %.4f deg from the seat's last\n", degrees_apart(f.view_yaw, seated_view_yaw));
+	check(degrees_apart(f.view_yaw, seated_view_yaw) < 0.01f && fabsf(f.view_pitch + 5.0f) < 0.01f,
+		"leaving: the view's yaw holds (the seat's head turn kept), the pitch the head's");
+	f = loop(&facing_yaw, &facing_pitch, 72.0f, -5.0f, 0.0f);
 	{
 		float reticle[3];
 
@@ -843,10 +882,6 @@ static void third_person(void)
 		check(reticle[0] == 0.0f && reticle[1] == 0.0f && reticle[2] == -1.0f,
 			"on foot the crosshair is head-locked, straight ahead");
 	}
-	printf("  first person again: the view %.4f deg from the seat's last\n", degrees_apart(f.view_yaw, seated_view_yaw));
-	check(degrees_apart(f.view_yaw, seated_view_yaw) < 0.01f && fabsf(f.view_pitch + 5.0f) < 0.01f,
-		"leaving: the view's yaw holds (the seat's head turn kept), the pitch the head's");
-	f = loop(&facing_yaw, &facing_pitch, 72.0f, -5.0f, 0.0f);
 	check(f.look_turned && fabsf(facing_pitch / DEGREES + 5.0f) < 0.01f &&
 		degrees_apart(facing_yaw / DEGREES, seated_facing_yaw / DEGREES + 30.0f) < 0.01f &&
 		degrees_apart(facing_yaw / DEGREES, f.view_yaw - 2.0f) < 0.01f,
@@ -1233,6 +1268,11 @@ struct seat_run
 	-1: over) */
 	float glide_from;
 	int glide_tick;
+	/* a vehicle's chase camera: each tick's camera kept at the facing, not
+	posed from it (a third-person camera); and the direct camera
+	(display.direct_camera, on foot): the frame's camera is the facing as of
+	now, reported as holding it */
+	int chase, direct;
 };
 
 static float seat_step(struct seat_run *run, float head_degrees, float stick)
@@ -1255,7 +1295,7 @@ static float seat_step(struct seat_run *run, float head_degrees, float stick)
 				remainderf(run->facing_yaw - run->glide_from, TWO_PI) * (float)run->glide_tick / 6.0f, 0);
 			run->glide_tick = run->glide_tick < 6 ? run->glide_tick + 1 : -1;
 		} else
-			camera_keep(&run->camera, run->facing_yaw);
+			camera_keep_posed(&run->camera, run->facing_yaw, !run->chase);
 	}
 	t = (float)(run->frame % 3) / 3.0f;
 	/* the observer settles once the glide's last camera has gone by */
@@ -1263,8 +1303,14 @@ static float seat_step(struct seat_run *run, float head_degrees, float stick)
 		game_settled = 1;
 	set_pose(head_degrees * DEGREES, 0.0f, 0.0f);
 	halo_stereo_frame_begin();
-	halo_stereo_camera_posed(run->camera.latest_posed);
-	oriented(camera_blended_yaw(&run->camera, t), 0.0f, &run->view, &view_pitch);
+	/* (the game's rule: a blend holds the facing only with both its cameras
+	posed; the direct camera always does) */
+	halo_stereo_camera_posed(run->direct || (run->camera.latest_posed && run->camera.previous_posed));
+	if (run->direct) {
+		halo_stereo_camera_head_yaw(halo_stereo_head_yaw_taken(), t, "direct");
+		oriented(run->facing_yaw, 0.0f, &run->view, &view_pitch);
+	} else
+		oriented(camera_blended_yaw(&run->camera, t), 0.0f, &run->view, &view_pitch);
 	run->body = remainderf(run->view - head_degrees, 360.0f);
 	return look_yaw / DEGREES;
 }
@@ -1603,6 +1649,150 @@ static void seat_leftover_kept(void)
 	zoom_yaw = atan2f(forward[1], forward[0]) / DEGREES;
 	check(degrees_apart(zoom_yaw, run.view) < 0.01f, "without one the zoom follows the eyes, as on foot");
 	seated = 0;
+}
+
+/* one vehicle camera's end, entering or leaving a seat: a third-person camera
+(the chase camera, kept at the facing and not posed from it) through which
+the head turns rate degrees a frame for 30 frames, then the camera's end,
+the glide to the eyes or the seat's camera (six ticks not posed from the
+facing, then posed ticks), or on foot the direct camera; still_turning keeps
+the head turning 1 degree a frame through the end and the fold. bounded: the
+seat at the end has the 45 degree limit. The world must never move: the
+body's yaw steps by no more than the head's turn that frame (and the glide's
+own closing on a facing the head turns, 2.05 degrees, glide's bound); the
+eyes keep the head's turn until the camera holds the facing, then the look
+asks for it once */
+static void third_person_end(const char *name, int exiting, float rate, int still_turning, int bounded, int direct)
+{
+	struct seat_run run;
+	float head = 0.0f, from_head, to_head, last_body, last_head, worst = 0.0f, worst_glide = 0.0f, kept = 0.0f;
+	float asked = 0.0f, facing0, body0, left, pending, turn = still_turning ? 1.0f : 0.0f;
+	int frame, frames = 0, worst_glide_frame = -1, cut = 0, steady, at_bound, glide, was_glide = 0;
+	char check_name[192];
+
+	printf("  %s:\n", name);
+	seat_start(&run, "snap");
+	seated = exiting;
+	head_yaw_log = 1;
+	eyes_keep_log[0] = look_asks_log[0] = '\0';
+	seat_hold(&run, head, 3);
+	last_body = run.body;
+	last_head = head;
+	from_head = head;
+	game_third_person = 1;
+	run.chase = 1;
+	for (frame = 0; frame < 30 + 9 || (run.frame + 1) % 3 != 0; frame++) {
+		head += frame < 30 ? rate : turn;
+		seat_step(&run, head, 0.0f);
+		worst = fmaxf(worst, fabsf(remainderf(run.body - last_body, 360.0f)) - fabsf(head - last_head));
+		cut |= halo_stereo_cut_requested();
+		last_body = run.body;
+		last_head = head;
+	}
+	to_head = head;
+	/* the camera's end: the next frame is first person, its tick the
+	glide's first (or the direct camera's) */
+	game_third_person = 0;
+	run.chase = 0;
+	seated = exiting ? 0 : bounded;
+	if (direct)
+		run.direct = 1;
+	else {
+		game_settled = 0;
+		run.glide_from = run.facing_yaw;
+		run.glide_tick = 1;
+	}
+	for (frame = 0; frame < 45; frame++) {
+		float step;
+
+		head += turn;
+		seat_step(&run, head, 0.0f);
+		step = fabsf(remainderf(run.body - last_body, 360.0f));
+		/* (a step from the glide's last frame into a held camera is the
+		glide's too) */
+		glide = !direct && !(run.camera.latest_posed && run.camera.previous_posed);
+		if (still_turning && (glide || was_glide)) {
+			if (step > worst_glide) {
+				worst_glide = step;
+				worst_glide_frame = frame;
+			}
+		} else
+			worst = fmaxf(worst, step - fabsf(head - last_head));
+		was_glide = glide;
+		cut |= halo_stereo_cut_requested();
+		last_body = run.body;
+		last_head = head;
+	}
+	/* the head still again: the facing settles where the fold put it */
+	seat_hold(&run, head, 6);
+	worst = fmaxf(worst, fabsf(remainderf(run.body - last_body, 360.0f)));
+	if (strstr(eyes_keep_log, "the eyes keep the head's "))
+		sscanf(strstr(eyes_keep_log, "the eyes keep the head's ") + strlen("the eyes keep the head's "), "%f", &kept);
+	if (strstr(look_asks_log, "the look asks for the "))
+		sscanf(strstr(look_asks_log, "the look asks for the ") + strlen("the look asks for the "),
+			"%f degrees the eyes kept, after %d frames", &asked, &frames);
+	at_bound = seated && to_head > 45.0f;
+	printf("    the body steps %.4f deg at worst past the head's turn%s", worst, still_turning ? "" : "\n");
+	if (still_turning)
+		printf("; through the glide %.4f deg at worst (frame %d after the end)\n", worst_glide, worst_glide_frame);
+	printf("    logged: the eyes keep %.1f deg (the head turned %.1f), the look asks for %.1f after %d frames; the "
+		"facing %.4f deg, the head %.1f, the leftover %.4f\n", kept, to_head - from_head, asked, frames,
+		remainderf(run.facing_yaw / DEGREES, 360.0f), head, head_seat_leftover / DEGREES);
+	snprintf(check_name, sizeof(check_name), "%s: the world holds still at the camera's end and at the fold", name);
+	check(worst < 0.02f && (!still_turning || worst_glide <= 2.05f), check_name);
+	snprintf(check_name, sizeof(check_name), "%s: no cut", name);
+	check(!cut, check_name);
+	snprintf(check_name, sizeof(check_name), "%s: the eyes keep the head's turn, the look asks for it %s", name,
+		direct ? "after 1 frame" : "after the glide, within two ticks more");
+	check(fabsf(kept - (to_head - from_head)) < 0.06f && fabsf(asked - kept) < 0.06f &&
+		(direct ? frames == 1 : frames >= 18 && frames <= 24), check_name);
+	snprintf(check_name, sizeof(check_name), at_bound ? "%s: the aim at the seat's bound, the leftover the rest" :
+		"%s: the facing is the head's", name);
+	check(at_bound ? degrees_apart(run.facing_yaw / DEGREES, 45.0f) < 0.01f &&
+		fabsf(head_seat_leftover / DEGREES - (head - 45.0f)) < 0.01f :
+		degrees_apart(run.facing_yaw / DEGREES, head) < 0.01f && head_seat_leftover == 0.0f, check_name);
+	/* a degree more of the head */
+	facing0 = run.facing_yaw;
+	body0 = run.body;
+	head += 1.0f;
+	seat_step(&run, head, 0.0f);
+	seat_hold(&run, head, 1);
+	steady = fabsf(remainderf(run.body - body0, 360.0f)) < 0.01f;
+	if (at_bound) {
+		seat_step(&run, head + 1.0f, 0.0f);
+		snprintf(check_name, sizeof(check_name), "%s: then a degree more: the aim stays, the logged left the head's "
+			"less 45", name);
+		check(steady && degrees_apart(run.facing_yaw / DEGREES, facing0 / DEGREES) < 0.01f &&
+			logged_left(&left, &pending) && fabsf(left - (head + 1.0f - pending - 45.0f)) < 0.01f, check_name);
+		head += 1.0f;
+	} else {
+		snprintf(check_name, sizeof(check_name), "%s: then a degree more: the facing by 1 deg, the world still",
+			name);
+		check(steady && fabsf(remainderf((run.facing_yaw - facing0) / DEGREES, 360.0f) - 1.0f) < 0.01f, check_name);
+	}
+	head_yaw_log = 0;
+	game_settled = 1;
+	seated = 0;
+}
+
+static void third_person_ends(void)
+{
+	static const float turns[3] = { 30.0f, 90.0f, 150.0f };
+	char name[96];
+	int i;
+
+	printf("a vehicle's third-person camera ending (entry and exit), 90 Hz, three frames a tick:\n");
+	for (i = 0; i < 3; i++) {
+		snprintf(name, sizeof(name), "the exit, %.0f deg turned, the glide", turns[i]);
+		third_person_end(name, 1, turns[i] / 30.0f, 0, 0, 0);
+		snprintf(name, sizeof(name), "the exit, %.0f deg turned, the direct camera", turns[i]);
+		third_person_end(name, 1, turns[i] / 30.0f, 0, 0, 1);
+		snprintf(name, sizeof(name), "the entry, %.0f deg turned, a 45 deg seat", turns[i]);
+		third_person_end(name, 0, turns[i] / 30.0f, 0, 1, 0);
+		snprintf(name, sizeof(name), "the entry, %.0f deg turned, a seat without bounds", turns[i]);
+		third_person_end(name, 0, turns[i] / 30.0f, 0, 0, 0);
+	}
+	third_person_end("the exit, 90 deg turned, the head still turning", 1, 3.0f, 1, 0, 0);
 }
 
 static void interpolated_turns(void)
@@ -2670,6 +2860,7 @@ int main(void)
 	glide();
 	seat_yaw_limit();
 	seat_leftover_kept();
+	third_person_ends();
 	first_person_cutscenes();
 	released_cutscene();
 	look_disabled();
