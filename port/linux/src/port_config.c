@@ -167,13 +167,25 @@ static const struct config_setting config_settings[] =
 	{ "display.first_person_body", _config_boolean, "true", "HALO_FIRST_PERSON_BODY", _environment_set_is_true, _platform_ios,
 		"With display.stereo = \"head\": draw the Master Chief's body below the\n"
 		"view (no head or neck, and no third-person arms while you hold a weapon),\n"
-		"so looking down shows your chest and feet. On foot only: none in a seat\n"
-		"or while a script animates him." },
+		"so looking down shows your chest and feet. None while a script animates\n"
+		"him; in a seat, as display.first_person_body_seats says." },
 	{ "display.first_person_body_offset", _config_real, "0.12", "HALO_FIRST_PERSON_BODY_OFFSET", _environment_value,
 		_platform_ios,
 		"With display.first_person_body: how far behind your eyes the body stands,\n"
 		"in world units (0 to 0.2; 0.12 is about 37 cm), so the feet show past the\n"
 		"chest when you look down. Read at start." },
+	{ "display.first_person_body_seats", _config_boolean, "true", "HALO_FIRST_PERSON_BODY_SEATS", _environment_set_is_true,
+		_platform_ios,
+		"With display.first_person_body: also draw the legs in a vehicle's\n"
+		"first-person seat (the Warthog's passenger seat, the Scorpion's rider\n"
+		"seats). Seats whose camera is on the gun or behind the vehicle, and a10's\n"
+		"cryo pod, show no body." },
+	{ "display.first_person_body_seat_offset", _config_real, "0.0", "HALO_FIRST_PERSON_BODY_SEAT_OFFSET",
+		_environment_value, _platform_ios,
+		"With display.first_person_body_seats: how far the seated legs move back\n"
+		"along the seat's facing, in world units (0 to 0.2). A seat's camera is a\n"
+		"marker on the vehicle, not a point on the body, so 0 means the legs sit\n"
+		"where the game puts them." },
 	{ "display.weapon_offset_down", _config_real, "0.0", "HALO_WEAPON_OFFSET_DOWN", _environment_value, _platform_ios,
 		"With display.stereo = \"head\": how far the first-person weapon and arms\n"
 		"sit below where the game puts them, in world units (0 to 0.2; 0.01 is about\n"

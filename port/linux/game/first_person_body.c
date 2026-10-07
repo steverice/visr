@@ -36,7 +36,10 @@ with a render-only copy of its node matrices:
   back, the feet show past the front of the chest, as a person's do past
   their belly, and the collar stays behind the eye passes' near plane
   (0.0625 units): at 0.08 looking straight down showed the shell's inside
-  through it, at 0.12 it doesn't.
+  through it, at 0.12 it doesn't. In a seat the camera is the seat's
+  camera marker on the vehicle, not a point on the body, so the set-back
+  there is display.first_person_body_seat_offset instead, along the unit's
+  world facing (object_get_orientation: the seat marker's).
 
 The shadow takes a second copy, the full silhouette (head and arms
 included) set back the same way, so the feet's shadow lies under the drawn
@@ -44,10 +47,14 @@ feet. The collapsed neck leaves the body's shell open, so render_objects.c
 draws the body a second time with the cull reversed, which only the shell's
 inside faces pass, in a flat dark color (halo_first_person_body_fill).
 
-The body draws only while the unit stands in a pose the game drives under
-the camera: on foot (no seat), no custom animation (a10's cryo pod leans
-the Chief back with the camera in front of his chest), not dead, and its
-pelvis within BODY_PELVIS_MAXIMUM_DISTANCE of the camera horizontally.
+The body draws only while the unit is in a pose the game drives under the
+camera: no custom animation, not dead, and either on foot with its pelvis
+within BODY_PELVIS_MAXIMUM_DISTANCE of the camera horizontally, or in a
+vehicle's first-person seat (display.first_person_body_seats; not a seat
+whose camera is on the gun or behind the vehicle) with its pelvis within
+BODY_SEAT_PELVIS_MAXIMUM_DISTANCE of the seat's camera, and not climbing
+into or out of it. a10's cryo pod is a vehicle's seat, but its pelvis sits
+ahead of the camera, past BODY_SEAT_PELVIS_MAXIMUM_FORWARD, so it takes none.
 debug.gpu_stats logs the first skip of each stretch, and once a second the
 camera and the drawn pelvis and feet in the camera's frame; and once a
 second while the unit sits in a seat, whether or not a body draws, the
@@ -108,6 +115,18 @@ after a map with another (the Elite's or a marine's in a scripted swap) */
 /* the farthest the pelvis may sit from the camera horizontally, world
 units: walking it stays within about 0.05; in the cryo pod it's 0.175 */
 #define BODY_PELVIS_MAXIMUM_DISTANCE 0.15f
+/* display.first_person_body_seat_offset's default, world units */
+#define BODY_SEAT_OFFSET_DEFAULT 0.0f
+/* in a seat, the farthest the pelvis may sit from the seat's camera
+horizontally, world units: the Warthog passenger's sits 0.21 behind it, and
+0.35 to the side in the first seated frame (Task 7f-2's Mac log), plus 0.05,
+rounded up to 0.05 */
+#define BODY_SEAT_PELVIS_MAXIMUM_DISTANCE 0.45f
+/* in a seat, the farthest the pelvis may sit ahead of the seat's camera
+along the facing, world units: a passenger's is behind the camera marker,
+while in a10's cryo pod (a vehicle, levels\a10\devices\cryotube) it's
+0.175 ahead, with the camera in front of the Chief's chest */
+#define BODY_SEAT_PELVIS_MAXIMUM_FORWARD 0.05f
 /* the nearest a kept node may come to the camera, world units: the spine's
 bend clamp turns the upper body back until every kept node is this far */
 #define BODY_CAMERA_CLEARANCE 0.1f
@@ -136,16 +155,18 @@ enum body_skip
 	BODY_SKIP_DEAD,
 	BODY_SKIP_PELVIS_FAR,
 	BODY_SKIP_MODEL,
+	BODY_SKIP_SEAT_TRANSITION,
 	NUMBER_OF_BODY_SKIPS
 };
 
 static const char *const body_skip_names[NUMBER_OF_BODY_SKIPS] = {
 	"draws",
-	"the unit is in a seat",
+	"the unit is in a seat that takes no body",
 	"the unit plays a custom animation",
 	"the unit is dead",
 	"the unit's pelvis is too far from under the camera",
 	"the unit's model nodes aren't recognized",
+	"the unit is climbing into or out of a seat",
 };
 
 struct body_model
@@ -177,7 +198,10 @@ struct body_model
 static struct body_model body_cache[BODY_CACHE_SIZE];
 static int body_cache_next;
 static int body_setting = -1; /* display.first_person_body, read once */
-static float body_offset = -1.0f; /* display.first_person_body_offset, read once */
+static int body_seats_setting = -1; /* display.first_person_body_seats, read once */
+/* display.first_person_body_offset and display.first_person_body_seat_offset,
+each read once */
+static float body_offset = -1.0f, body_seat_offset = -1.0f;
 static real_matrix4x3 body_matrices[MAXIMUM_NODES_PER_MODEL];
 static real_matrix4x3 body_shadow_matrices[MAXIMUM_NODES_PER_MODEL];
 /* the last body copy's nearest kept upper-body node to the camera, before
@@ -366,18 +390,31 @@ static const struct body_model *body_model_get(long model_index)
 	return body;
 }
 
-/* display.first_person_body_offset, clamped, read once */
-static float body_offset_get(void)
+/* an offset setting's value in 0 to BODY_OFFSET_MAXIMUM; NaN gives the
+fallback */
+static float body_offset_clamp(double value, float fallback)
 {
-	if (body_offset < 0.0f) {
-		double offset = config_real("display.first_person_body_offset");
+	if (value != value)
+		return fallback;
+	if (value < 0.0)
+		return 0.0f;
+	if (value > BODY_OFFSET_MAXIMUM)
+		return BODY_OFFSET_MAXIMUM;
+	return (float)value;
+}
 
-		body_offset = offset == offset ? (float)offset : BODY_OFFSET_DEFAULT;
-		if (body_offset < 0.0f)
-			body_offset = 0.0f;
-		if (body_offset > BODY_OFFSET_MAXIMUM)
-			body_offset = BODY_OFFSET_MAXIMUM;
+/* the set-back: display.first_person_body_offset on foot, or seated
+display.first_person_body_seat_offset, clamped, each read once */
+static float body_offset_get(int seated)
+{
+	if (seated) {
+		if (body_seat_offset < 0.0f)
+			body_seat_offset = body_offset_clamp(config_real("display.first_person_body_seat_offset"),
+				BODY_SEAT_OFFSET_DEFAULT);
+		return body_seat_offset;
 	}
+	if (body_offset < 0.0f)
+		body_offset = body_offset_clamp(config_real("display.first_person_body_offset"), BODY_OFFSET_DEFAULT);
 	return body_offset;
 }
 
@@ -526,7 +563,7 @@ static void body_clamp_bend(const struct body_model *body, real_matrix4x3 *copy,
 }
 
 const real_matrix4x3 *halo_first_person_body_matrices(long model_index, const real_matrix4x3 *matrices,
-	short node_count, const float facing[3], const float camera[3], int collapse_arms, int shadow)
+	short node_count, const float facing[3], const float camera[3], int collapse_arms, int seated, int shadow)
 {
 	const struct body_model *body;
 	real_matrix4x3 *copy = shadow ? body_shadow_matrices : body_matrices;
@@ -545,8 +582,8 @@ const real_matrix4x3 *halo_first_person_body_matrices(long model_index, const re
 	/* the set-back: the offset backward along the facing made horizontal
 	(none if the facing is vertical) */
 	if (length > 1e-4f) {
-		back[0] = -body_offset_get() * facing[0] / length;
-		back[1] = -body_offset_get() * facing[1] / length;
+		back[0] = -body_offset_get(seated) * facing[0] / length;
+		back[1] = -body_offset_get(seated) * facing[1] / length;
 	}
 
 	memcpy(copy, matrices, (size_t)node_count * sizeof(*matrices));
@@ -588,23 +625,60 @@ const real_matrix4x3 *halo_first_person_body_matrices(long model_index, const re
 	return copy;
 }
 
+/* the pelvis's horizontal offset from the camera (offset[0], offset[1]);
+0 if the model's nodes aren't recognized */
+static int body_pelvis_offset(long model_index, const real_matrix4x3 *matrices, short node_count,
+	const float camera[3], float offset[2])
+{
+	const struct body_model *body;
+
+	if (model_index == NONE || !matrices || node_count <= 0)
+		return 0;
+	body = body_model_get(model_index);
+	if (!body->recognized || body->pelvis >= node_count)
+		return 0;
+	offset[0] = matrices[body->pelvis].position.x - camera[0];
+	offset[1] = matrices[body->pelvis].position.y - camera[1];
+	return 1;
+}
+
 /* why the body doesn't draw for its pose, from its node matrices and the
 camera's position: its model, or its pelvis's horizontal distance from the
 camera */
 static enum body_skip body_pose_skip(long model_index, const real_matrix4x3 *matrices, short node_count,
 	const float camera[3])
 {
-	const struct body_model *body;
-	float dx, dy;
+	float offset[2];
 
-	if (model_index == NONE || !matrices || node_count <= 0)
+	if (!body_pelvis_offset(model_index, matrices, node_count, camera, offset))
 		return BODY_SKIP_MODEL;
-	body = body_model_get(model_index);
-	if (!body->recognized || body->pelvis >= node_count)
+	if (offset[0] * offset[0] + offset[1] * offset[1] > BODY_PELVIS_MAXIMUM_DISTANCE * BODY_PELVIS_MAXIMUM_DISTANCE)
+		return BODY_SKIP_PELVIS_FAR;
+	return BODY_DRAWS;
+}
+
+/* why a seated unit's pose takes no body, or BODY_DRAWS: not a vehicle's
+seat (the pod), the seats setting off, a seat whose camera is on the gun
+or behind the vehicle, the enter or exit animation, or the pelvis away
+from the seat's camera */
+static enum body_skip body_seat_pose_skip(int seats_setting, int vehicle_parent, int camera_elsewhere,
+	int in_transition, long model_index, const real_matrix4x3 *matrices, short node_count,
+	const float camera[3], const float facing[3])
+{
+	float offset[2];
+	float length = sqrtf(facing[0] * facing[0] + facing[1] * facing[1]);
+
+	if (!seats_setting || !vehicle_parent || camera_elsewhere)
+		return BODY_SKIP_SEATED;
+	if (in_transition)
+		return BODY_SKIP_SEAT_TRANSITION;
+	if (!body_pelvis_offset(model_index, matrices, node_count, camera, offset))
 		return BODY_SKIP_MODEL;
-	dx = matrices[body->pelvis].position.x - camera[0];
-	dy = matrices[body->pelvis].position.y - camera[1];
-	if (dx * dx + dy * dy > BODY_PELVIS_MAXIMUM_DISTANCE * BODY_PELVIS_MAXIMUM_DISTANCE)
+	if (offset[0] * offset[0] + offset[1] * offset[1] >
+		BODY_SEAT_PELVIS_MAXIMUM_DISTANCE * BODY_SEAT_PELVIS_MAXIMUM_DISTANCE)
+		return BODY_SKIP_PELVIS_FAR;
+	/* ahead of the camera along the facing made horizontal: the pod */
+	if (length > 1e-4f && (offset[0] * facing[0] + offset[1] * facing[1]) / length > BODY_SEAT_PELVIS_MAXIMUM_FORWARD)
 		return BODY_SKIP_PELVIS_FAR;
 	return BODY_DRAWS;
 }
@@ -756,8 +830,9 @@ static void first_person_body_seat_log(long object_index, const float camera[3])
 	platform_log("%s", line);
 }
 
-/* why the unit's pose doesn't take a body: a seat, a custom animation
-(a10's pod), death, or its pelvis away from under the camera */
+/* why the unit's pose doesn't take a body: a custom animation, death, a
+seat that takes none (body_seat_pose_skip: a10's pod among them), or its
+pelvis away from under the camera */
 static enum body_skip first_person_body_pose(long object_index)
 {
 	struct object_datum *object = object_get(object_index);
@@ -766,14 +841,37 @@ static enum body_skip first_person_body_pose(long object_index)
 
 	if (object->object.parent_object_index != NONE)
 		first_person_body_seat_log(object_index, camera);
-	if (object->object.parent_object_index != NONE)
-		return BODY_SKIP_SEATED;
 	if (unit_is_playing_custom_animation(object_index))
 		return BODY_SKIP_CUSTOM_ANIMATION;
 	if (TEST_FLAG(object->object.flags, _object_dead_bit))
 		return BODY_SKIP_DEAD;
 	if (model_index == NONE)
 		return BODY_SKIP_MODEL;
+	if (object->object.parent_object_index != NONE) {
+		struct object_datum *parent = object_get(object->object.parent_object_index);
+		struct unit_datum *unit = unit_get(object_index);
+		const struct unit_seat *seat;
+		real_vector3d forward;
+		float facing[3];
+
+		if (body_seats_setting < 0)
+			body_seats_setting = config_boolean("display.first_person_body_seats") != 0;
+		if (!TEST_FLAG(_object_mask_unit, parent->object.type) || unit->unit.parent_seat_index == NONE)
+			return BODY_SKIP_SEATED;
+		seat = TAG_BLOCK_GET_ELEMENT(&unit_definition_get(parent->definition_index)->unit.seats,
+			unit->unit.parent_seat_index, struct unit_seat);
+		object_get_orientation(object_index, &forward, NULL);
+		facing[0] = forward.i;
+		facing[1] = forward.j;
+		facing[2] = forward.k;
+		return body_seat_pose_skip(body_seats_setting, parent->object.type == _object_type_vehicle,
+			TEST_FLAG(seat->flags, _unit_seat_third_person_camera_bit) ||
+				TEST_FLAG(seat->flags, _unit_seat_first_person_camera_bit),
+			unit->unit.animation.state == _unit_state_entering_seat ||
+				unit->unit.animation.state == _unit_state_exiting_seat,
+			model_index, object_get_node_matrices(object_index), body_node_count(object_index, model_index),
+			camera, facing);
+	}
 	return body_pose_skip(model_index, object_get_node_matrices(object_index),
 		body_node_count(object_index, model_index), camera);
 }
@@ -811,7 +909,7 @@ void halo_first_person_body_log(long object_index, const struct real_matrix4x3 *
 	length = (size_t)snprintf(line, sizeof(line), "first_person_body: camera (%.3f %.3f %.3f) pitch %.1f,"
 		" offset %.3f; in the camera's frame (forward, right, down):", camera->position.x, camera->position.y,
 		camera->position.z, asinf(camera->forward.k > 1.0f ? 1.0f : camera->forward.k < -1.0f ? -1.0f :
-		camera->forward.k) * 57.29578f, body_offset_get());
+		camera->forward.k) * 57.29578f, body_offset_get(object->object.parent_object_index != NONE));
 	for (i = 0; i < 3 && length < sizeof(line); i++) {
 		short node = i == 0 ? body->pelvis : body->feet[i - 1];
 		float dx, dy, dz;

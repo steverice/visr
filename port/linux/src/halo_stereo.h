@@ -317,26 +317,28 @@ while object_index is the local player's unit, drawn below the view in
 first person: HEAD mode or the side-by-side view, an eye layer, not the
 film or SCREEN gameplay, the director's first person (not a scripted
 camera), display.first_person_body, and a pose the game drives under the
-camera (on foot, no custom animation, not dead, the pelvis under the
-camera). render_objects.c draws it after the first-person weapon, under
-that weapon's stencil, then again for its inside faces
-(halo_first_person_body_fill) */
+camera (no custom animation, not dead, the pelvis under the camera; on foot
+or in a vehicle's first-person seat, with display.first_person_body_seats,
+not while climbing in or out). render_objects.c draws it after the
+first-person weapon, under that weapon's stencil, then again for its inside
+faces (halo_first_person_body_fill) */
 int halo_first_person_body(long object_index);
 /* the render-only node matrices for that body, set back along the facing
-(facing: the unit's forward; only its horizontal part counts) by
-display.first_person_body_offset: the body's with the neck and head
+(facing: the unit's world forward; only its horizontal part counts) by
+display.first_person_body_offset, or seated by
+display.first_person_body_seat_offset: the body's with the neck and head
 collapsed to a cap above the collar (a model with no neck node: the head to
 its parent), with collapse_arms (while the first-person weapon shows) the
 arms from the upper arms down collapsed too, the aiming pose's forward bend
 undone, and the spine's bend clamped so no kept node comes within 0.1 units
-of camera; or with shadow, the whole silhouette for its shadow. Each in its own static array, valid until the next call of the
-same kind; node_count is the smaller of the model's nodes and the object's
-node matrices; returns matrices unchanged if the model's nodes aren't
-recognized */
+of camera; or with shadow, the whole silhouette for its shadow. Each in its
+own static array, valid until the next call of the same kind; node_count
+is the smaller of the model's nodes and the object's node matrices; returns
+matrices unchanged if the model's nodes aren't recognized */
 struct real_matrix4x3;
 const struct real_matrix4x3 *halo_first_person_body_matrices(long model_index,
 	const struct real_matrix4x3 *matrices, short node_count, const float facing[3], const float camera[3],
-	int collapse_arms, int shadow);
+	int collapse_arms, int seated, int shadow);
 /* debug.gpu_stats, once a second of game time: the camera, the drawn
 pelvis and feet in the camera's frame, and the kept chest's nearest
 distance to the camera with the bend clamp's angle */
