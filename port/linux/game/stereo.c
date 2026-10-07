@@ -1157,6 +1157,23 @@ void halo_stereo_log_culling(float distance_back)
 		halo_stereo_film() ? "the film" : halo_stereo_screen_gameplay() ? "SCREEN gameplay" : "the full view");
 }
 
+void halo_stereo_log_film_camera(const float position[3], const float forward[3], float vertical_field_of_view)
+{
+	static const char *const perspectives[] = {"first person", "third person", "scripted", "neutral"};
+	struct halo_cutscene_state state;
+
+	if (!stereo_stats || !halo_stereo_film())
+		return;
+	halo_cutscene_state(&state);
+	platform_log("stereo: film camera: frame %lu: vertical field of view %.3f deg, at %.4f %.4f %.4f, forward "
+		"%.4f %.4f %.4f, perspective %s, first person %d, camera %s, film %s",
+		head_log_frame, vertical_field_of_view * 360.0f / TWO_PI, position[0], position[1], position[2],
+		forward[0], forward[1], forward[2],
+		state.perspective >= 0 && state.perspective < 4 ? perspectives[state.perspective] : "?",
+		halo_cutscene_camera_first_person(), camera_noted && camera_source ? camera_source : "unnoted",
+		film_reasons[film_reason]);
+}
+
 int halo_stereo_cut_covered(void)
 {
 	return frame_fade[3] > 0.0f;

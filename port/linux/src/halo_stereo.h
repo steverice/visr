@@ -404,6 +404,11 @@ int halo_stereo_weapon_offset(float *down, float *back);
 /* debug.gpu_stats: logs the culling camera's distance back behind the
 center camera (render.c), once for each mode and mapping */
 void halo_stereo_log_culling(float distance_back);
+/* debug.gpu_stats: logs each film frame's camera (render.c, the eye loop):
+its vertical field of view (radians in, degrees logged), position, forward,
+whether it's first person, and how render_interpolation.c made it ("cut" on
+a camera cut), for Task 12k's count of telephoto shots */
+void halo_stereo_log_film_camera(const float position[3], const float forward[3], float vertical_field_of_view);
 /* display.lod_scale in HEAD mode and the side-by-side view (1.0 otherwise):
 a multiplier on the pixel size the game picks model detail and particle
 distance by, 1.0 the Xbox's, clamped to 0.5 to 4 */
