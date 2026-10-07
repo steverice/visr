@@ -15,12 +15,17 @@ struct texture_recipe_globals
 	float low, high, sigma;            /* bpf only */
 	uint32_t iterations, post_version; /* bpf only: the bp and bpf kernels' version */
 	const char *encoder;               /* piece 2's encoding and its settings, e.g. "rgba8" until then */
+	/* classifier-S4g only: the policy's damage block (texture_policy_table; negative: a test turned off) and its
+	measures' version. An entry whose classifier result is S4g may hold S4g, bpf or (later) original bytes, so its
+	global key carries these and the bpf parameters above: a change to any of them redoes every such entry. */
+	float damage_share, damage_structure_loss, damage_bpf_structure_loss;
+	uint32_t damage_measure_version;
 };
 struct texture_recipe
 {
 	uint64_t source_hash;
 	uint32_t width, height;
-	enum texture_policy_result result;
+	enum texture_policy_result result; /* the policy table's (classifier, pins included), not the damage rule's */
 	enum texture_policy_treatment treatment;
 	int wrap, dilates;
 	int alpha;                         /* 0 none, 1 binary, 2 graded */

@@ -161,8 +161,21 @@ static void ascii_case_and_pin_logs(void)
 	texture_policy_catalog_free(c);
 }
 
+/* the shipped policy's "damage" block, embedded: the device carries the damage rule's parameters (piece 3 applies
+them); a test turned off (null) is a negative threshold */
+static void embedded_damage_block(void)
+{
+	const struct texture_policy_table *t = &texture_policy_embedded;
+
+	assert(t->damage_share == 0.10f);
+	assert(t->damage_structure_loss < 0 && t->damage_bpf_structure_loss < 0);
+	assert(t->damage_measure_version == 1);
+	assert(t->low == 12 && t->high == 30 && t->sigma == 1 && t->iterations == 3);
+}
+
 int main(void)
 {
+	embedded_damage_block();
 	surfaces_companions_bumps_and_signals();
 	pins();
 	ascii_case_and_pin_logs();

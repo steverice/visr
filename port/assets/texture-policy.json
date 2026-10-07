@@ -1,8 +1,9 @@
 {
   "schema": 1,
-  "policy_version": 2,
+  "policy_version": 3,
   "results": {"graphic": "s4g", "surface": "bpf", "companion": "bpf", "bump": "bpf"},
   "fallback": {"low": 12, "high": 30, "sigma": 1.0, "iterations": 3},
+  "damage": {"share": 0.10, "structure_loss": null, "bpf_structure_loss": null, "measure_version": 1},
   "graphic_names": ["decal", "decals", "display", "diplays", "readout", "numbers", "compass", "text", "symbol",
                     "registry", "subscreen", "emblem", "scanlines", "nos", "monitor", "monitors", "screen", "sign",
                     "keypad", "label", "glyph", "font", "logo", "insignia", "patches"],

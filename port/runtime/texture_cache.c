@@ -30,9 +30,16 @@ uint64_t texture_recipe_global_key(const struct texture_recipe_globals *g, enum 
 		g->pipeline_version[treatment], g->encoder);
 	if (length < 0 || (size_t)length >= sizeof(text))
 		length = (int)sizeof(text) - 1;
-	if (result == TEXTURE_POLICY_BPF && (size_t)length < sizeof(text) - 1)
+	/* bpf, and classifier S4g, whose damage rule may fall back to bpf (or, later, the original) */
+	if (result != TEXTURE_POLICY_ORIGINAL && (size_t)length < sizeof(text) - 1)
 		length += snprintf(text + length, sizeof(text) - (size_t)length, ";low=%.3f;high=%.3f;sigma=%.3f;iterations=%u;post=%u",
 			g->low, g->high, g->sigma, g->iterations, g->post_version);
+	if (result == TEXTURE_POLICY_S4G && (size_t)length < sizeof(text) - 1)
+		length += snprintf(text + length, sizeof(text) - (size_t)length,
+			";damage_share=%.4f;damage_structure_loss=%.4f;damage_bpf_structure_loss=%.4f;damage_measure=%u",
+			g->damage_share < 0 ? -1.0 : (double)g->damage_share,
+			g->damage_structure_loss < 0 ? -1.0 : (double)g->damage_structure_loss,
+			g->damage_bpf_structure_loss < 0 ? -1.0 : (double)g->damage_bpf_structure_loss, g->damage_measure_version);
 	if ((size_t)length >= sizeof(text))
 		length = (int)sizeof(text) - 1;
 	return texture_override_hash((const unsigned char *)text, (size_t)length);

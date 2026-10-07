@@ -40,6 +40,17 @@ struct texture_policy_table
 	size_t decal_surface_prefix_count;
 	const struct texture_policy_override *overrides;
 	size_t override_count;
+	/* The damage rule (design 2026-10-07-halo-ce-ios-texture-upscale-damage-rule-design.md): a classifier-S4g texture
+	(a graphic not pinned by an override) falls back to bpf when its S4g is damaged, damage_share >= this share or,
+	when enabled, structure_loss(S4g) >= damage_structure_loss; and to the original when, enabled, bpf loses markedly
+	more structure than a plain resize, structure_loss(bpf) - structure_loss(resize) >= damage_bpf_structure_loss.
+	A negative value is a test turned off (null in the policy file). damage_measure_version is the measures'
+	definition version. The Mac reference is step-tools/upscale_lib/damage.py (damage_share, structure_loss) and its
+	policy/final.tsv; the device's measure (piece 3, a GPU reduction beside the bpf pass) must match damage_share
+	within 0.005, and its tests cover every key within 0.02 of the threshold. Until piece 3, the device carries only
+	these parameters (in the cache recipe key) and the table's results stay the classifier's. */
+	float damage_share, damage_structure_loss, damage_bpf_structure_loss;
+	int damage_measure_version;
 };
 /* port/assets/texture-policy.json, by tools/embed_texture_policy.py */
 extern const struct texture_policy_table texture_policy_embedded;

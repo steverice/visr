@@ -9,7 +9,8 @@
 
 static struct texture_recipe_globals globals(void)
 {
-	struct texture_recipe_globals g = { "S4g", "ab12", { 1, 1, 1, 1, 1, 1 }, 12, 30, 1, 3, 1, "rgba8" };
+	struct texture_recipe_globals g = { "S4g", "ab12", { 1, 1, 1, 1, 1, 1 }, 12, 30, 1, 3, 1, "rgba8",
+		0.10f, -1, -1, 1 };
 	return g;
 }
 
@@ -34,11 +35,12 @@ static enum texture_cache_action after(const struct texture_recipe_globals *old_
 
 static void invalidation_table(void)
 {
-	struct texture_recipe_globals g = globals(), threshold = g, model = g, encoder = g, bumpfix = g;
+	struct texture_recipe_globals g = globals(), threshold = g, model = g, encoder = g, bumpfix = g, share = g;
 	struct texture_cache_record desired = record(&g, TEXTURE_POLICY_BPF, TEXTURE_POLICY_COLOR);
 	struct texture_cache_record original = record(&g, TEXTURE_POLICY_ORIGINAL, TEXTURE_POLICY_COLOR);
 
 	threshold.low = 10;
+	share.damage_share = 0.12f;
 	model.model_sha256 = "cd34";
 	encoder.encoder = "astc-6x6";
 	bumpfix.pipeline_version[TEXTURE_POLICY_BUMP_MAP] = 2;
@@ -49,9 +51,13 @@ static void invalidation_table(void)
 	assert(texture_cache_action(&desired, &original, desired.global_key) == TEXTURE_CACHE_DELETE_NOW);
 	assert(texture_cache_action(NULL, &original, 0) == TEXTURE_CACHE_KEEP);
 	assert(texture_cache_action(NULL, &desired, 0) == TEXTURE_CACHE_MISSING);
-	/* the threshold or the bp/bpf kernels: bpf entries only */
+	/* the threshold or the bp/bpf kernels: bpf entries, and classifier-S4g entries (the damage rule may give them bpf
+	bytes) */
 	assert(after(&g, TEXTURE_POLICY_BPF, &threshold, TEXTURE_POLICY_BPF, TEXTURE_POLICY_COLOR) == TEXTURE_CACHE_REDO_BLOCKING);
-	assert(after(&g, TEXTURE_POLICY_S4G, &threshold, TEXTURE_POLICY_S4G, TEXTURE_POLICY_COLOR) == TEXTURE_CACHE_KEEP);
+	assert(after(&g, TEXTURE_POLICY_S4G, &threshold, TEXTURE_POLICY_S4G, TEXTURE_POLICY_COLOR) == TEXTURE_CACHE_REDO_BLOCKING);
+	/* the damage block: classifier-S4g entries only */
+	assert(after(&g, TEXTURE_POLICY_S4G, &share, TEXTURE_POLICY_S4G, TEXTURE_POLICY_COLOR) == TEXTURE_CACHE_REDO_BLOCKING);
+	assert(after(&g, TEXTURE_POLICY_BPF, &share, TEXTURE_POLICY_BPF, TEXTURE_POLICY_COLOR) == TEXTURE_CACHE_KEEP);
 	/* the bump fix: bump entries only */
 	assert(after(&g, TEXTURE_POLICY_BPF, &bumpfix, TEXTURE_POLICY_BPF, TEXTURE_POLICY_BUMP_MAP) == TEXTURE_CACHE_REDO_BLOCKING);
 	assert(after(&g, TEXTURE_POLICY_BPF, &bumpfix, TEXTURE_POLICY_BPF, TEXTURE_POLICY_COLOR) == TEXTURE_CACHE_KEEP);
@@ -75,6 +81,37 @@ static void keys(void)
 	b = a; b.alpha = 1;
 	assert(texture_recipe_key(&g, &a) != texture_recipe_key(&g, &b));
 	assert(texture_recipe_global_key(&g, TEXTURE_POLICY_COLOR, TEXTURE_POLICY_ORIGINAL) == 0);
+}
+
+/* a classifier-S4g entry's key carries the damage block, its measure's version and the bpf parameters, so a change to
+any of them changes it; a bpf entry's key ignores the damage block */
+static void damage_keys(void)
+{
+	struct texture_recipe_globals g = globals(), changed[10];
+	struct texture_recipe s4g = { 0x1234, 64, 64, TEXTURE_POLICY_S4G, TEXTURE_POLICY_COLOR, 1, 0, 0, 2 }, bpf = s4g;
+	size_t i;
+
+	bpf.result = TEXTURE_POLICY_BPF;
+	for (i = 0; i < 10; i++)
+		changed[i] = g;
+	changed[0].damage_share = 0.11f;
+	changed[1].damage_share = -1;
+	changed[2].damage_structure_loss = 0.39f;
+	changed[3].damage_bpf_structure_loss = 0.05f;
+	changed[4].damage_measure_version = 2;
+	changed[5].low = 11;
+	changed[6].high = 31;
+	changed[7].sigma = 1.5f;
+	changed[8].iterations = 4;
+	changed[9].post_version = 2;
+	for (i = 0; i < 10; i++)
+	{
+		assert(texture_recipe_key(&g, &s4g) != texture_recipe_key(&changed[i], &s4g));
+		assert(texture_recipe_global_key(&g, TEXTURE_POLICY_COLOR, TEXTURE_POLICY_S4G) !=
+			texture_recipe_global_key(&changed[i], TEXTURE_POLICY_COLOR, TEXTURE_POLICY_S4G));
+	}
+	for (i = 0; i < 5; i++)
+		assert(texture_recipe_key(&g, &bpf) == texture_recipe_key(&changed[i], &bpf));
 }
 
 static void manifest_round_trip(void)
@@ -175,6 +212,7 @@ static void size_and_delete(void)
 int main(void)
 {
 	keys();
+	damage_keys();
 	invalidation_table();
 	manifest_round_trip();
 	storage();
