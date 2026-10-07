@@ -295,6 +295,18 @@ stops at the bound while the view follows the head. What they refuse of the
 rest is dropped, as in mono. Returns 1 */
 int halo_stereo_seat_yaw_clamp(short local_player_index, float *desired_yaw, float yaw_before, float delta_yaw,
 	float marker_yaw, float yaw_minimum, float yaw_maximum);
+/* render_interpolation.c, once a frame: whether player one's camera holds
+the facing (posed from it, camera_facing_posed, or the direct camera). A
+seat's held-back yaw the look took into the facing this frame turns the
+eye cameras' camera only if it does; otherwise (the seat's exit glide) the
+view would step back by it, so above 2 degrees HEAD mode's full view goes
+black (halo_stereo_cut_requested) until the camera reaches the eyes
+(halo_cutscene_camera_settled) */
+void halo_stereo_camera_posed(int posed);
+/* 1 while that cut holds: the presenter keeps the full view black, and
+fades it in through the ordinary cut when it ends (gpu_stereo_present's
+cut_requested) */
+int halo_stereo_cut_requested(void);
 /* 1 while the head drives the look (HEAD mode with the Compositor's eyes),
 for the look's autolevel */
 int halo_stereo_head_drives_look(short gamepad_index);

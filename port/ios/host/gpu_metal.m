@@ -182,7 +182,7 @@ static id<MTLTexture> foveation_resolve(MetalTexture *record, NSUInteger width, 
 /* display.immersive: frames go to the theater screen while its space is open */
 static BOOL theater_wanted;
 /* the cut's fade through black (gpu_metal_present_stereo) */
-static float stereo_cut_brightness(int view, int covered);
+static float stereo_cut_brightness(int view, int covered, int requested);
 #endif
 static MetalTable *textures, *buffers, *shaders;
 static int metal_debug;
@@ -3574,7 +3574,7 @@ static uint32_t gpu_metal_present(gpu_texture back_buffer)
 		{
 			use_texture(record);
 			commit(YES);
-			host_stereo_present_ui(queue, record->texture, nil, stereo_cut_brightness(HOST_STEREO_VIEW_UI, 0));
+			host_stereo_present_ui(queue, record->texture, nil, stereo_cut_brightness(HOST_STEREO_VIEW_UI, 0, 0));
 			frames++;
 			pacing.work_started = CACurrentMediaTime();
 			return 0;
@@ -3745,14 +3745,16 @@ static const char *stereo_view_name(int view)
 }
 
 /* the brightness of a frame showing view (enum host_stereo_view): coming up
-from black over HOST_STEREO_CUT_SECONDS after a cut no script fade covers */
-static float stereo_cut_brightness(int view, int covered)
+from black over HOST_STEREO_CUT_SECONDS after a cut no script fade covers;
+black while requested (stereo's cut over a seat's exit glide) */
+static float stereo_cut_brightness(int view, int covered, int requested)
 {
 	int last = stereo_cut.shown, switched;
 	/* a frame stays up for the repeat count plus one refreshes of the
 	Vision Pro's 90 Hz, so the fade lasts the same time at 45 */
 	float frame_seconds = (float)(host_theater_frame_repeat() + 1) / 90.0f;
-	float brightness = host_stereo_cut_brightness(&stereo_cut, view, covered, frame_seconds, &switched);
+	float brightness = host_stereo_cut_brightness(&stereo_cut, view, covered, requested, frame_seconds,
+		&switched);
 
 	if (switched)
 		platform_log("stereo: from %s to %s through black", stereo_view_name(last), stereo_view_name(view));
@@ -3886,7 +3888,7 @@ static uint32_t gpu_metal_present_stereo(const struct gpu_stereo_present *presen
 				hud_layers, present->hud_group_extent, present->hud_aspect, present->hud_ui, present->reticle,
 				present->hud_tangents, zoom ? zoom->texture : nil, present->zoom_tangents, present->near_meters,
 				present->far_meters, stereo_cut_brightness(HOST_STEREO_VIEW_FULL, present->cut_covered ||
-				present->expanding),
+				present->expanding, present->cut_requested),
 				present->vignette, present->ui_dim, present->expanding, present->expansion, present->expansion_bars,
 				present->fade, present->cutscene, present->cutscene_forward, present->cutscene_up,
 				present->cutscene_tangents, present->cutscene_dim);
@@ -3910,7 +3912,7 @@ static uint32_t gpu_metal_present_stereo(const struct gpu_stereo_present *presen
 			use_texture(hud);
 			commit(YES);
 			host_stereo_present_ui(queue, picture, hud->texture,
-				stereo_cut_brightness(HOST_STEREO_VIEW_UI, present->cut_covered));
+				stereo_cut_brightness(HOST_STEREO_VIEW_UI, present->cut_covered, 0));
 			frames++;
 			pacing.work_started = CACurrentMediaTime();
 			return 0;
@@ -3932,12 +3934,12 @@ static uint32_t gpu_metal_present_stereo(const struct gpu_stereo_present *presen
 			commit(YES);
 			stereo_pacing_count();
 			host_theater_present_eyes(queue, left, right, hud ? hud->texture : nil,
-				present->fade, stereo_cut_brightness(HOST_STEREO_VIEW_SCREEN, present->cut_covered));
+				present->fade, stereo_cut_brightness(HOST_STEREO_VIEW_SCREEN, present->cut_covered, 0));
 			frames++;
 			pacing.work_started = CACurrentMediaTime();
 			return 0;
 		}
-		stereo_cut_brightness(HOST_STEREO_VIEW_NONE, 0);
+		stereo_cut_brightness(HOST_STEREO_VIEW_NONE, 0, 0);
 	}
 #endif
 	/* (the window: eye 0, or a zoomed frame's picture in its place) */

@@ -203,6 +203,18 @@ held to -pi..pi), which the eye cameras add, so the view follows the head
 past the limit while the aim stays at it, and which every later look asks
 for again until the aim can take it */
 static float head_request, head_seat_leftover;
+/* the leftover the look folded into the facing this frame that the seat's
+clamp didn't take back (in the seat it refuses it again): a fold landing on
+a camera not posed from the facing (a seat's exit glide) would step the view
+back by it, so the full view goes black until the camera settles
+(halo_stereo_camera_posed, halo_stereo_cut_requested); the cut's seconds so
+far */
+static float head_fold;
+static int seat_cut_requested;
+static float seat_cut_elapsed;
+/* a fold larger than this is covered by the cut; a smaller one's step is
+under the stick's deadband: 2 degrees */
+#define SEAT_CUT_FOLD (2.0f * 3.14159265f / 180.0f)
 /* what render_interpolation.c said of this frame's camera
 (halo_stereo_camera_head_yaw): the head yaw it holds, its blend and how it was
 made; camera_noted is 0 until it says */
@@ -1186,6 +1198,21 @@ void halo_stereo_frame_begin(void)
 			head_seat_leftover = 0.0f;
 		head_pitch_known = head_look_frame;
 		head_pitch_now = stereo_frame.head_pitch;
+		/* a seat's exit cut (halo_stereo_camera_posed) holds until the camera
+		has reached the eyes, the film's own end test, and no longer than the
+		film waits for it (the observer's glide lasts 2 s at most), nor past
+		a frame without the full view */
+		if (seat_cut_requested) {
+			int settled = halo_cutscene_camera_settled();
+
+			seat_cut_elapsed += time_delta;
+			if (settled || !head_look_frame || seat_cut_elapsed >= FILM_SETTLE_SECONDS - 1e-4f) {
+				seat_cut_requested = 0;
+				platform_log("stereo: the seat's exit cut ends after %.2f s: %s", seat_cut_elapsed,
+					settled ? "the camera reached the eyes" : !head_look_frame ? "the full view ended" :
+					"the camera didn't settle in time");
+			}
+		}
 	} else
 		third_person_head = 0;
 	/* display.eye_height_offset: the full view's eyes raised along the
@@ -1678,6 +1705,7 @@ int halo_stereo_head_look(short gamepad_index, float current_pitch, float *yaw, 
 	so far: in a seat the clamp refuses what the limit still holds back
 	(halo_stereo_seat_yaw_clamp); elsewhere the game takes it all */
 	head_request = head_pending_yaw + head_seat_leftover;
+	head_fold = head_seat_leftover;
 	head_seat_leftover = 0.0f;
 	*yaw = head_request + snap_pending + smooth_yaw;
 	head_yaw_taken = remainderf(head_yaw_taken + head_request, TWO_PI);
@@ -1750,8 +1778,31 @@ int halo_stereo_seat_yaw_clamp(short local_player_index, float *desired_yaw, flo
 	refused = head - applied;
 	head_seat_leftover = remainderf(refused, TWO_PI);
 	head_yaw_taken = remainderf(head_yaw_taken - refused, TWO_PI);
+	/* (the leftover the look folded in, taken back: no fold landed) */
+	head_fold = 0.0f;
 	*desired_yaw = marker_yaw + yaw;
 	return 1;
+}
+
+void halo_stereo_camera_posed(int posed)
+{
+	/* the look folded a seat's leftover into the facing and the camera isn't
+	posed from it (the seat's exit glide starts from the seat camera's own
+	yaw): the full view goes black until the camera reaches the eyes */
+	if (!posed && !seat_cut_requested && fabsf(head_fold) > SEAT_CUT_FOLD &&
+		stereo_frame.mode == HALO_STEREO_HEAD && stereo_frame.eye_count == 2 && !third_person_head) {
+		seat_cut_requested = 1;
+		seat_cut_elapsed = 0.0f;
+		platform_log("stereo: the look took the %.1f degrees a seat's limit held back into a camera not posed from "
+			"the facing (the seat's exit glide): the full view goes black until the camera reaches the eyes",
+			head_fold * RADIANS_TO_DEGREES);
+	}
+	head_fold = 0.0f;
+}
+
+int halo_stereo_cut_requested(void)
+{
+	return seat_cut_requested && stereo_frame.mode == HALO_STEREO_HEAD && stereo_frame.eye_count == 2;
 }
 
 /* v turned by angle about the unit axis (Rodrigues) */

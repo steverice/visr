@@ -206,8 +206,11 @@ struct host_stereo_cut
 a script fade is over the picture, which stays up frame_seconds (the
 refresh period times the repeat count plus one); *switched (may be NULL)
 says whether this frame began a fade. A frame with no view forgets the
-last, so a switch from it doesn't fade */
-float host_stereo_cut_brightness(struct host_stereo_cut *cut, int shown, int covered, float frame_seconds,
-	int *switched);
+last, so a switch from it doesn't fade. While requested (stereo's cut over
+a seat's exit glide, halo_stereo_cut_requested) the view is black and the
+fade doesn't advance; when the request drops the view comes up over
+HOST_STEREO_CUT_SECONDS, as after any cut */
+float host_stereo_cut_brightness(struct host_stereo_cut *cut, int shown, int covered, int requested,
+	float frame_seconds, int *switched);
 
 #endif

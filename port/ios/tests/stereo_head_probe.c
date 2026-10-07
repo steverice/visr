@@ -319,7 +319,8 @@ static void restart(const char *turn, double snap_angle, double smooth_turn_spee
 	memset(&head, 0, sizeof(head));
 	head_pending_yaw = 0.0f;
 	head_yaw_now = head_yaw_taken = 0.0f;
-	head_request = head_seat_leftover = 0.0f;
+	head_request = head_seat_leftover = head_fold = 0.0f;
+	seat_cut_requested = 0;
 	set_pose(0.0f, 0.0f, 0.0f);
 	/* a frame with the Compositor's eyes: the head drives the view */
 	halo_stereo_frame_begin();
@@ -1236,6 +1237,7 @@ static float seat_step(struct seat_run *run, float head_degrees, float stick)
 		game_settled = 1;
 	set_pose(head_degrees * DEGREES, 0.0f, 0.0f);
 	halo_stereo_frame_begin();
+	halo_stereo_camera_posed(run->camera.latest_posed);
 	oriented(camera_blended_yaw(&run->camera, t), 0.0f, &run->view, &view_pitch);
 	run->body = remainderf(run->view - head_degrees, 360.0f);
 	return look_yaw / DEGREES;
@@ -1308,6 +1310,9 @@ static void seat_exit(float past, float *worst_step, int *cut_right, int *cut_se
 			*first_look = look;
 		*worst_step = fmaxf(*worst_step, fabsf(remainderf(run.body - last_body, 360.0f)));
 		last_body = run.body;
+		*cut_seen |= halo_stereo_cut_requested();
+		if (halo_stereo_cut_requested() != !game_settled)
+			*cut_right = 0;
 	}
 	game_settled = 1;
 	seated = 0;
@@ -1321,8 +1326,8 @@ still in the room, and what the bound refused (the leftover) comes back as
 the head returns. A snap at the bound is dropped as in mono, the seat's own
 turn drags the aim at the bound, the crosshair follows the aim, the
 leftover is held to 180 degrees with its flip past the far side, and
-leaving the seat folds it into the facing (the exit glide's step measured)
-or into a third-person camera's turn */
+leaving the seat folds it into the facing, a glide's step covered by the
+cut, a third-person camera's by its turn */
 static void seat_yaw_limit(void)
 {
 	struct seat_run run;
@@ -1481,11 +1486,12 @@ static void seat_yaw_limit(void)
 	/* leaving the seat into the director's glide */
 	seat_exit(20.0f, &worst_step, &cut_right, &cut_seen, &first_look);
 	printf("  leaving with 20 deg of leftover: the first look %.4f deg; through the glide the body steps %.4f deg at "
-		"worst in a frame\n", first_look, worst_step);
+		"worst in a frame (under the cut)\n", first_look, worst_step);
 	check(fabsf(first_look - 20.0f) < 0.01f, "leaving the seat, the next look takes the 20 deg leftover");
+	check(cut_seen && cut_right, "the cut holds from the fold until the camera settles, and ends then");
 	seat_exit(1.0f, &worst_step, &cut_right, &cut_seen, &first_look);
-	printf("  leaving with 1 deg of leftover: the body steps %.4f deg at worst in a frame\n", worst_step);
-	check(fabsf(first_look - 1.0f) < 0.01f, "1 deg of leftover: the next look takes it");
+	printf("  leaving with 1 deg of leftover: the body steps %.4f deg at worst in a frame (uncovered)\n", worst_step);
+	check(!cut_seen && fabsf(first_look - 1.0f) < 0.01f, "1 deg of leftover: no cut");
 
 	/* a third-person camera beginning with a leftover */
 	seat_start(&run, "snap");

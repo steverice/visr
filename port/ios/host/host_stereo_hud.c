@@ -374,8 +374,8 @@ float host_stereo_hud_level_yaw(const float right[3], const float back[3])
 	return atan2f(-forward[0], -forward[2]);
 }
 
-float host_stereo_cut_brightness(struct host_stereo_cut *cut, int shown, int covered, float frame_seconds,
-	int *switched)
+float host_stereo_cut_brightness(struct host_stereo_cut *cut, int shown, int covered, int requested,
+	float frame_seconds, int *switched)
 {
 	float brightness;
 
@@ -394,6 +394,12 @@ float host_stereo_cut_brightness(struct host_stereo_cut *cut, int shown, int cov
 			*switched = 1;
 	}
 	cut->shown = shown;
+	/* held black: the fade starts when the request drops */
+	if (requested)
+	{
+		cut->elapsed = 0.0f;
+		return 0.0f;
+	}
 	if (cut->elapsed >= HOST_STEREO_CUT_SECONDS)
 		return 1.0f;
 	brightness = cut->elapsed / HOST_STEREO_CUT_SECONDS;

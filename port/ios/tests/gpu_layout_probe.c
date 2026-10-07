@@ -85,6 +85,7 @@ int main(void)
 	FIELD(gpu_stereo_present, cutscene_up);
 	FIELD(gpu_stereo_present, cutscene_tangents);
 	FIELD(gpu_stereo_present, cutscene_dim);
+	FIELD(gpu_stereo_present, cut_requested);
 	/* host_stereo_frame's (guest_host.h) */
 	SIZE(halo_stereo_eye);
 	FIELD(halo_stereo_eye, left);

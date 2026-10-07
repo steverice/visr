@@ -498,6 +498,10 @@ struct gpu_stereo_present
 	float cutscene_up[3];
 	float cutscene_tangents[2];
 	float cutscene_dim;
+	/* 1 while HEAD mode's full view is held black to cover a seat's exit
+	glide (halo_stereo_cut_requested); when it drops, the view comes up as
+	after any cut */
+	int32_t cut_requested;
 };
 
 /* presents a stereo frame as gpu_present does a mono one (and returns the

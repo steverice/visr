@@ -841,6 +841,14 @@ struct observer_result const *render_interpolation_camera(
 	/* (stereo is player one's) */
 	if (local_player_index == 0 && result && camera_note.source)
 		halo_stereo_camera_head_yaw(camera_note.head_yaw, camera_note.fraction, camera_note.source);
+	/* and, once a frame, whether that camera holds the facing: posed from
+	it (camera_facing_posed) or the direct camera, whose orientation is the
+	facing's. A seat's held-back yaw the look took into the facing this
+	frame would step any other camera (the seat's exit glide), which stereo
+	then covers */
+	if (local_player_index == 0 && result)
+		halo_stereo_camera_posed(camera_facing_posed(local_player_index) ||
+			(camera_note.source && !strcmp(camera_note.source, "direct")));
 	return result;
 }
 
