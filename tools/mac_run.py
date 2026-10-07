@@ -88,6 +88,7 @@ DEFAULTS = {
     "display.upscaler": '"bilinear"',
     "display.high_res_hud": "true",
     "display.high_res_text": "true",
+    "display.upscaled_textures": "true",
     "display.immersive": "false",
     "display.mirror_resolution": '"half"',
     "display.theater_width": "60.0",
@@ -114,6 +115,7 @@ DEFAULTS = {
     "debug.gpu_debug_texture0": "false",
     "debug.gpu_debug_flat": "false",
     "debug.texture_dump_directory": '""',
+    "debug.texture_override_directory": '""',
     "debug.texture_log": "false",
     "debug.texture_no_cache": "false",
 }

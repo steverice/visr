@@ -20,6 +20,9 @@ long config_integer(const char *name);
 double config_real(const char *name);
 /* never NULL; "" when unset */
 const char *config_string(const char *name);
+/* a boolean setting read again from config.toml, for settings another
+process changes while the game runs; the environment still wins */
+int config_reload_boolean(const char *name);
 /* sets a setting from its value as text ("true", "60", "1.5", "all"), and
 writes it into config.toml (only its line changes); 1 on success */
 int config_write(const char *name, const char *value);

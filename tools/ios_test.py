@@ -60,5 +60,37 @@ run('xcrun', 'clang', '-O2', '-fsanitize=address,undefined', '-Iport/ios/host',
     'port/ios/tests/metal_state_probe.c', '-o', BUILD/'metal-state-probe')
 run(BUILD/'metal-state-probe')
 
+# debug.texture_override_directory's hash and file checks (port/linux/src/texture_override.h)
+run('xcrun', 'clang', '-O2', '-fsanitize=address,undefined', '-Iport/linux/src',
+    'port/ios/tests/texture_override_probe.c', '-o', BUILD/'texture-override-probe')
+run(BUILD/'texture-override-probe')
+# the texture upscale policy's device classifier (port/runtime/texture_policy.c)
+run('python3', 'tools/embed_texture_policy.py', 'port/assets/texture-policy.json', BUILD/'texture_policy_table.c')
+run('xcrun', 'clang', '-O2', '-fsanitize=address,undefined', '-Iport/runtime', '-Iport/linux/src',
+    'port/ios/tests/texture_policy_probe.c', 'port/runtime/texture_policy.c', BUILD/'texture_policy_table.c',
+    '-lz', '-o', BUILD/'texture-policy-probe')
+run(BUILD/'texture-policy-probe')
+# the texture upscale cache's recipe key, invalidation, writes and storage rules (port/runtime/texture_cache.c)
+run('xcrun', 'clang', '-O2', '-fsanitize=address,undefined', '-Iport/runtime', '-Iport/linux/src',
+    'port/ios/tests/texture_cache_probe.c', 'port/runtime/texture_cache.c', '-o', BUILD/'texture-cache-probe')
+run(BUILD/'texture-cache-probe')
+# the per-level upscaled-texture gate (port/linux/src/texture_upscale_state.h)
+run('xcrun', 'clang', '-O2', '-fsanitize=address,undefined', '-Iport/linux/src',
+    'port/ios/tests/texture_upscale_state_probe.c', '-o', BUILD/'texture-upscale-state-probe')
+run(BUILD/'texture-upscale-state-probe')
+# the host's write of one setting into config.toml, for the Settings app's switch (port/ios/host/host_config.c)
+run('xcrun', 'clang', '-O2', '-fsanitize=address,undefined', '-Iport/ios/host', 'port/ios/tests/host_config_write_probe.c',
+    'port/ios/host/host_config.c', '-o', BUILD/'host-config-write-probe')
+run(BUILD/'host-config-write-probe')
+# the game's reread of one setting at a level load, the environment still winning (port/linux/src/port_config.c)
+run('xcrun', 'clang', '-O2', '-fsanitize=address,undefined', '-DHALO_ILP32', '-Iport/linux/src',
+    '-Iport/third_party/tomlc17', *shlex.split(subprocess.check_output(['pkg-config', '--cflags', 'sdl3'], text=True)),
+    'port/ios/tests/config_reload_probe.c', 'port/third_party/tomlc17/tomlc17.c', '-o', BUILD/'config-reload-probe')
+run(BUILD/'config-reload-probe')
+# bp and bpf on the GPU (port/ios/host/texture_refine.m); skips itself where there is no Metal device
+run('xcrun', 'clang', '-O2', '-fobjc-arc', '-Iport/ios/host', 'port/ios/tests/texture_refine_probe.m',
+    'port/ios/host/texture_refine.m', '-framework', 'Foundation', '-framework', 'Metal', '-o', BUILD/'texture-refine-probe')
+run(BUILD/'texture-refine-probe')
+
 # Parse untrusted XISO metadata and exercise extraction/cancellation under sanitizers.
 run('python3', 'tools/ios_xiso_test.py')

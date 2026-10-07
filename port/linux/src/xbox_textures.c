@@ -19,6 +19,8 @@ memory_watch.c detects that by write-protecting the pages.
 #include "menu_files.h"
 #include "text_hires.h"
 #include "port_config.h"
+#include "texture_override.h"
+#include "texture_upscale_state.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -630,6 +632,10 @@ struct texture_entry
 	unsigned long last_used_frame;
 	/* the high-res HUD texture drawn in its place (hud_hires.h), or -1 */
 	long override;
+	/* debug.texture_override_directory's texture drawn in its place, or 0,
+	and its level count (texture_override.h) */
+	gpu_texture texture_override;
+	unsigned long texture_override_levels;
 	/* the newest generation of its pages (memory_watch_generation) as of the
 	memory watch serial read before it was found: the same while no watched
 	page has been written since (0: never found) */
@@ -681,6 +687,163 @@ static unsigned long palette_hash(const D3DCOLOR *palette)
 	return hash ? hash : 1;
 }
 
+/* ---------- debug.texture_override_directory (texture_override.h) */
+
+/* source/bitmaps/bitmaps.c: the palette the game draws every P8 bump map with */
+extern D3DCOLOR global_vector_palette[256];
+
+struct texture_override_result
+{
+	uint64_t hash;
+	unsigned long width, height;
+	gpu_texture texture; /* 0: no file, or one that can't stand for this texture */
+	unsigned long levels;
+};
+
+static struct texture_override_result *texture_override_results;
+static unsigned long texture_override_result_count, texture_override_result_capacity;
+
+/* the texture in directory/<hash>.rgba for a texture of this size, or 0 */
+static gpu_texture texture_override_load(const char *directory, uint64_t hash, unsigned long width,
+	unsigned long height, unsigned long *levels)
+{
+	struct texture_override_layout layout;
+	struct gpu_texture_description description = { 0 };
+	char path[1024];
+	unsigned char *bytes;
+	const char *problem;
+	gpu_texture texture;
+	FILE *file;
+	long size;
+	uint32_t level;
+
+	snprintf(path, sizeof(path), "%s/%016llx.rgba", directory, (unsigned long long)hash);
+	file = fopen(path, "rb");
+	if (!file)
+		return 0;
+	fseek(file, 0, SEEK_END);
+	size = ftell(file);
+	fseek(file, 0, SEEK_SET);
+	bytes = size > 0 ? malloc((size_t)size) : NULL;
+	if (!bytes || fread(bytes, 1, (size_t)size, file) != (size_t)size)
+	{
+		platform_log("texture override %016llx: could not read %s", (unsigned long long)hash, path);
+		fclose(file);
+		free(bytes);
+		return 0;
+	}
+	fclose(file);
+	problem = texture_override_check(bytes, (size_t)size, width, height, &layout);
+	if (problem)
+	{
+		platform_log("texture override %016llx: %s is %s; drawn as it is", (unsigned long long)hash, path, problem);
+		free(bytes);
+		return 0;
+	}
+	description.type = GPU_TEXTURE_2D;
+	description.format = GPU_FORMAT_BGRA8;
+	description.usage = GPU_USAGE_UPLOAD;
+	description.width = layout.width;
+	description.height = layout.height;
+	description.depth = 1;
+	description.levels = layout.levels;
+	texture = gpu_texture_create(&description);
+	for (level = 0; level < layout.levels; level++)
+	{
+		texture_override_rgba_to_bgra(bytes + layout.level_offset[level], layout.level_size[level] / 4);
+		gpu_texture_upload(texture, 0, level, bytes + layout.level_offset[level], (uint32_t)layout.level_size[level]);
+	}
+	free(bytes);
+	*levels = layout.levels;
+	platform_log("texture override %016llx: %ux%u, %u levels, in place of %lux%lu", (unsigned long long)hash,
+		layout.width, layout.height, layout.levels, width, height);
+	return texture;
+}
+
+/* the override for a texture with these level 0 bytes and this size: read
+once, and remembered whether or not there is one, so that the game's texture
+cache loading the bitmap again doesn't read the file again */
+static gpu_texture texture_override_find(const char *directory, uint64_t hash, unsigned long width,
+	unsigned long height, unsigned long *levels)
+{
+	struct texture_override_result *result;
+	unsigned long index;
+
+	for (index = 0; index < texture_override_result_count; index++)
+	{
+		result = &texture_override_results[index];
+		if (result->hash == hash && result->width == width && result->height == height)
+		{
+			*levels = result->levels;
+			return result->texture;
+		}
+	}
+	if (texture_override_result_count == texture_override_result_capacity)
+	{
+		texture_override_result_capacity = texture_override_result_capacity ? texture_override_result_capacity * 2 : 64;
+		texture_override_results = realloc(texture_override_results,
+			texture_override_result_capacity * sizeof(*texture_override_results));
+	}
+	result = &texture_override_results[texture_override_result_count++];
+	result->hash = hash;
+	result->width = width;
+	result->height = height;
+	result->levels = 0;
+	result->texture = texture_override_load(directory, hash, width, height, &result->levels);
+	*levels = result->levels;
+	return result->texture;
+}
+
+/* ---------- upscaled textures, per level (texture_upscale_state.h) */
+static struct texture_upscale_state texture_upscale;
+
+/* port: called from cache_files.c when a map has loaded, before its textures upload; the switch is read again
+   from config.toml here (the Settings app may have changed it), so it takes effect at a level load only */
+void texture_upscale_map_loaded(void)
+{
+	texture_upscale_state_map_loaded(&texture_upscale, config_reload_boolean("display.upscaled_textures"));
+	if (config_boolean("debug.texture_log"))
+		platform_log("textures: upscaled textures %s for this level",
+			texture_upscale_state_enabled(&texture_upscale) ? "on" : "off");
+}
+
+/* after an upload: the override standing for the pixels now at the entry's
+address (the game's texture cache reuses that memory for other bitmaps). 2D
+textures only: not linear ones, and P8 ones only with the bump maps' palette */
+static void texture_override_apply(struct texture_entry *entry, const D3DCOLOR *palette)
+{
+	static int logging = -1;
+	static unsigned long vector_palette_hash;
+	const char *directory = config_string("debug.texture_override_directory");
+	const struct xgpu_texture_description *description = &entry->description;
+	unsigned long level0_size;
+	uint64_t hash;
+
+	if (!texture_upscale_state_enabled(&texture_upscale))
+		directory = "";   /* this level plays original; logging still shows each hash */
+	if (logging < 0)
+		logging = config_boolean("debug.texture_log");
+	if ((!*directory && !logging) || entry->type != GPU_TEXTURE_2D || description->linear)
+		return;
+	if (description->format == 0x0b)
+	{
+		if (!vector_palette_hash)
+			vector_palette_hash = palette_hash(global_vector_palette);
+		if (palette_hash(palette) != vector_palette_hash)
+			return;
+	}
+	level0_size = description->levels > 1 ? xgpu_texture_level_offset(description, 1) :
+		xgpu_texture_face_size(description);
+	hash = texture_override_hash((const unsigned char *)entry->address, level0_size);
+	if (*directory)
+		entry->texture_override = texture_override_find(directory, hash, description->width, description->height,
+			&entry->texture_override_levels);
+	if (logging)
+		platform_log("texture override %016llx at %08lx fmt %02lx %lux%lu: %s", (unsigned long long)hash,
+			(unsigned long)entry->data, (unsigned long)description->format, description->width, description->height,
+			entry->texture_override ? "applied" : "none");
+}
+
 /* an entry's texture, type and description: its high-res HUD texture's, if
 it has one, with the bitmap's own size (which its coordinates are in) */
 static gpu_texture texture_entry_result(struct texture_entry *entry, uint32_t *type,
@@ -723,6 +886,13 @@ static gpu_texture texture_entry_result(struct texture_entry *entry, uint32_t *t
 			description->hires_coverage = hud_hires_override_coverage(entry->override);
 			return texture;
 		}
+	}
+	if (entry->texture_override)
+	{
+		/* (debug.texture_override_directory: its own levels, sampled as the
+		game samples the texture; never hires) */
+		description->levels = entry->texture_override_levels;
+		return entry->texture_override;
 	}
 	return entry->texture;
 }
@@ -848,6 +1018,7 @@ gpu_texture xgpu_texture_get(const DWORD *resource, const D3DCOLOR *palette, uin
 			entry->generation = 1;
 		/* (which bitmap is here may have changed with the pixels) */
 		entry->override = -1;
+		entry->texture_override = 0;
 		if (entry->size && !palettized && !entry->description.cube_map && entry->description.depth == 1)
 		{
 			unsigned long levels;
@@ -877,6 +1048,7 @@ gpu_texture xgpu_texture_get(const DWORD *resource, const D3DCOLOR *palette, uin
 					ones * 100 / entry->size, zeros * 100 / entry->size);
 			}
 			upload(entry->texture, entry->type, &entry->description, (const unsigned char *)entry->address, palette);
+			texture_override_apply(entry, palette);
 		}
 	}
 	entry->last_used_frame = texture_frame;

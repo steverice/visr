@@ -5,7 +5,7 @@ The native ports' settings (port_config.h), parsed with tomlc17
 (port/third_party/tomlc17). Every setting is in the table below with its
 type, default, the HALO_* environment variable that overrides it and the
 comment written into a new file. The file is read once, on the first
-question; unknown keys and values of the wrong type are reported in the log
+question (config_reload_boolean reads one setting again); unknown keys and values of the wrong type are reported in the log
 and the defaults used instead, and the file itself is never rewritten once
 it exists, so that the player's edits and comments stay.
 */
@@ -174,6 +174,10 @@ static const struct config_setting config_settings[] =
 		"Draw the menus' and HUD's text with the fonts in port/assets/fonts\n"
 		"(Overpass) at the resolution the game draws at, and the menus' titles\n"
 		"from port/assets/titles; false draws the maps' bitmap fonts and titles." },
+	{ "display.upscaled_textures", _config_boolean, "true", "HALO_UPSCALED_TEXTURES", _environment_value, _platform_all,
+		"Draw upscaled textures (made on this device from your copy of the game)\n"
+		"where they exist; false draws the maps' own. Takes effect at the next\n"
+		"level load." },
 	{ "display.menus", _config_string, "\"pc\"", "HALO_MENUS", _environment_value, _platform_all,
 		"The menus: \"pc\" for the PC version's main menu (port/assets/menus,\n"
 		"and a menus folder here for your own), \"xbox\" for the Xbox's." },
@@ -508,6 +512,9 @@ static const struct config_setting config_settings[] =
 		"Save every this many frames to screenshot_directory; 0 none." },
 	{ "debug.texture_dump_directory", _config_string, "\"\"", "HALO_TEXTURE_DUMP", _environment_value, _platform_all,
 		"A folder to write every texture to as it is uploaded; empty none." },
+	{ "debug.texture_override_directory", _config_string, "\"\"", "HALO_TEXTURE_OVERRIDE", _environment_value, _platform_all,
+		"A folder of replacement textures, <hash>.rgba (step-tools/texture-upscale.py),\n"
+		"each drawn in place of the texture whose first mip level hashes to <hash>; empty none." },
 	{ "debug.texture_log", _config_boolean, "false", "HALO_TEXTURE_LOG", _environment_set_is_true, _platform_all,
 		"Log texture uploads." },
 	{ "debug.texture_no_cache", _config_boolean, "false", "HALO_TEXTURE_NO_CACHE", _environment_set_is_true, _platform_all,
@@ -936,6 +943,47 @@ static void config_report_unknown_keys(toml_datum_t table)
 	}
 }
 
+/* the setting's default, as a new file would have it */
+static void config_set_default(size_t index)
+{
+	const char *default_value = config_settings[index].default_value;
+
+	if (config_settings[index].type == _config_string)
+	{
+		/* written as a TOML basic string without escapes */
+		size_t length = strlen(default_value);
+
+		free(config_values[index].string);
+		config_values[index].string = length >= 2 ? config_copy(default_value + 1, length - 2) : strdup("");
+	}
+	else
+	{
+		config_set_from_text(&config_values[index], config_settings[index].type, default_value);
+	}
+}
+
+/* the setting's environment variable, if it is set, over the file */
+static void config_set_from_environment(size_t index)
+{
+	const struct config_setting *setting = &config_settings[index];
+	const char *environment = getenv(setting->environment);
+
+	if (!environment)
+		return;
+	switch (setting->environment_style)
+	{
+	case _environment_value:
+		config_set_from_text(&config_values[index], setting->type, environment);
+		break;
+	case _environment_set_is_true:
+		config_values[index].boolean = 1;
+		break;
+	case _environment_set_is_false:
+		config_values[index].boolean = 0;
+		break;
+	}
+}
+
 static void config_load(void)
 {
 	char path[1024];
@@ -944,21 +992,7 @@ static void config_load(void)
 	size_t index;
 
 	for (index = 0; index < NUMBER_OF_CONFIG_SETTINGS; index++)
-	{
-		const char *default_value = config_settings[index].default_value;
-
-		if (config_settings[index].type == _config_string)
-		{
-			/* written as a TOML basic string without escapes */
-			size_t length = strlen(default_value);
-
-			config_values[index].string = length >= 2 ? config_copy(default_value + 1, length - 2) : strdup("");
-		}
-		else
-		{
-			config_set_from_text(&config_values[index], config_settings[index].type, default_value);
-		}
-	}
+		config_set_default(index);
 
 	config_path(path, sizeof(path));
 	text = config_read_file(path, &size);
@@ -998,25 +1032,7 @@ static void config_load(void)
 	}
 
 	for (index = 0; index < NUMBER_OF_CONFIG_SETTINGS; index++)
-	{
-		const struct config_setting *setting = &config_settings[index];
-		const char *environment = getenv(setting->environment);
-
-		if (!environment)
-			continue;
-		switch (setting->environment_style)
-		{
-		case _environment_value:
-			config_set_from_text(&config_values[index], setting->type, environment);
-			break;
-		case _environment_set_is_true:
-			config_values[index].boolean = 1;
-			break;
-		case _environment_set_is_false:
-			config_values[index].boolean = 0;
-			break;
-		}
-	}
+		config_set_from_environment(index);
 }
 
 static const struct config_value *config_value(const char *name, enum config_type type)
@@ -1271,6 +1287,40 @@ int config_default(const char *name, char *text, size_t size)
 int config_boolean(const char *name)
 {
 	return config_value(name, _config_boolean)->boolean;
+}
+
+/* one boolean read again from the file, as at start-up (its default when the
+file lacks it or does not parse), the environment still winning: for a
+setting another process changes while the game runs (the iOS host, from the
+Settings app's switch) */
+int config_reload_boolean(const char *name)
+{
+	long index = config_setting_index(name);
+	char path[1024];
+	size_t size = 0;
+	char *text;
+	int value;
+
+	(void)config_boolean(name);   /* the first load, defaults and all */
+	if (index < 0 || config_settings[index].type != _config_boolean)
+		return config_boolean(name);
+	config_path(path, sizeof(path));
+	text = config_read_file(path, &size);
+	pthread_mutex_lock(&config_lock);
+	config_set_default((size_t)index);
+	if (text)
+	{
+		toml_result_t result = toml_parse(text, (int)size);
+
+		if (result.ok)
+			config_set_from_file(&config_values[index], &config_settings[index], result.toptab);
+		toml_free(result);
+	}
+	config_set_from_environment((size_t)index);
+	value = config_values[index].boolean;
+	pthread_mutex_unlock(&config_lock);
+	free(text);
+	return value;
 }
 
 long config_integer(const char *name)

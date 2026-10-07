@@ -211,6 +211,18 @@ def test_reset_settings_turn_off_the_fixed_timestep(tmp_path):
     assert settings["debug.fixed_timestep"] == "false"
 
 
+def test_reset_settings_turn_off_the_texture_override(tmp_path):
+    """a run that doesn't --set an override folder must draw the game's own textures"""
+    settings = mac_run.reset_settings(tmp_path, screenshot_every=0, dump_shaders=False, replay=False)
+    assert settings["debug.texture_override_directory"] == '""'
+
+
+def test_reset_settings_turn_the_upscaled_textures_back_on(tmp_path):
+    """a run that turned upscaled textures off must not leak into the next"""
+    settings = mac_run.reset_settings(tmp_path, screenshot_every=0, dump_shaders=False, replay=False)
+    assert settings["display.upscaled_textures"] == "true"
+
+
 def test_launch_script_fails_when_the_ipad_destination_never_appears():
     """after the retries, a last unguarded attempt raises instead of running on another destination"""
     script = mac_run.LAUNCH.format(xcode="/Applications/Xcode.app", target="HaloRunner", project="/p/HaloRunner.xcodeproj")
