@@ -26,7 +26,11 @@ And the head's yaw at render time: paused (no look between frames) the eye
 cameras still turn with the head, and the look takes the whole turn when it
 runs again, without a jump; and with the game's camera blended between 30 Hz
 ticks (render_interpolation.c), the eye cameras' yaw is the head's every
-frame, plus the body's own. */
+frame, plus the body's own.
+
+And split screen (more than one player window): it keeps the mono path, as
+render.c's eye loop does, so the frame has no eyes for any hook to take: no
+head-driven look, no 3D film, no screen framing. */
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -126,6 +130,9 @@ void halo_cutscene_state(struct halo_cutscene_state *state)
 	state->distance = game_settled ? 0.0f : 1.0f;
 }
 void halo_screen_commit_stereo_scale(void) {}
+/* main.c's player windows: 1 unless a case splits the screen */
+static short probe_windows = 1;
+short main_get_window_count(void) { return probe_windows; }
 
 #include "../../linux/game/stereo.c"
 
@@ -143,10 +150,13 @@ static float probe_screen_yaw;
 static float pose[3][3];
 static struct host_stereo_head head;
 static int host_closed;
+/* the Compositor frames the game asked for */
+static unsigned long host_frames;
 
 /* host_stereo.m's host_stereo_frame, reduced to the head */
 void host_stereo_frame(struct halo_stereo_frame *frame)
 {
+	host_frames++;
 	frame->head_yaw = frame->head_pitch = frame->head_roll = 0.0f;
 	/* the space closed: no eyes, and the host forgets the head's pose */
 	if (host_closed) {
@@ -1567,6 +1577,70 @@ static void expansion_window(void)
 	restart("snap", 30.0, 120.0, 0);
 }
 
+/* split screen: two player windows keep the mono path (render.c draws the
+eyes only with one), so the frame has no eyes and no hook acts on them,
+while the Compositor's frame is still asked for (its picture goes on the
+UI's quad, as for a frame without eyes) */
+static void split_screen(void)
+{
+	float yaw, pitch;
+	unsigned long asked;
+	int frame;
+
+	printf("split screen:\n");
+	restart("snap", 30.0, 120.0, 0);
+	check(halo_stereo_frame()->eye_count == 2 && halo_stereo_head_drives_look(0),
+		"one window: the eyes, and the head drives the look");
+
+	probe_windows = 2;
+	asked = host_frames;
+	set_pose(30.0f * DEGREES, 10.0f * DEGREES, 0.0f);
+	halo_stereo_frame_begin();
+	check(halo_stereo_frame()->eye_count == 0 && halo_stereo_frame()->mode == HALO_STEREO_HEAD && host_frames == asked + 1,
+		"HEAD, two windows: the Compositor's frame asked for, but no eyes");
+	check(!halo_stereo_head_drives_look(0) && !halo_stereo_head_look(0, 0.0f, &yaw, &pitch) && yaw == 0.0f &&
+		pitch == 0.0f, "HEAD, two windows: the head turned, but it doesn't drive the look");
+	yaw = 1.0f;
+	pitch = 0.5f;
+	halo_stereo_stick_look(0, 1.0f, 1.0f / 90.0f, &yaw, &pitch);
+	check(yaw == 1.0f && pitch == 0.5f, "HEAD, two windows: the stick keeps the game's own turn and pitch");
+	game_letterbox = 1;
+	halo_stereo_frame_begin();
+	check(!halo_stereo_film() && !halo_stereo_film_letterbox() && !halo_stereo_screen_framing() &&
+		!halo_stereo_hud_split(), "HEAD, two windows, a cutscene: no 3D film, no screen framing, no split HUD");
+	game_letterbox = 0;
+	for (frame = 0; frame < 4 * PORTAL_FRAMES; frame++)
+		halo_stereo_frame_begin();
+
+	/* SCREEN mode: no 3D TV and none of its band framing (main.c) */
+	setting_stereo = "screen";
+	restart("snap", 30.0, 120.0, 0);
+	check(halo_stereo_frame()->eye_count == 0 && !halo_stereo_screen_gameplay() && !halo_stereo_screen_framing(),
+		"SCREEN, two windows: no eyes, no 3D TV, no screen framing");
+	probe_windows = 1;
+	halo_stereo_frame_begin();
+	check(halo_stereo_frame()->eye_count == 2 && halo_stereo_screen_gameplay() && halo_stereo_screen_framing(),
+		"SCREEN, one window: the 3D TV, framed");
+
+	/* the side-by-side view: mono, then its eyes again with one window */
+	setting_stereo = "side_by_side";
+	probe_drawable[0] = 1920;
+	probe_drawable[1] = 1080;
+	probe_windows = 2;
+	restart("snap", 30.0, 120.0, 0);
+	check(halo_stereo_frame()->eye_count == 0 && !halo_stereo_hud_split(), "side by side, two windows: no eyes");
+	probe_windows = 1;
+	halo_stereo_frame_begin();
+	check(halo_stereo_frame()->eye_count == 2 && halo_stereo_frame()->eye_width == 960,
+		"side by side, one window: the eyes again");
+
+	setting_stereo = "head";
+	probe_drawable[0] = probe_drawable[1] = 0;
+	restart("snap", 30.0, 120.0, 0);
+	check(halo_stereo_frame()->eye_count == 2 && halo_stereo_head_drives_look(0),
+		"HEAD, back to one window: the eyes, and the head drives the look");
+}
+
 /* where a point in the camera's frame (x right, y up, z ahead, world units)
 appears to a viewer's eye, as the tangents of its direction from that eye in
 the screen's frame: through the film on the screen (the eye's own film eye,
@@ -1945,6 +2019,7 @@ int main(void)
 	expansion_memory();
 	cutscene_rulings();
 	immersive_cutscene();
+	split_screen();
 	if (failures)
 	{
 		printf("stereo head probe: %d failed\n", failures);

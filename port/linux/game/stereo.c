@@ -85,6 +85,8 @@ unsigned long platform_clock_frames(void);
 double halo_frame_trace_milliseconds(void);
 /* port/linux/src/d3d8_device.c */
 void halo_screen_commit_stereo_scale(void);
+/* source/main/main.c: the player windows, more than one in split screen */
+short main_get_window_count(void);
 #ifdef HALO_IOS
 /* port/ios/host/host_stereo.m, imported by the guest (guest_host.h): opens the
 Compositor's next frame and fills the eyes and the head's turn from it */
@@ -863,6 +865,10 @@ void halo_stereo_reticle(float direction[3])
 void halo_stereo_frame_begin(void)
 {
 	int film, screen, on_screen, head_look_frame, cutscene, live_reason, settle_frame = 0;
+	/* split screen keeps the mono path: render.c's eye loop runs only with
+	one window, so the frame has no eyes for any other hook to act on (the
+	cutscene's bars, the screen's framing, the head's look) */
+	int one_window = main_get_window_count() == 1;
 	float time_delta;
 
 	if (stereo_mode < 0) {
@@ -1059,7 +1065,7 @@ void halo_stereo_frame_begin(void)
 	if (film && stereo_mode == HALO_STEREO_HEAD)
 		stereo_frame.mode = HALO_STEREO_SCREEN;
 
-	if (stereo_mode == HALO_STEREO_SIDE_BY_SIDE) {
+	if (stereo_mode == HALO_STEREO_SIDE_BY_SIDE && one_window) {
 		int width = 0, height = 0;
 		int eye;
 
@@ -1110,8 +1116,10 @@ void halo_stereo_frame_begin(void)
 #ifdef HALO_IOS
 		host_stereo_frame(&stereo_frame);
 #endif
-		/* no Compositor frame (the space isn't open): mono, in the window */
-		if (stereo_frame.eye_count != 2) {
+		/* no Compositor frame (the space isn't open): mono, in the window.
+		Split screen: mono too, though the frame is still opened (its picture
+		goes on the UI's quad, as for any frame without eyes) */
+		if (stereo_frame.eye_count != 2 || !one_window) {
 			memset(&stereo_frame, 0, sizeof(stereo_frame));
 			stereo_frame.mode = mode;
 		} else if (film || screen) {
