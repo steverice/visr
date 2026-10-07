@@ -1,19 +1,58 @@
-# Halo: CE app icon
+# VISR app icon
 
-Created with the built-in `image_gen` tool from the circular Master Chief icon
-provided by the user on 2026-09-28. The selected generated image is preserved
-as `Icon-Artwork.png`. `Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png` is
-the opaque 1024-pixel source used by the asset catalog; smaller device sizes
-are standard Lanczos resizes. iOS applies the rounded-square mask at display
-time, so there are no baked-in borders or transparent corners.
+The icon is the `visor-helmet-gold` concept: the Master Chief's helmet seen
+front-on, with its gold visor. The helmet, visor and brow outlines are traced
+from a frame of the game's c40 cutscene, so the icon is derived from the game's
+helmet design. The rest is drawn for VISR: the gold glass with its curved
+highlights, the dark helmet shell with a cyan rim light, the lit brow rims,
+and a dark teal backdrop with a faint grid, lit a little above center.
 
-## Generation prompt
+## Layers
 
-```text
-Use case: precise-object-edit
-Asset type: production iOS Home Screen app icon for Halo: CE.
-Input image: the supplied circular game icon is the edit target and exact artwork reference.
-Task: Adapt this existing artwork to a proper iOS app icon. Remove the circular silver rim and the black area outside the circle. Extend the existing blue sky, streaks of light and green landscape naturally to all four corners of a full-bleed square.
-Preserve the same existing green-armored character, gold visor, helmet design, pose, weapon, lighting and early-2000s rendered game-art style. Keep the recognizable composition and character centered. Improve resolution and edge clarity while staying faithful to this image; no new objects or text.
-Technical requirements: 1024x1024 opaque square PNG artwork, fills the entire canvas edge to edge. iOS applies its own rounded-square icon mask, so do not bake rounded corners, a circle, or transparent corners into the source. Keep the helmet and other important features inside a roughly 10% safe margin. No border, no ring, no watermark, no letters, no UI mockup. Return only the actual icon artwork.
+The art comes in three layers, so visionOS and tvOS can float them apart:
+
+- **Back**: the backdrop and grid, opaque.
+- **Middle**: the helmet shell and its rim light, the brow rims, and the gold
+  visor glass.
+- **Front**: the visor's highlights and its lit rim.
+
+The iOS and iPadOS icons are the three layers flattened into one opaque square.
+iOS applies the rounded-square mask and visionOS the circle at display time, so
+nothing is baked in. The visor and brow rims stay inside a circle of radius 420
+on the 1024-unit canvas, which visionOS's circular crop leaves whole; the crop
+trims only the helmet shell's lower sides, where the shell fades out.
+
+## How it is made
+
+`tools/visr_icon.py` writes each layer as SVG and renders it with
+`rsvg-convert` (librsvg); `magick` (ImageMagick) flattens the opaque layers and
+draws the preview mockups. Nothing is resized from a bitmap: every size is
+rendered from the vector source. The traced outlines are vector paths in the
+script (`VISOR_PATH`, `HELMET_PATH` and `BROW_RIMS`).
+
+```sh
+python3 tools/visr_icon.py --catalogs           # render the icon into all three asset catalogs
+python3 tools/visr_icon.py --previews DIR       # every concept's layers, plus iOS and visionOS mockups
 ```
+
+`--catalogs` writes:
+
+- `Assets.xcassets/AppIcon.appiconset`: the iPhone and iPad sizes, 20 to 1024 pixels.
+- `Assets-tvOS.xcassets/AppIcon.brandassets`: the Front, Middle and Back layers of
+  the 400 x 240 Home Screen icon (at 1x and 2x) and the 1280 x 768 App Store
+  icon, and the Top Shelf images (the helmet beside the letters VISR).
+- `Assets-visionOS.xcassets/AppIcon.solidimagestack`: the Front, Middle and Back
+  layers at 1024 x 1024.
+
+## Other concepts
+
+The script draws three more concepts, all original vector art. To use one,
+pass it with `--concept` and rerun `--catalogs`:
+
+- `reticle`: a HUD reticle, a cyan ring broken at the four compass points with
+  tick marks every 10 degrees, four white crosshair bars, a white chevron and
+  an amber pip. It was the icon before `visor-helmet-gold`.
+- `visor`: an abstract octagonal visor lens in cyan glass with a small reticle
+  and meter bars. It turns into a thin sliver at Home Screen sizes.
+- `wordmark`: the letters VISR in chamfered strokes inside HUD corner brackets.
+  The letters are drawn as strokes in the script, so no font is needed.

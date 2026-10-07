@@ -3,8 +3,7 @@ whose Compositor Services layer shows the game's picture on a screen placed in
 the room (host_theater.m draws it). SDL's window scene stays as it is: the
 space is a second scene, opened through a SwiftUI hosting delegate, and its
 frames are drawn from the game's thread in gpu_present, as the Phase 3
-prototype showed works with SDL's run-loop slices
-(halovision/step-tools/phase3-prototype). */
+prototype showed works with SDL's run-loop slices. */
 import CompositorServices
 import SwiftUI
 import UIKit
@@ -30,6 +29,14 @@ final class TheaterSceneDelegate: UIResponder, UIHostingSceneDelegate {
         }
         // display.theater_environment: the room around the screen, or the dark
         .immersionStyle(selection: .constant(Self.environment), in: .mixed, .full)
+    }
+
+    /* a join link opened while the space is the active scene: the game's, as
+       SDL's window scene passes them on (host_join_link.c) */
+    func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
+        for context in URLContexts {
+            context.url.absoluteString.withCString { host_join_link_open($0) }
+        }
     }
 }
 

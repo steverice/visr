@@ -1,0 +1,59 @@
+/* VISR page. Colors follow the app icon: a dark teal grid, cyan rim, gold visor. */
+
+:root {
+  --bg: #f4f7f8;
+  --ink: #0d1b21;
+  --muted: #4a5f67;
+  --line: #d3e0e4;
+  --accent: #006f96;
+  --code-bg: #0e1d23;
+  --code-ink: #d8f3fb;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #081216;
+    --ink: #e8f6fa;
+    --muted: #93adb6;
+    --line: #1d3640;
+    --accent: #3fd6ff;
+    --code-bg: #10232b;
+    --code-ink: #c9f1fc;
+  }
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 17px/1.6 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+}
+
+.page { max-width: 680px; margin: 0 auto; padding: 48px 16px 40px; }
+@media (min-width: 720px) { .page { padding: 80px 24px 56px; } }
+
+h1, h2 { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", system-ui, sans-serif; line-height: 1.2; }
+h1 { font-size: clamp(1.8rem, 6vw, 2.5rem); letter-spacing: -0.015em; margin: 20px 0 12px; }
+h2 { font-size: 1.25rem; margin: 0 0 10px; }
+p, ul { margin: 0 0 14px; }
+ul { padding-left: 1.2em; }
+li { margin-bottom: 6px; }
+a { color: var(--accent); text-underline-offset: 3px; }
+code { font: 0.88em/1.4 ui-monospace, "SF Mono", Menlo, monospace; white-space: nowrap; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
+
+.icon { display: block; border-radius: 20px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25); }
+.lede { font-size: 1.1rem; color: var(--muted); }
+.links { color: var(--muted); }
+
+section { padding-top: 28px; margin-top: 28px; border-top: 1px solid var(--line); }
+.aside { color: var(--muted); font-size: 0.95rem; }
+
+pre { margin: 0 0 14px; background: var(--code-bg); color: var(--code-ink); border-radius: 8px; padding: 14px 16px; overflow-x: auto; font-size: 0.85rem; }
+pre code { font-size: inherit; white-space: pre; }
+
+.foot { margin-top: 40px; padding-top: 20px; border-top: 1px solid var(--line); color: var(--muted); font-size: 0.85rem; }

@@ -14,8 +14,8 @@ def package(app, output, require_unsigned=False):
         info = plistlib.load(file)
     if info.get('CFBundleSupportedPlatforms') not in (['iPhoneOS'], ['AppleTVOS'], ['XROS']):
         raise ValueError('Only an iPhoneOS, AppleTVOS or XROS device app can be packaged as an IPA')
-    if info.get('CFBundleExecutable') != 'HaloCE' or not (app/'HaloCE').is_file():
-        raise ValueError('Not a complete HaloCE.app')
+    if info.get('CFBundleExecutable') != 'VISR' or not (app/'VISR').is_file():
+        raise ValueError('Not a complete VISR.app')
     files = sorted(p for p in app.rglob('*') if p.is_file())
     forbidden = {'.map', '.iso', '.xiso', '.p12', '.p8'}
     if any(p.suffix.lower() in forbidden or p.is_symlink() for p in files):

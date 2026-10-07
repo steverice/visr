@@ -20,3 +20,5 @@ int host_theater_active(void);
 /* for Theater.swift: the space's layer renderer, unretained */
 void host_theater_attach(void *renderer);
 void host_theater_log_c(const char *message);
+/* for Theater.swift: host_join_link_open, for a join link the space was opened with */
+#include "host_join_link.h"

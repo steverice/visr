@@ -1,11 +1,14 @@
 # Build the iPhone/iPad (or Apple TV, or Apple Vision Pro) host and SDL around the statically compiled guest image.
 cmake_minimum_required(VERSION 3.24)
-project(HaloCE LANGUAGES C CXX OBJC ASM)
+project(VISR LANGUAGES C CXX OBJC ASM)
 # theater mode's immersive space is SwiftUI (host/Theater.swift)
 if(CMAKE_SYSTEM_NAME STREQUAL "visionOS")
     enable_language(Swift)
 endif()
-set(HALO_BUNDLE_IDENTIFIER "org.haloce.ios" CACHE STRING "App bundle identifier")
+set(HALO_BUNDLE_IDENTIFIER "org.steverice.visr" CACHE STRING "App bundle identifier")
+# Mac Catalyst (tools/ios_build.py --mac): configured as iOS, built with -sdk macosx SUPPORTS_MACCATALYST=YES
+option(HALO_MAC "Mac Catalyst build of the iOS host" OFF)
+set(HALO_GLES_FRAMEWORKS "" CACHE PATH "Catalyst: folder with OpenGLES.framework (headers and a macCatalyst link stub)")
 get_filename_component(ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
 set(SDL_SHARED OFF CACHE BOOL "" FORCE)
 set(SDL_STATIC ON CACHE BOOL "" FORCE)
@@ -26,6 +29,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "visionOS")
     # pad is a virtual joystick, so compile it in as tvOS gets it.
     target_sources(SDL3-static PRIVATE "${ROOT}/build/third_party/SDL3/src/joystick/virtual/SDL_virtualjoystick.c")
     target_compile_definitions(SDL3-static PRIVATE SDL_JOYSTICK_VIRTUAL=1)
+endif()
+if(HALO_MAC)
+    # SDL's UIKit GL files import OpenGLES headers the MacOSX SDK lacks (tools/ios_build.py opengles_framework)
+    target_compile_options(SDL3-static PRIVATE "-F${HALO_GLES_FRAMEWORKS}")
+    target_compile_definitions(SDL3-static PRIVATE GLES_SILENCE_DEPRECATION=1)
 endif()
 # iPhone and visionOS: each build a new CFBundleVersion (tools/ios_build.py), so
 # installing over the app replaces it and keeps its Documents (the imported game)
@@ -51,13 +59,18 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "visionOS")
     set(HALO_RENDER_HEIGHT 0 CACHE STRING "Internal render height (display.render_height)")
     option(HALO_EXTENDED_VIRTUAL_ADDRESSING "Sign with the extended virtual addressing entitlement" OFF)
     set(HALO_PLATFORM_SOURCES Assets-visionOS.xcassets host/host_tv.m host/host_import.m host/host_orientation.m
-        host/host_theater.m host/host_config.c host/Theater.swift host/host_texture_settings.m host/texture_refine.m)
+        host/host_theater.m host/Theater.swift host/host_texture_settings.m host/texture_refine.m)
     set(HALO_INFO_PLIST Info-visionOS.plist)
     set(HALO_DEVICE_FAMILY 7)
 else()
     set(HALO_PLATFORM_SOURCES Assets.xcassets host/host_import.m host/host_orientation.m host/host_touch.m
-        host/host_texture_settings.m host/host_config.c host/texture_refine.m)
-    set(HALO_INFO_PLIST Info.plist)
+        host/host_texture_settings.m host/texture_refine.m)
+    if(HALO_MAC)
+        # Mac Catalyst: Info.plist without the iOS-only keys (LSRequiresIPhoneOS, UIRequiresFullScreen, Files sharing)
+        set(HALO_INFO_PLIST Info-macOS.plist)
+    else()
+        set(HALO_INFO_PLIST Info.plist)
+    endif()
     set(HALO_DEVICE_FAMILY "1,2")
 endif()
 # the texture upscale policy (port/assets/texture-policy.json) as a C table for port/runtime/texture_policy.c
@@ -68,69 +81,78 @@ add_custom_command(
             "${ROOT}/port/assets/texture-policy.json" "${CMAKE_CURRENT_BINARY_DIR}/texture_policy_table.c"
     DEPENDS "${ROOT}/tools/embed_texture_policy.py" "${ROOT}/port/assets/texture-policy.json"
     COMMENT "Embedding the texture upscale policy")
-add_executable(HaloCE MACOSX_BUNDLE
+add_executable(VISR MACOSX_BUNDLE
     ${HALO_PLATFORM_SOURCES} "${ROOT}/port/runtime/xiso.c"
     "${ROOT}/port/runtime/texture_policy.c" "${ROOT}/port/runtime/texture_cache.c"
     "${CMAKE_CURRENT_BINARY_DIR}/texture_policy_table.c"
     host/host_main.m host/host_memory.c host/host_loader.c host/host_syscall.c host/guest_call.S
     host/host_thread.c host/host_sdl.c host/host_gpu.c host/host_gpu_dispatch.c host/gpu_metal.m host/host_frame_counter.m host/host_lifecycle.m
+    host/host_join_link.c host/host_config.c
     "${ROOT}/port/linux/src/posix_files.c" host/posix_net.c
     "${ROOT}/build/ios/host/bridges.c" "${ROOT}/build/ios/embedded/guest_image.S")
-target_include_directories(HaloCE PRIVATE host "${ROOT}/port/runtime" "${ROOT}/port/runtime/include"
+target_include_directories(VISR PRIVATE host "${ROOT}/port/runtime" "${ROOT}/port/runtime/include"
     "${ROOT}/port/runtime/guest/runtime" "${ROOT}/port/linux/src" "${ROOT}/build/ios/host"
     "${ROOT}/build/ios/embedded")
-target_compile_definitions(HaloCE PRIVATE HALO_IOS=1 st_mtim=st_mtimespec st_atim=st_atimespec st_ctim=st_ctimespec)
-target_compile_options(HaloCE PRIVATE "$<$<NOT:$<COMPILE_LANGUAGE:Swift>>:-Wno-deprecated-declarations>")
+target_compile_definitions(VISR PRIVATE HALO_IOS=1 st_mtim=st_mtimespec st_atim=st_atimespec st_ctim=st_ctimespec)
+target_compile_options(VISR PRIVATE "$<$<NOT:$<COMPILE_LANGUAGE:Swift>>:-Wno-deprecated-declarations>")
 if(NOT HALO_VISIONOS)
     # the GL backend (step 4): OpenGL ES through gl.h's pointer table, resolved by name
-    target_sources(HaloCE PRIVATE "${ROOT}/port/linux/src/gpu_gl.c" "${ROOT}/port/linux/src/gl_functions.c")
-    target_include_directories(HaloCE PRIVATE "${ROOT}/build/ios/gl_include")
+    target_sources(VISR PRIVATE "${ROOT}/port/linux/src/gpu_gl.c" "${ROOT}/port/linux/src/gl_functions.c")
+    target_include_directories(VISR PRIVATE "${ROOT}/build/ios/gl_include")
     set_source_files_properties("${ROOT}/port/linux/src/gpu_gl.c" "${ROOT}/port/linux/src/gl_functions.c"
         PROPERTIES COMPILE_DEFINITIONS GPU_GL_HOST=1)
-    target_link_libraries(HaloCE PRIVATE "-framework OpenGLES")
+    target_link_libraries(VISR PRIVATE "-framework OpenGLES")
+    if(HALO_MAC)
+        # SDL's -framework OpenGLES resolves to the macCatalyst stub here
+        target_link_options(VISR PRIVATE "-F${HALO_GLES_FRAMEWORKS}")
+    endif()
 endif()
-target_compile_options(HaloCE PRIVATE "$<$<COMPILE_LANGUAGE:OBJC>:-fobjc-arc>")
-target_link_libraries(HaloCE PRIVATE SDL3::SDL3-static "-framework Foundation" "-framework UIKit"
+target_compile_options(VISR PRIVATE "$<$<COMPILE_LANGUAGE:OBJC>:-fobjc-arc>")
+target_link_libraries(VISR PRIVATE SDL3::SDL3-static "-framework Foundation" "-framework UIKit"
     "-framework Metal" "-framework QuartzCore" z)
 # display.upscaler = "metalfx" (gpu_metal.m); the simulators have no MetalFX
 if(NOT CMAKE_OSX_SYSROOT MATCHES "[Ss]imulator")
-    target_link_libraries(HaloCE PRIVATE "-weak_framework MetalFX")
+    target_link_libraries(VISR PRIVATE "-weak_framework MetalFX")
 endif()
 if(HALO_TVOS)
-    target_link_libraries(HaloCE PRIVATE "-framework Network" "-framework CoreImage")
+    target_link_libraries(VISR PRIVATE "-framework Network" "-framework CoreImage")
     set_source_files_properties(Assets-tvOS.xcassets PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
 elseif(HALO_VISIONOS)
-    target_link_libraries(HaloCE PRIVATE "-framework UniformTypeIdentifiers" "-framework CompositorServices"
+    target_link_libraries(VISR PRIVATE "-framework UniformTypeIdentifiers" "-framework CompositorServices"
         "-framework ARKit" "-framework SwiftUI")
     set_source_files_properties(Assets-visionOS.xcassets PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
     # the app's page in the Settings app (host/host_texture_settings.m)
-    target_sources(HaloCE PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/Settings.bundle")
+    target_sources(VISR PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/Settings.bundle")
     set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/Settings.bundle" PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
     # Theater.swift calls host_theater.m's C functions
-    set_target_properties(HaloCE PROPERTIES
+    set_target_properties(VISR PROPERTIES
         XCODE_ATTRIBUTE_SWIFT_OBJC_BRIDGING_HEADER "${CMAKE_CURRENT_SOURCE_DIR}/host/host_theater.h"
         XCODE_ATTRIBUTE_SWIFT_VERSION 5.0)
     # the guest pool can grow to about 1.9 GB; extended virtual addressing only
     # if a device refuses the 4 GB arena (tools/ios_build.py)
     if(HALO_EXTENDED_VIRTUAL_ADDRESSING)
-        set(HALO_ENTITLEMENTS HaloCE-visionOS-extended.entitlements)
+        set(HALO_ENTITLEMENTS VISR-visionOS-extended.entitlements)
     else()
-        set(HALO_ENTITLEMENTS HaloCE-visionOS.entitlements)
+        set(HALO_ENTITLEMENTS VISR-visionOS.entitlements)
     endif()
-    set_target_properties(HaloCE PROPERTIES
+    set_target_properties(VISR PROPERTIES
         XCODE_ATTRIBUTE_CODE_SIGN_ENTITLEMENTS "${CMAKE_CURRENT_SOURCE_DIR}/${HALO_ENTITLEMENTS}")
 else()
-    target_link_libraries(HaloCE PRIVATE "-framework UniformTypeIdentifiers")
+    target_link_libraries(VISR PRIVATE "-framework UniformTypeIdentifiers")
     set_source_files_properties(Assets.xcassets PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
     # the app's page in the Settings app (host/host_texture_settings.m)
-    target_sources(HaloCE PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/Settings.bundle")
+    target_sources(VISR PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/Settings.bundle")
     set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/Settings.bundle" PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
 endif()
-set_target_properties(HaloCE PROPERTIES XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_APPICON_NAME "AppIcon")
+set_target_properties(VISR PROPERTIES XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_APPICON_NAME "AppIcon")
+# internet play's MQTT brokers (network.brokers_file): host_main.m writes them
+# beside config.toml at each start, as upstream's Android app does
+target_sources(VISR PRIVATE "${ROOT}/port/assets/network/brokers.txt")
+set_source_files_properties("${ROOT}/port/assets/network/brokers.txt" PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
 file(GLOB HALO_LICENSES "${ROOT}/build/ios/licenses/*.txt")
-target_sources(HaloCE PRIVATE ${HALO_LICENSES})
+target_sources(VISR PRIVATE ${HALO_LICENSES})
 set_source_files_properties(${HALO_LICENSES} PROPERTIES MACOSX_PACKAGE_LOCATION Resources/Licenses)
-set_target_properties(HaloCE PROPERTIES MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/${HALO_INFO_PLIST}"
+set_target_properties(VISR PROPERTIES MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/${HALO_INFO_PLIST}"
     XCODE_ATTRIBUTE_CLANG_ENABLE_OBJC_ARC YES
     XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "${HALO_BUNDLE_IDENTIFIER}"
     XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "${HALO_DEVICE_FAMILY}"
@@ -138,5 +160,5 @@ set_target_properties(HaloCE PROPERTIES MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURREN
     XCODE_ATTRIBUTE_HALO_RENDER_HEIGHT "${HALO_RENDER_HEIGHT}"
     XCODE_ATTRIBUTE_HALO_BUILD_NUMBER "${HALO_BUILD_NUMBER}")
 if(HALO_DEVELOPMENT_TEAM)
-    set_target_properties(HaloCE PROPERTIES XCODE_ATTRIBUTE_DEVELOPMENT_TEAM "${HALO_DEVELOPMENT_TEAM}")
+    set_target_properties(VISR PROPERTIES XCODE_ATTRIBUTE_DEVELOPMENT_TEAM "${HALO_DEVELOPMENT_TEAM}")
 endif()

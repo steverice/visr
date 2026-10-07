@@ -58,14 +58,14 @@ static int import_progress(void *context, const char *file, uint64_t done, uint6
     [icon.widthAnchor constraintEqualToConstant:72].active=YES;[icon.heightAnchor constraintEqualToConstant:72].active=YES;
     /* visionOS's layered icon has no AppIcon60x60 image */
     if(icon.image)[stack addArrangedSubview:icon];
-    UILabel *title=[UILabel new];title.text=@"Halo: CE";title.font=[UIFont preferredFontForTextStyle:UIFontTextStyleLargeTitle];
+    UILabel *title=[UILabel new];title.text=@"VISR";title.font=[UIFont preferredFontForTextStyle:UIFontTextStyleLargeTitle];
     title.adjustsFontForContentSizeCategory=YES;title.textAlignment=NSTextAlignmentCenter;[stack addArrangedSubview:title];
     UILabel *body=[UILabel new];body.text=@"Choose your own Halo: Combat Evolved Xbox XISO.\nWe'll import the game and start it for you.";
     body.font=[UIFont preferredFontForTextStyle:UIFontTextStyleBody];body.adjustsFontForContentSizeCategory=YES;
     body.numberOfLines=0;body.textAlignment=NSTextAlignmentCenter;body.textColor=UIColor.secondaryLabelColor;[stack addArrangedSubview:body];
     self.chooseButton=[UIButton buttonWithType:UIButtonTypeSystem];
     UIButtonConfiguration *style=UIButtonConfiguration.filledButtonConfiguration;
-    style.title=@"Choose Halo XISO";style.baseBackgroundColor=[UIColor colorWithRed:0.36 green:0.65 blue:0.31 alpha:1];
+    style.title=@"Choose XISO";style.baseBackgroundColor=[UIColor colorWithRed:0.36 green:0.65 blue:0.31 alpha:1];
     style.baseForegroundColor=UIColor.blackColor;style.cornerStyle=UIButtonConfigurationCornerStyleLarge;
     style.contentInsets=NSDirectionalEdgeInsetsMake(14,24,14,24);self.chooseButton.configuration=style;
     self.chooseButton.accessibilityIdentifier=@"chooseXISO";

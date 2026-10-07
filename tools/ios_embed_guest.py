@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Embed the guest's immutable code as signed Mach-O text, with separate data."""
 import argparse
+import hashlib
 import struct
 from pathlib import Path
 
@@ -30,6 +31,7 @@ def embed(source, destination):
     (destination/'guest-data.bin').write_bytes(writable[4])
     (destination/'guest_image.h').write_text(
         '/* Generated guest image layout. */\n#pragma once\n'
+        f'#define HALO_GUEST_SHA256 "{hashlib.sha256(data).hexdigest()}"\n'
         f'#define IOS_GUEST_CODE_SIZE {len(code_bytes)}u\n'
         f'#define IOS_GUEST_DATA_ADDRESS 0x{writable[1]:x}u\n'
         f'#define IOS_GUEST_DATA_SIZE {writable[2]}u\n'

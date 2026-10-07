@@ -127,7 +127,9 @@ static void combiner_input(struct xgpu_text *text, unsigned long input, BOOL alp
 	}
 }
 
-/* final combiner inputs only have the unsigned identity and invert mappings */
+/* final combiner inputs only have the unsigned identity and invert mappings;
+the identity is max(x, 0.0), unbounded above, as xemu's psh.c has it: the
+V1R0 sum and the E*F product can exceed 1 */
 static void final_input(struct xgpu_text *text, unsigned long input, BOOL alpha_portion)
 {
 	unsigned long reg = input & 0x0f;
@@ -144,7 +146,7 @@ static void final_input(struct xgpu_text *text, unsigned long input, BOOL alpha_
 	if (input & 0x20)
 		xgpu_text_append(text, "(1.0 - clamp(%s, 0.0, 1.0))", value);
 	else
-		xgpu_text_append(text, "clamp(%s, 0.0, 1.0)", value);
+		xgpu_text_append(text, "max(%s, 0.0)", value);
 }
 
 static const char *destination_name(unsigned long reg)
@@ -221,7 +223,9 @@ static void combiner_stage(struct xgpu_text *text, const DWORD *state, int stage
 			if (mux_msb)
 				xgpu_text_append(text, "\t\t%s %sSUM = r0.a >= 0.5 ? %sCD : %sAB;\n", type, prefix, prefix, prefix);
 			else
-				xgpu_text_append(text, "\t\t%s %sSUM = (int(r0.a * 255.0 + 0.5) & 1) != 0 ? %sCD : %sAB;\n",
+				/* the low bit of r0.a's byte, truncated as the NV2A does (xemu's
+				psh.c), not rounded */
+				xgpu_text_append(text, "\t\t%s %sSUM = (int(r0.a * 255.0) & 1) != 0 ? %sCD : %sAB;\n",
 					type, prefix, prefix, prefix);
 		}
 		else
@@ -289,6 +293,28 @@ static unsigned long stage_mode(const struct nv2a_pixel_shader_key *key, int sta
 	return (key->texture_modes >> (5 * stage)) & 0x1f;
 }
 
+/* whether a texture stage mode reads its texture: the others (NONE,
+PASSTHRU, CLIPPLANE, BRDF, DOT_ZW, DOTPRODUCT) have no texel for alpha kill
+or a color sign to act on. Alpha kill follows xemu's psh.c, which applies it
+only where the stage has a sampler; for the color sign it is our inference
+(the signed bits act on texels in the texture unit), since xemu does not
+implement COLORSIGN */
+static BOOL mode_samples(unsigned long mode)
+{
+	switch (mode)
+	{
+	case _mode_none:
+	case _mode_passthru:
+	case _mode_clipplane:
+	case _mode_brdf:
+	case _mode_dot_zw:
+	case _mode_dot_product:
+		return FALSE;
+	default:
+		return TRUE;
+	}
+}
+
 static int stage_input(const DWORD *state, int stage)
 {
 	switch (stage)
@@ -309,6 +335,12 @@ static void dot_input(struct xgpu_text *text, const DWORD *state, int stage)
 	{
 	case 0: xgpu_text_append(text, "t%d.rgb", input); break;
 	case 1: xgpu_text_append(text, "((t%d.rgb * 255.0 - 128.0) / 127.0)", input); break;
+	/* MINUS1_TO_1_GL: a two's complement byte b mapped as (2b + 1) / 255, as
+	xemu's sign2 */
+	case 2:
+		xgpu_text_append(text, "mix((t%d.rgb * 255.0 + 0.5) / 127.5, (t%d.rgb * 255.0 - 255.5) / 127.5, "
+			"step(vec3(128.0), t%d.rgb * 255.0))", input, input, input);
+		break;
 	case 3: xgpu_text_append(text, "signed_bytes(t%d.rgb)", input); break;
 	default: xgpu_text_append(text, "(t%d.rgb * 2.0 - 1.0)", input); break;
 	}
@@ -336,7 +368,7 @@ static void sample(struct xgpu_text *text, const struct nv2a_dialect *dialect, c
 static void texture_stage(struct xgpu_text *text, const struct nv2a_dialect *dialect, const struct nv2a_pixel_shader_key *key, int stage)
 {
 	const DWORD *state = key->combiner_state;
-	unsigned long mode = stage_mode(key, stage);
+	unsigned long mode = stage_mode(key, stage), programmed = mode;
 	char coordinates[96];
 
 	xgpu_text_append(text, "\t/* texture stage %d, mode %lu */\n", stage, mode);
@@ -361,6 +393,9 @@ static void texture_stage(struct xgpu_text *text, const struct nv2a_dialect *dia
 		xgpu_text_append(text, ";\n");
 		break;
 	case _mode_passthru:
+		/* clamped to [0, 1], as the hardware does (NV_texture_shader; nxdk
+		Pixel_shader/PassthruClamping, xemu PR #3085; xemu's psh.c at
+		478b4f4 still leaves it unclamped) */
 		xgpu_text_append(text, "\tt%d = clamp(xT%d, 0.0, 1.0);\n", stage, stage);
 		break;
 	case _mode_clipplane:
@@ -380,7 +415,8 @@ static void texture_stage(struct xgpu_text *text, const struct nv2a_dialect *dia
 	case _mode_bumpenvmap:
 	case _mode_bumpenvmap_luminance:
 	{
-		int input = stage - 1;
+		/* the stage PSINPUTTEXTURE names, as xemu's psh.c (input_tex) */
+		int input = stage_input(state, stage);
 
 		xgpu_text_append(text, "\t{\n\t\tvec2 d = signed_bytes(t%d.rgb).rg;\n", input);
 		xgpu_text_append(text, "\t\tvec2 coordinates = xT%d.xy + vec2(bump_matrix[%d].x * d.x + bump_matrix[%d].z * d.y,"
@@ -390,7 +426,10 @@ static void texture_stage(struct xgpu_text *text, const struct nv2a_dialect *dia
 		xgpu_text_append(text, ";\n");
 		if (mode == _mode_bumpenvmap_luminance)
 		{
-			xgpu_text_append(text, "\t\tt%d.rgb *= clamp(bump_luminance[%d].x * t%d.b + bump_luminance[%d].y, 0.0, 1.0);\n",
+			/* every channel, unclamped, by the luminance in red, as xemu's
+			psh.c; xbox_textures.c loads both luminance formats (X8L8V8U8 as
+			X8R8G8B8, L6V5U5 as R6G5B5) with L in red */
+			xgpu_text_append(text, "\t\tt%d *= bump_luminance[%d].x * t%d.r + bump_luminance[%d].y;\n",
 				stage, stage, input, stage);
 		}
 		xgpu_text_append(text, "\t}\n");
@@ -458,12 +497,16 @@ static void texture_stage(struct xgpu_text *text, const struct nv2a_dialect *dia
 		xgpu_text_append(text, ";\n");
 		break;
 	default:
-		xgpu_text_append(text, "\tt%d = vec4(0.0);\n", stage);
+		/* a NONE stage reads as (0, 0, 0, 1), as xemu's psh.c has it (so r0.a
+		starts at 1 when stage 0 is NONE); a sampling stage without a
+		texture stays 0 */
+		xgpu_text_append(text, programmed == _mode_none ? "\tt%d = vec4(0.0, 0.0, 0.0, 1.0);\n" : "\tt%d = vec4(0.0);\n",
+			stage);
 		break;
 	}
 
 	/* channels the application marked signed (D3DTSS_COLORSIGN) */
-	if (key->color_sign[stage] && mode != _mode_none)
+	if (key->color_sign[stage] && mode_samples(mode))
 	{
 		static const char channels[] = "argb";
 		int bit;
@@ -474,7 +517,7 @@ static void texture_stage(struct xgpu_text *text, const struct nv2a_dialect *dia
 				xgpu_text_append(text, "\tt%d.%c = signed_byte(t%d.%c);\n", stage, channels[bit], stage, channels[bit]);
 		}
 	}
-	if (key->alpha_kill[stage] && mode != _mode_none)
+	if (key->alpha_kill[stage] && mode_samples(mode))
 		xgpu_text_append(text, "\tif (t%d.a == 0.0) discard;\n", stage);
 }
 
@@ -626,9 +669,11 @@ char *nv2a_pixel_shader_translate(const struct nv2a_dialect *dialect, const stru
 		xgpu_text_append(&text, " * ");
 		final_input(&text, (final_efg >> 16) & 0xff, FALSE);
 		xgpu_text_append(&text, ", 0.0);\n");
+		/* the sum's terms unclamped, as xemu's psh.c; only the clamp setting
+		(0x80) clamps the sum */
 		xgpu_text_append(&text, "\tvec4 v1r0_sum = vec4(%s + %s, 0.0);\n",
-			(settings & 0x40) ? "(1.0 - clamp(v1.rgb, 0.0, 1.0))" : "clamp(v1.rgb, 0.0, 1.0)",
-			(settings & 0x20) ? "(1.0 - clamp(r0.rgb, 0.0, 1.0))" : "clamp(r0.rgb, 0.0, 1.0)");
+			(settings & 0x40) ? "(1.0 - v1.rgb)" : "v1.rgb",
+			(settings & 0x20) ? "(1.0 - r0.rgb)" : "r0.rgb");
 		if (settings & 0x80)
 			xgpu_text_append(&text, "\tv1r0_sum = clamp(v1r0_sum, 0.0, 1.0);\n");
 		xgpu_text_append(&text, "\tvec3 fA = ");

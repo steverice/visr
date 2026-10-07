@@ -55,7 +55,21 @@ static int config_value(const char *name, char *value, size_t size)
 		start = end + 1;
 		while (isspace((unsigned char)*start))
 			start++;
-		end = start + strlen(start);
+		/* up to a comment: a # outside a string (a hand-edited
+		"online = true # on" is true, as the game reads it) */
+		{
+			char quote = 0;
+
+			for (end = start; *end && (quote || *end != '#'); end++)
+			{
+				if (quote == '"' && *end == '\\' && end[1])
+					end++;
+				else if (*end == quote)
+					quote = 0;
+				else if (!quote && (*end == '"' || *end == '\''))
+					quote = *end;
+			}
+		}
 		while (end > start && isspace((unsigned char)end[-1]))
 			end--;
 		snprintf(value, size, "%.*s", (int)(end - start), start);

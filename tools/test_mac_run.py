@@ -1,8 +1,12 @@
 """Tests for the Mac runner's pure helpers (tools/mac_run.py)."""
 
+import argparse
 import plistlib
+import shutil
 import struct
 from pathlib import Path
+
+import pytest
 
 from tools import mac_run
 
@@ -68,13 +72,13 @@ def _container(root: Path, name: str, identifier: str) -> Path:
 
 def test_find_container_matches_bundle_identifier(tmp_path):
     _container(tmp_path, "A", "org.example.other")
-    wanted = _container(tmp_path, "B", "org.steverice.haloce.macrunner")
-    assert mac_run.find_container(tmp_path, "org.steverice.haloce.macrunner") == wanted / "Data/Documents"
+    wanted = _container(tmp_path, "B", "org.steverice.visr.macrunner")
+    assert mac_run.find_container(tmp_path, "org.steverice.visr.macrunner") == wanted / "Data/Documents"
 
 
 def test_find_container_returns_none_when_absent(tmp_path):
     _container(tmp_path, "A", "org.example.other")
-    assert mac_run.find_container(tmp_path, "org.steverice.haloce.macrunner") is None
+    assert mac_run.find_container(tmp_path, "org.steverice.visr.macrunner") is None
 
 
 def _bmp(width: int, height: int, pixels: bytes) -> bytes:
@@ -249,18 +253,36 @@ def test_launch_script_drives_this_checkout_s_project_only(tmp_path):
     """Xcode keeps one project named HaloRunner open: another worktree's would be driven instead"""
     project = tmp_path / "build/mac-runner/HaloRunner.xcodeproj"
     close = mac_run.CLOSE_OTHERS.format(xcode="/Applications/Xcode.app", target="HaloRunner", project=project)
-    assert f'whose name is "HaloRunner.xcodeproj" and path is not "{project}"' in close
+    assert f'whose path contains "/HaloRunner.xcodeproj" and path does not start with "{project}"' in close
     launch = mac_run.LAUNCH.format(xcode="/Applications/Xcode.app", target="HaloRunner", project=project)
     assert "whose path contains" not in launch
     assert launch.count(f'whose path is "{project}"') == 2
+
+
+def test_close_script_closes_a_runner_project_xcode_lists_as_its_workspace():
+    """Xcode listed a deleted worktree's runner project as "project.xcworkspace", so closing by
+    name missed it and this project's run stayed "not yet started" """
+    project = "/w/upstream-merge/build/mac-runner/HaloRunner.xcodeproj"
+    close = mac_run.CLOSE_OTHERS.format(xcode="/Applications/Xcode.app", target="HaloRunner", project=project)
+    assert "whose name is" not in close
+    assert "try\n\t\t\tclose other saving no" in close
 
 
 def test_launch_script_retries_when_xcode_cannot_run():
     """Xcode sometimes answers a run with "Cannot run 'HaloRunner'" right after opening the project"""
     script = mac_run.LAUNCH.format(xcode="/Applications/Xcode.app", target="HaloRunner", project="/p/HaloRunner.xcodeproj")
     assert "set result_of_run to run doc" in script
-    assert '(status of result_of_run as text) is not "error occurred" then' in script
+    assert 'else if run_status is not "error occurred" then' in script
     assert script.index("repeat 3 times") < script.index("set result_of_run to run doc")
+
+
+def test_launch_script_retries_a_cancelled_run():
+    """a project reload right after the run was asked for cancels it before anything launches,
+    which counted as started and left the runner waiting 300 s (M4 Mac mini, 2026-10-05)"""
+    script = mac_run.LAUNCH.format(xcode="/Applications/Xcode.app", target="HaloRunner", project="/p/HaloRunner.xcodeproj")
+    cancelled = script.index('if run_status is "cancelled" then')
+    assert cancelled < script.index("set started_run to true")
+    assert script.index('set last_error to "Xcode cancelled the run"') > cancelled
 
 
 def test_launch_script_fails_with_the_reason_after_three_attempts():
@@ -338,12 +360,28 @@ def test_reset_settings_return_to_the_gl_renderer(tmp_path):
 
 
 def test_project_turns_on_metal_validation_only_when_asked():
-    plain = mac_run.PROJECT.format(target="T", team="X", bundle_id="b", app="/a", environment=mac_run.scheme_environment({}))
-    validated = mac_run.PROJECT.format(target="T", team="X", bundle_id="b", app="/a",
+    plain = mac_run.PROJECT.format(target="T", team="X", bundle_id="b", app="/a", executable="VISR",
+                                   environment=mac_run.scheme_environment({}))
+    validated = mac_run.PROJECT.format(target="T", team="X", bundle_id="b", app="/a", executable="VISR",
                                        environment=mac_run.scheme_environment(mac_run.METAL_VALIDATION))
     assert "environmentVariables" not in plain
     assert '        MTL_DEBUG_LAYER: "1"\n' in validated
     assert validated.index("debugEnabled: false") < validated.index("environmentVariables")
+
+
+def test_project_copies_the_apps_own_executable():
+    project = mac_run.PROJECT.format(target="T", team="X", bundle_id="b", app="/a", executable="HaloCE",
+                                     environment=mac_run.scheme_environment({}))
+    assert 'cp "/a/HaloCE" "$TARGET_BUILD_DIR/$EXECUTABLE_PATH"' in project
+
+
+def test_app_executable_reads_the_plist_and_defaults_to_visr(tmp_path):
+    old = tmp_path / "HaloCE.app"
+    old.mkdir()
+    with (old / "Info.plist").open("wb") as file:
+        plistlib.dump({"CFBundleExecutable": "HaloCE"}, file)
+    assert mac_run.app_executable(old) == "HaloCE"
+    assert mac_run.app_executable(tmp_path / "VISR.app") == "VISR"
 
 
 def test_shader_validation_is_its_own_flag():
@@ -358,18 +396,755 @@ def test_simulator_pattern_matches_only_that_simulators_game():
     import re
     udid = "3BA81FB2-1A04-49EF-BF13-5B2598B8FBF9"
     path = (f"/Users/x/Library/Developer/CoreSimulator/Devices/{udid}/data/Containers/Bundle/Application/"
-            "47C658A7-DADC-45F2-969B-7E6A4FB5CB5C/HaloCE.app/HaloCE")
+            "47C658A7-DADC-45F2-969B-7E6A4FB5CB5C/VISR.app/VISR")
     assert re.search(mac_run.simulator_pattern(udid), path)
     assert not re.search(mac_run.simulator_pattern("00000000-0000-0000-0000-000000000000"), path)
-    assert not re.search(mac_run.simulator_pattern(udid), path.replace("HaloCE.app/HaloCE", "Other.app/Other"))
+    assert not re.search(mac_run.simulator_pattern(udid), path.replace("VISR.app/VISR", "Other.app/Other"))
 
 
 def test_simulator_run_refuses_a_missing_app(tmp_path):
     import argparse
-    args = argparse.Namespace(simulator="3BA81FB2-1A04-49EF-BF13-5B2598B8FBF9", app=tmp_path / "HaloCE.app")
+    args = argparse.Namespace(simulator="3BA81FB2-1A04-49EF-BF13-5B2598B8FBF9", app=tmp_path / "VISR.app")
     try:
         mac_run.run_simulator(args)
     except SystemExit as stop:
         assert "no simulator app" in str(stop)
     else:
         raise AssertionError("run_simulator accepted a missing app")
+
+
+def make_native_app(root, bundle_id):
+    """a stand-in for the Catalyst app: its executable and Info.plist"""
+    app = root / "build/VISR.app"
+    (app / "Contents/MacOS").mkdir(parents=True)
+    (app / "Contents/MacOS/VISR").write_text("")
+    with (app / "Contents/Info.plist").open("wb") as file:
+        plistlib.dump({"CFBundleIdentifier": bundle_id}, file)
+    return app
+
+
+def native_args(root, app, **overrides):
+    values = dict(runner="native", app=app, bundle_id=None, maps=None, out=root / "out", xiso=None, team=None,
+                  simulator=None, exit_after=40.0, time_limit=0.0, set=[], init=[], screenshot_every=0,
+                  dump_shaders=False, replay=None, metal_validation=False, metal_shader_validation=False)
+    values.update(overrides)
+    return argparse.Namespace(**values)
+
+
+def fake_launches(launches, exit_line="halo-ios: game exit 0"):
+    """launch_native without a game: records what each launch would have read, writes the game's log"""
+    def launch_native(app, data, out, environment, limit):
+        init = data / "init.txt"
+        launches.append({"init": init.read_text() if init.exists() else "", "out": out,
+                         "config": (data / "config.toml").read_text(), "environment": environment})
+        (data / "ios-runtime.log").write_text(f"Halo iOS native guest starting\n{exit_line}\n")
+        return True
+    return launch_native
+
+
+@pytest.fixture
+def native(tmp_path, monkeypatch):
+    """a native app, a seeded data folder, no running copy, and Xcode out of reach"""
+    def no_xcode(*args, **kwargs):
+        raise AssertionError("the native runner drove Xcode")
+    monkeypatch.setattr(mac_run, "launch", no_xcode)
+    monkeypatch.setattr(mac_run, "build_wrapper", no_xcode)
+    monkeypatch.setattr(mac_run, "native_pids", lambda app: [])
+    monkeypatch.setenv("HALO_NATIVE_DATA", str(tmp_path / "data"))
+    (tmp_path / "data/maps").mkdir(parents=True)
+    (tmp_path / "data/seeded").write_text("seeded by the test fixture\n")
+    return make_native_app(tmp_path, "org.example.mac")
+
+
+def test_native_data_folder_defaults_to_application_support(tmp_path):
+    assert mac_run.native_data_folder("org.example.mac", {}, tmp_path) == \
+        tmp_path / "Library/Application Support/org.example.mac/runner-data"
+
+
+def test_native_data_folder_takes_a_remote_host_s_folder_from_the_environment(tmp_path):
+    assert mac_run.native_data_folder("org.example.mac", {"HALO_NATIVE_DATA": str(tmp_path / "d")}, tmp_path) == \
+        tmp_path / "d"
+
+
+def test_native_command_pins_the_display_and_passes_the_data_folder(tmp_path):
+    data = tmp_path / "Application Support/runner-data"
+    command = mac_run.native_command(Path("/b/VISR.app"), data, tmp_path / "out", {"MTL_DEBUG_LAYER": "1"})
+    assert command[:3] == ["open", "--new", "--wait-apps"]
+    variables = [command[i + 1] for i, part in enumerate(command) if part == "--env"]
+    assert f"HALO_DATA_ROOT={data}" in variables
+    assert "HALO_HOST_DISPLAY=1366x1024@2" in variables
+    assert "HALO_RUNNER=1" in variables
+    assert "MTL_DEBUG_LAYER=1" in variables
+    # the logs go to the data folder (internal disk), not --out, which may be on a removable volume
+    assert command[command.index("--stdout") + 1] == str(data / "open-stdout.log")
+    assert command[command.index("--stderr") + 1] == str(data / "open-stderr.log")
+    assert command[-1] == "/b/VISR.app"
+
+
+def fake_open(monkeypatch, stdout, stderr, status=0):
+    """subprocess.Popen standing in for open: writes the log files its command names, as launchd would"""
+    class Opener:
+        def __init__(self, command):
+            Path(command[command.index("--stdout") + 1]).write_text(stdout)
+            Path(command[command.index("--stderr") + 1]).write_text(stderr)
+
+        def wait(self, timeout=None):
+            return status
+
+    monkeypatch.setattr(mac_run.subprocess, "Popen", Opener)
+
+
+def test_launch_native_copies_the_open_logs_into_out_and_replaces_the_old_ones(tmp_path, monkeypatch):
+    data, out = tmp_path / "data", tmp_path / "out"
+    data.mkdir()
+    (data / "open-stdout.log").write_text("stale stdout\n")
+    (data / "open-stderr.log").write_text("stale stderr\n")
+    fake_open(monkeypatch, "fresh stdout\n", "fresh stderr\n")
+    assert mac_run.launch_native(Path("/b/VISR.app"), data, out, {}, 10)
+    assert (out / "open-stdout.log").read_text() == "fresh stdout\n"
+    assert (out / "open-stderr.log").read_text() == "fresh stderr\n"
+    # the data folder's copies hold this launch's content, not the stale files or an append
+    assert (data / "open-stdout.log").read_text() == "fresh stdout\n"
+    assert (data / "open-stderr.log").read_text() == "fresh stderr\n"
+
+
+def test_launch_native_copies_the_open_logs_when_open_fails(tmp_path, monkeypatch):
+    data, out = tmp_path / "data", tmp_path / "out"
+    data.mkdir()
+    fake_open(monkeypatch, "", "open: -10810\n", status=1)
+    with pytest.raises(SystemExit):
+        mac_run.launch_native(Path("/b/VISR.app"), data, out, {}, 10)
+    assert (out / "open-stderr.log").read_text() == "open: -10810\n"
+    assert (data / "open-stderr.log").read_text() == "open: -10810\n"
+
+
+def test_native_pattern_escapes_the_app_path():
+    assert mac_run.native_pattern(Path("/a.b/Halo (1).app")) == r"/a\.b/Halo \(1\)\.app/Contents/MacOS/VISR"
+
+
+def test_game_exit_reads_the_game_s_last_exit_line():
+    assert mac_run.game_exit("halo-ios: starting\nhalo-ios: game exit 0\n") == 0
+    assert mac_run.game_exit("game exit 3") == 3
+    assert mac_run.game_exit("halo-ios: FATAL: out of guest memory\n") is None
+
+
+def test_prepare_rewrite_drops_settings_an_earlier_run_left(tmp_path):
+    (tmp_path / "config.toml").write_text("[debug]\nnetwork_test = \"host:bloodgulch\"\n")
+    args = argparse.Namespace(xiso=None, screenshot_every=0, dump_shaders=False, replay=None, exit_after=5,
+                              set=["display.renderer=\"metal\""], init=[])
+    mac_run.prepare(args, tmp_path, rewrite=True)
+    text = (tmp_path / "config.toml").read_text()
+    assert "network_test" not in text
+    assert "exit_after = 5.0" in text and 'renderer = "metal"' in text
+
+
+def test_prepare_still_merges_for_the_ipad_runner(tmp_path):
+    (tmp_path / "config.toml").write_text("[debug]\nnetwork_test = \"host:bloodgulch\"\n")
+    args = argparse.Namespace(xiso=None, screenshot_every=0, dump_shaders=False, replay=None, exit_after=5,
+                              set=[], init=[])
+    mac_run.prepare(args, tmp_path)
+    assert "network_test" in (tmp_path / "config.toml").read_text()
+
+
+def test_native_run_never_drives_xcode(tmp_path, monkeypatch, native):
+    launches = []
+    monkeypatch.setattr(mac_run, "launch_native", fake_launches(launches))
+    mac_run.run_native(native_args(tmp_path, native, metal_validation=True))
+    assert len(launches) == 1
+    assert launches[0]["environment"]["MTL_DEBUG_LAYER"] == "1"
+    assert (tmp_path / "out/ios-runtime.log").is_file()
+
+
+def test_native_run_refuses_while_the_app_is_still_running(tmp_path, monkeypatch, native):
+    monkeypatch.setattr(mac_run, "native_pids", lambda app: [4242])
+    monkeypatch.setattr(mac_run, "launch_native", fake_launches([]))
+    with pytest.raises(SystemExit, match=r"already running \(pid 4242\)"):
+        mac_run.run_native(native_args(tmp_path, native))
+
+
+def test_native_run_fails_when_the_game_does_not_exit_cleanly(tmp_path, monkeypatch, native):
+    monkeypatch.setattr(mac_run, "launch_native", fake_launches([], exit_line="halo-ios: FATAL: no maps"))
+    with pytest.raises(SystemExit, match="did not exit cleanly"):
+        mac_run.run_native(native_args(tmp_path, native))
+    assert (tmp_path / "out/ios-runtime.log").is_file()    # the logs are collected anyway
+
+
+def test_native_run_refuses_an_app_built_for_another_bundle_id(tmp_path, monkeypatch, native):
+    monkeypatch.setattr(mac_run, "launch_native", fake_launches([]))
+    with pytest.raises(SystemExit, match="built for org.example.mac"):
+        mac_run.run_native(native_args(tmp_path, native, bundle_id="org.example.other"))
+
+
+def test_native_run_rewrites_config_each_run(tmp_path, monkeypatch, native):
+    launches = []
+    monkeypatch.setattr(mac_run, "launch_native", fake_launches(launches))
+    mac_run.run_native(native_args(tmp_path, native, set=['debug.input_replay="a10.rec"']))
+    mac_run.run_native(native_args(tmp_path, native))
+    assert "a10.rec" in launches[0]["config"]
+    assert "a10.rec" not in launches[1]["config"]
+
+
+def seeding(monkeypatch, tmp_path):
+    """an empty data folder, extracted maps to seed it from, and cp -c -R done by copytree"""
+    shutil.rmtree(tmp_path / "data/maps")
+    (tmp_path / "data/seeded").unlink()
+    maps = tmp_path / "extracted/maps"
+    maps.mkdir(parents=True)
+    (maps / "a10.map").write_text("map")
+    monkeypatch.setattr(mac_run, "run_command",
+                        lambda *command, **options: shutil.copytree(command[3], command[4]))
+    return maps
+
+
+def test_native_run_seeds_a_new_data_folder_once_with_throwaway_a10_and_menu_runs(tmp_path, monkeypatch, native):
+    maps = seeding(monkeypatch, tmp_path)
+    launches = []
+    monkeypatch.setattr(mac_run, "launch_native", fake_launches(launches))
+    mac_run.run_native(native_args(tmp_path, native, maps=maps))
+    assert (tmp_path / "data/maps/a10.map").is_file()
+    assert [launch["init"] for launch in launches] == ["map_name a10\n", "", ""]
+    assert launches[0]["out"] == tmp_path / "out-seed"
+    assert launches[1]["out"] == tmp_path / "out-seed-menu"
+    assert launches[2]["out"] == tmp_path / "out"
+    assert (tmp_path / "data/seeded").read_text().strip()
+    assert "exit_after = 20.0" in launches[1]["config"]
+    assert "fixed_timestep = true" in launches[1]["config"]
+    assert "screenshot_every = 0" in launches[1]["config"]
+    mac_run.run_native(native_args(tmp_path, native, maps=maps))
+    assert len(launches) == 4    # seeded once
+
+
+def test_an_interrupted_seed_is_redone(tmp_path, monkeypatch, native):
+    maps = seeding(monkeypatch, tmp_path)
+    (tmp_path / "data/maps.partial").mkdir()
+    (tmp_path / "data/maps.partial/half.map").write_text("half")
+    monkeypatch.setattr(mac_run, "launch_native", fake_launches([]))
+    mac_run.run_native(native_args(tmp_path, native, maps=maps))
+    assert (tmp_path / "data/maps/a10.map").is_file()
+    assert not (tmp_path / "data/maps/half.map").exists()
+    assert not (tmp_path / "data/maps.partial").exists()
+
+
+def test_a_failed_throwaway_run_leaves_the_folder_unseeded(tmp_path, monkeypatch, native):
+    maps = seeding(monkeypatch, tmp_path)
+    monkeypatch.setattr(mac_run, "launch_native", fake_launches([], exit_line="halo-ios: FATAL: no maps"))
+    with pytest.raises(SystemExit, match="throwaway a10 run"):
+        mac_run.run_native(native_args(tmp_path, native, maps=maps))
+    assert not (tmp_path / "data/maps").exists()
+    assert (tmp_path / "out-seed/ios-runtime.log").is_file()
+
+
+def test_a_failed_menu_seed_run_leaves_the_folder_unseeded(tmp_path, monkeypatch, native):
+    maps = seeding(monkeypatch, tmp_path)
+    launches = []
+    good = fake_launches(launches)
+    bad = fake_launches(launches, exit_line="halo-ios: FATAL: no maps")
+
+    def launch(app, data, out, environment, limit):
+        return (bad if out.name == "out-seed-menu" else good)(app, data, out, environment, limit)
+    monkeypatch.setattr(mac_run, "launch_native", launch)
+    with pytest.raises(SystemExit, match="throwaway menu run"):
+        mac_run.run_native(native_args(tmp_path, native, maps=maps))
+    assert len(launches) == 2
+    assert not (tmp_path / "data/maps").exists()
+    assert (tmp_path / "data/maps.partial/a10.map").is_file()
+    assert (tmp_path / "out-seed-menu/ios-runtime.log").is_file()
+
+
+def test_native_run_without_maps_says_how_to_seed(tmp_path, monkeypatch, native):
+    shutil.rmtree(tmp_path / "data/maps")
+    (tmp_path / "data/seeded").unlink()
+    monkeypatch.setattr(mac_run, "launch_native", fake_launches([]))
+    with pytest.raises(SystemExit, match="--maps"):
+        mac_run.run_native(native_args(tmp_path, native))
+
+
+def test_a_throwaway_run_that_open_could_not_start_leaves_the_folder_unseeded(tmp_path, monkeypatch, native):
+    maps = seeding(monkeypatch, tmp_path)
+
+    def open_fails(app, data, out, environment, limit):
+        raise SystemExit("open could not start the app (exit 1)")
+    monkeypatch.setattr(mac_run, "launch_native", open_fails)
+    with pytest.raises(SystemExit, match="open could not start"):
+        mac_run.run_native(native_args(tmp_path, native, maps=maps))
+    assert not (tmp_path / "data/maps").exists()
+    assert (tmp_path / "data/maps.partial/a10.map").is_file()
+
+
+def test_a_fresh_folder_gets_the_marker_only_after_both_throwaway_runs(tmp_path, monkeypatch, native):
+    maps = seeding(monkeypatch, tmp_path)
+    seen = []
+    good = fake_launches([])
+
+    def launch(app, data, out, environment, limit):
+        seen.append((out.name, (data / "seeded").exists()))
+        return good(app, data, out, environment, limit)
+    monkeypatch.setattr(mac_run, "launch_native", launch)
+    mac_run.run_native(native_args(tmp_path, native, maps=maps))
+    assert seen == [("out-seed", False), ("out-seed-menu", False), ("out", True)]
+
+
+def test_a_folder_with_maps_and_no_marker_plays_the_throwaway_runs_without_cloning(tmp_path, monkeypatch, native):
+    (tmp_path / "data/seeded").unlink()
+    (tmp_path / "data/maps/mine.map").write_text("made elsewhere")
+
+    def no_clone(*command, **options):
+        raise AssertionError("cloned into a folder that already has maps")
+    monkeypatch.setattr(mac_run, "run_command", no_clone)
+    launches = []
+    monkeypatch.setattr(mac_run, "launch_native", fake_launches(launches))
+    mac_run.run_native(native_args(tmp_path, native))    # no --maps
+    assert [launch["init"] for launch in launches] == ["map_name a10\n", "", ""]
+    assert launches[0]["out"] == tmp_path / "out-seed"
+    assert launches[1]["out"] == tmp_path / "out-seed-menu"
+    assert (tmp_path / "data/seeded").is_file()
+    assert (tmp_path / "data/maps/mine.map").read_text() == "made elsewhere"
+
+
+def test_a_folder_with_the_marker_is_not_seeded_again(tmp_path, monkeypatch, native):
+    launches = []
+    monkeypatch.setattr(mac_run, "launch_native", fake_launches(launches))
+    mac_run.run_native(native_args(tmp_path, native))
+    assert [launch["out"] for launch in launches] == [tmp_path / "out"]
+
+
+def test_a_failed_throwaway_run_leaves_existing_maps_alone_and_writes_no_marker(tmp_path, monkeypatch, native):
+    (tmp_path / "data/seeded").unlink()
+    (tmp_path / "data/maps/mine.map").write_text("made elsewhere")
+    monkeypatch.setattr(mac_run, "launch_native", fake_launches([], exit_line="halo-ios: FATAL: no maps"))
+    with pytest.raises(SystemExit, match="throwaway a10 run"):
+        mac_run.run_native(native_args(tmp_path, native))
+    assert (tmp_path / "data/maps/mine.map").read_text() == "made elsewhere"
+    assert not (tmp_path / "data/maps.partial").exists()
+    assert not (tmp_path / "data/seeded").exists()
+
+
+SHA = "ab" * 32
+INPUT_LOG = f"""halo-ios: Halo iOS native guest starting
+halo-ios: guest image sha256 {SHA}
+halo-ios: display pinned to 1366x1024@2: 2732x2048 pixels, width 640
+halo-ios: guest display: width 640, pixels 2732x2048
+screen: 640x480 drawn at 2732x2048 (maximum texture size 16384)
+OpenGL ES 3.0 Metal - 102 on Apple M6
+OpenGL ES 3.0: copy image 0, border clamp 0, anisotropy 1, S3TC 0, sample counting 1
+OpenGL function glDrawElementsBaseVertex is unavailable
+GPU capabilities: base vertex 0
+halo-ios: audio device: 48000 Hz, 2 channels, format 0x8120, 512 sample frames
+halo-ios: audio output active: 4096 PCM bytes, peak 0.2500
+frame 30: 120 draws, 3 immediate, 4000 GL calls
+"""
+INPUT_CONFIG = """[debug]
+exit_after = 40.0
+screenshot_directory = "{root}/runner/shots"
+gpu_dump_shaders = "{root}/runner/shaders"
+"""
+
+
+def input_run(folder, log=INPUT_LOG, root="/data"):
+    folder.mkdir(parents=True)
+    (folder / "stderr.log").write_text(log)
+    (folder / "config.toml").write_text(INPUT_CONFIG.format(root=root))
+    return folder
+
+
+def test_input_lines_keep_the_lines_that_name_a_run_s_inputs():
+    lines = mac_run.input_lines(INPUT_LOG)
+    assert f"guest image sha256 {SHA}" in lines
+    assert "audio device: 48000 Hz, 2 channels, format 0x8120, 512 sample frames" in lines
+    assert "OpenGL function glDrawElementsBaseVertex is unavailable" in lines
+    assert not any("display pinned" in line or "frame 30" in line for line in lines)
+
+
+def test_runs_that_differ_only_in_their_data_folder_and_the_pin_match(tmp_path):
+    a = input_run(tmp_path / "ipad", INPUT_LOG.replace("halo-ios: display pinned to 1366x1024@2: 2732x2048 pixels, width 640\n", ""),
+                  root="/Users/x/Library/Containers/ABC/Data/Documents")
+    b = input_run(tmp_path / "native", root="/Users/x/Library/Application Support/org.example.mac/runner-data")
+    assert mac_run.compare_inputs(a, b) == []
+
+
+def test_another_guest_image_is_a_difference(tmp_path):
+    a = input_run(tmp_path / "a")
+    b = input_run(tmp_path / "b", INPUT_LOG.replace(SHA, "cd" * 32))
+    problems = mac_run.compare_inputs(a, b)
+    assert len(problems) == 1 and "guest image sha256" in problems[0]
+
+
+def test_a_gl_entry_point_found_by_only_one_runner_is_a_difference(tmp_path):
+    a = input_run(tmp_path / "a")
+    b = input_run(tmp_path / "b", INPUT_LOG.replace("OpenGL function glDrawElementsBaseVertex is unavailable\n", ""))
+    assert mac_run.compare_inputs(a, b)
+
+
+def test_a_setting_only_one_run_had_is_a_difference(tmp_path):
+    a = input_run(tmp_path / "a")
+    b = input_run(tmp_path / "b")
+    (b / "config.toml").write_text((b / "config.toml").read_text() + 'network_test = "host:bloodgulch"\n')
+    problems = mac_run.compare_inputs(a, b)
+    assert problems == ['config.toml debug.network_test: None against "host:bloodgulch"']
+
+
+def test_a_log_with_none_of_the_lines_is_a_problem_not_a_match(tmp_path):
+    a = input_run(tmp_path / "a", "nothing\n")
+    b = input_run(tmp_path / "b", "nothing\n")
+    assert any("none of the run's inputs" in problem for problem in mac_run.compare_inputs(a, b))
+
+
+def test_a_kind_of_input_both_logs_lack_is_a_problem(tmp_path):
+    log = INPUT_LOG.replace("halo-ios: audio device: 48000 Hz, 2 channels, format 0x8120, 512 sample frames\n", "")
+    a = input_run(tmp_path / "a", log)
+    b = input_run(tmp_path / "b", log)
+    problems = mac_run.compare_inputs(a, b)
+    assert problems == [f"{a}/stderr.log does not name the audio device", f"{b}/stderr.log does not name the audio device"]
+
+
+def test_compare_inputs_reports_missing_files(tmp_path):
+    a = input_run(tmp_path / "a")
+    (tmp_path / "b").mkdir()
+    problems = mac_run.compare_inputs(a, tmp_path / "b")
+    assert any("stderr.log missing" in problem for problem in problems)
+    assert any("config.toml missing" in problem for problem in problems)
+
+
+def ipad_args(root, **overrides):
+    values = dict(runner="ipad", app=root, bundle_id="org.example.ipad", team="TEAM", maps=None, out=root / "out",
+                  xiso=None, simulator=None, exit_after=40.0, time_limit=0.0, set=[], init=[], screenshot_every=0,
+                  dump_shaders=False, replay=None, metal_validation=False, metal_shader_validation=False,
+                  fresh_config=False)
+    values.update(overrides)
+    return argparse.Namespace(**values)
+
+
+def ipad_run_rewrite(tmp_path, monkeypatch, **overrides):
+    """what rewrite the iPad path hands to prepare"""
+    (tmp_path / "VISR").write_text("")
+    seen = []
+    monkeypatch.setattr(mac_run, "build_wrapper", lambda args: None)
+    monkeypatch.setattr(mac_run, "container_documents", lambda args: tmp_path)
+    monkeypatch.setattr(mac_run, "prepare", lambda args, documents, rewrite=False: seen.append(rewrite))
+    monkeypatch.setattr(mac_run, "launch", lambda documents: None)
+    monkeypatch.setattr(mac_run, "wait_for", lambda condition, limit: True)
+    monkeypatch.setattr(mac_run, "collect", lambda documents, out: None)
+    mac_run.run(ipad_args(tmp_path, **overrides))
+    return seen
+
+
+def parsed_fresh_config(monkeypatch, argv):
+    seen = []
+    monkeypatch.setattr(mac_run, "run", lambda args: seen.append(args.fresh_config))
+    monkeypatch.setattr("sys.argv", ["mac_run.py", "run", "--out", "out"] + argv)
+    mac_run.main()
+    return seen[0]
+
+
+def test_ipad_run_merges_config_without_fresh_config(tmp_path, monkeypatch):
+    assert ipad_run_rewrite(tmp_path, monkeypatch) == [False]
+
+
+def test_ipad_run_rewrites_config_with_fresh_config(tmp_path, monkeypatch):
+    assert ipad_run_rewrite(tmp_path, monkeypatch, fresh_config=True) == [True]
+
+
+def test_fresh_config_flag_and_environment_default(monkeypatch):
+    monkeypatch.delenv("HALO_FRESH_CONFIG", raising=False)
+    assert parsed_fresh_config(monkeypatch, []) is False
+    assert parsed_fresh_config(monkeypatch, ["--fresh-config"]) is True
+    monkeypatch.setenv("HALO_FRESH_CONFIG", "1")
+    assert parsed_fresh_config(monkeypatch, []) is True
+    monkeypatch.setenv("HALO_FRESH_CONFIG", "0")
+    assert parsed_fresh_config(monkeypatch, []) is False
+
+
+def test_the_native_runner_is_the_default_and_ipad_is_asked_for(monkeypatch):
+    seen = []
+    monkeypatch.setattr(mac_run, "run", lambda args: seen.append(args.runner))
+    for argv in ([], ["--runner", "ipad"], ["--runner", "native"]):
+        monkeypatch.setattr("sys.argv", ["mac_run.py", "run", "--out", "out"] + argv)
+        mac_run.main()
+    assert seen == ["native", "ipad", "native"]
+
+
+def test_native_run_ignores_warnings_but_the_ipad_scheme_keeps_them(tmp_path, monkeypatch, native):
+    launches = []
+    monkeypatch.setattr(mac_run, "launch_native", fake_launches(launches))
+    mac_run.run_native(native_args(tmp_path, native, metal_validation=True))
+    environment = launches[0]["environment"]
+    assert environment["MTL_DEBUG_LAYER_WARNING_MODE"] == "ignore"
+    assert environment["MTL_DEBUG_LAYER"] == "1" and environment["MTL_DEBUG_LAYER_ERROR_MODE"] == "nslog"
+    assert mac_run.validation_environment(True, False)["MTL_DEBUG_LAYER_WARNING_MODE"] == "nslog"
+
+
+def test_the_native_app_comes_from_the_checkout_by_default():
+    assert mac_run.native_app_default({}) == mac_run.ROOT / "build/mac/app/Release-maccatalyst/VISR.app"
+
+
+def test_the_native_app_comes_from_a_host_s_designated_folder(tmp_path):
+    assert mac_run.native_app_default({"HALO_MAC_BUILD": str(tmp_path)}) == \
+        tmp_path / mac_run.ROOT.name / "app/Release-maccatalyst/VISR.app"
+
+
+def test_build_wrapper_closes_the_runner_projects_before_xcodegen_rewrites_them(tmp_path, monkeypatch):
+    """xcodegen rewrote the open HaloRunner.xcodeproj under Xcode, which answered with a modal
+    "changed on disk" alert that no one could click: every later run failed with "Build operations are
+    disabled: 'project.xcworkspace' has changed and is reloading" (an M4 build host, 2026-10-05) or waited 300 s,
+    and Xcode later aborted in the same handler (an M6 build host, 2026-10-06)"""
+    calls = []
+    monkeypatch.setattr(mac_run, "RUNNER", tmp_path / "build/mac-runner")
+    monkeypatch.setattr(mac_run, "xcode_app", lambda: "/Applications/Xcode.app")
+    monkeypatch.setattr(mac_run, "xcode_running", lambda xcode: True)
+    def run_command(*args, **options):
+        calls.append((args, options.get("input")))
+        return mac_run.subprocess.CompletedProcess(args, 0, stdout="0\n", stderr="")
+    monkeypatch.setattr(mac_run, "run_command", run_command)
+    args = mac_run.argparse.Namespace(team="T", bundle_id="org.example.runner", app=tmp_path / "VISR.app")
+    mac_run.build_wrapper(args)
+    programs = [call[0][0] for call in calls]
+    assert programs.index("osascript") < programs.index("xcodegen")
+    close = calls[programs.index("osascript")][1]
+    assert 'whose path contains "/HaloRunner.xcodeproj"' in close
+    assert "does not start with" not in close
+
+
+def test_build_wrapper_does_not_start_xcode_to_close_projects(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(mac_run, "RUNNER", tmp_path / "build/mac-runner")
+    monkeypatch.setattr(mac_run, "xcode_app", lambda: "/Applications/Xcode.app")
+    monkeypatch.setattr(mac_run, "xcode_running", lambda xcode: False)
+    monkeypatch.setattr(mac_run, "run_command", lambda *args, **options: calls.append(args[0]))
+    args = mac_run.argparse.Namespace(team="T", bundle_id="org.example.runner", app=tmp_path / "VISR.app")
+    mac_run.build_wrapper(args)
+    assert "osascript" not in calls
+
+
+def test_close_runner_projects_gives_up_on_an_xcode_held_by_a_dialog():
+    """a modal alert keeps Xcode from answering: fail in seconds with the reason, not after 300 s"""
+    close = mac_run.CLOSE_RUNNER_PROJECTS.format(xcode="/Applications/Xcode.app", target="HaloRunner")
+    assert close.index("with timeout of") < close.index("close")
+
+
+# trimmed from `sample` of an M4 build host's Xcode, 2026-10-06, held by the alert
+HELD_SAMPLE = """Call graph:
+    996 Thread_35892   DispatchQueue_1: com.apple.main-thread  (serial)
+    + 996 start  (in dyld) + 6688  [0x19c4e7e80]
+    +   996 NSApplicationMain  (in AppKit) + 880  [0x1a0effc4c]
+    +     996 -[IDEContainer _respondToFileChangeOnDiskWithFilePath:force:]  (in IDEFoundation) + 888  [0x10f988c58]
+    +       996 -[IDEDocumentController responseToExternalChangesToBackingFileForContainer:fileWasRemoved:]  (in IDEKit) + 976  [0x10b682268]
+    +         996 -[NSAlert runModal]  (in AppKit) + 196  [0x1a11cb2d4]
+    996 Thread_35910
+    + 996 thread_start  (in libsystem_pthread.dylib) + 8  [0x19c8a6b80]
+"""
+
+IDLE_SAMPLE = """Call graph:
+    778 Thread_9579811   DispatchQueue_1: com.apple.main-thread  (serial)
+    + 778 start  (in dyld) + 6688  [0x196ba1158]
+    +   778 -[NSApplication run]  (in AppKit) + 396  [0x1a0f2790c]
+    +     778 _DPSNextEvent  (in AppKit) + 580  [0x1a0f344fc]
+    778 Thread_9579830
+    + 778 -[NSAlert runModal]  (in AppKit) + 196  [0x1a11cb2d4]
+"""
+
+
+def test_modal_alert_reads_the_main_thread_of_a_held_xcode():
+    assert mac_run.modal_alert(HELD_SAMPLE) == "a project file that changed on disk"
+
+
+def test_modal_alert_ignores_an_idle_main_thread_and_other_threads():
+    assert mac_run.modal_alert(IDLE_SAMPLE) is None
+    assert mac_run.modal_alert("") is None
+
+
+def test_launch_stops_before_running_when_xcode_is_held(monkeypatch):
+    """an M4 build host's Xcode, held by an alert, never loaded the project: LAUNCH spent minutes failing"""
+    scripts = []
+    monkeypatch.setattr(mac_run, "xcode_app", lambda: "/Applications/Xcode.app")
+    monkeypatch.setattr(mac_run, "run_command", lambda *args, **options: scripts.append(options.get("input") or args[0]))
+    monkeypatch.setattr(mac_run, "xcode_alert", lambda xcode: "a project file that changed on disk")
+    with pytest.raises(SystemExit, match="held by a modal alert"):
+        mac_run.launch()
+    assert not any("run doc" in script for script in scripts)
+
+
+def test_wait_for_start_fails_early_when_xcode_is_held(monkeypatch):
+    monkeypatch.setattr(mac_run.time, "sleep", lambda seconds: None)
+    checks = []
+
+    def held():
+        checks.append(1)
+        raise SystemExit("held")
+    with pytest.raises(SystemExit):
+        mac_run.wait_for_start(lambda: False, held, 300, every=0)
+    assert checks == [1]
+
+
+def test_wait_for_start_does_not_check_xcode_once_the_game_runs():
+    assert mac_run.wait_for_start(lambda: True, lambda: pytest.fail("checked Xcode"), 300, every=0)
+
+
+def test_launch_script_does_not_ask_again_over_a_pending_run():
+    """a cold Xcode can leave a run "not yet started" for minutes while it builds: failing it, or
+    asking again over it, would break a run that was about to start"""
+    script = mac_run.LAUNCH.format(xcode="/Applications/Xcode.app", target="HaloRunner", project="/p/HaloRunner.xcodeproj")
+    assert 'if run_status is "not yet started"' not in script
+    assert 'else if run_status is not "error occurred" then' in script
+
+
+def test_close_runner_projects_fails_when_a_project_stays_open(monkeypatch):
+    """CLOSE_RUNNER_PROJECTS closes inside a try: a close that fails quietly must not let xcodegen
+    rewrite a project Xcode still has open"""
+    monkeypatch.setattr(mac_run, "xcode_app", lambda: "/Applications/Xcode.app")
+    monkeypatch.setattr(mac_run, "xcode_running", lambda xcode: True)
+    monkeypatch.setattr(mac_run, "run_command",
+                        lambda *args, **options: mac_run.subprocess.CompletedProcess(args, 0, stdout="1\n", stderr=""))
+    with pytest.raises(SystemExit, match="still has 1 HaloRunner projects open"):
+        mac_run.close_runner_projects()
+
+
+def test_close_script_reports_the_runner_projects_left_open():
+    close = mac_run.CLOSE_RUNNER_PROJECTS.format(xcode="/Applications/Xcode.app", target="HaloRunner")
+    assert close.index('return count of (every workspace document whose path contains "/HaloRunner.xcodeproj")') > \
+        close.index("close runner saving no")
+
+
+def _osascript_error(stderr):
+    return mac_run.subprocess.CalledProcessError(1, ["osascript"], output="", stderr=stderr)
+
+
+def test_osascript_failure_names_a_denied_automation_permission(monkeypatch):
+    monkeypatch.setattr(mac_run, "xcode_alert", lambda xcode: pytest.fail("sampled Xcode for a permission error"))
+    error = _osascript_error("execution error: Not authorized to send Apple events to Xcode-beta. (-1743)")
+    message = mac_run.osascript_failure("/Applications/Xcode.app", "closing its HaloRunner projects", error)
+    assert "Automation" in message
+    assert "alert" not in message
+
+
+def test_osascript_failure_names_the_alert_that_holds_xcode(monkeypatch):
+    monkeypatch.setattr(mac_run, "xcode_alert", lambda xcode: "a project file that changed on disk")
+    error = _osascript_error("execution error: Xcode-beta got an error: AppleEvent timed out. (-1712)")
+    message = mac_run.osascript_failure("/Applications/Xcode.app", "closing its HaloRunner projects", error)
+    assert "held by a modal alert about a project file that changed on disk" in message
+
+
+def test_osascript_failure_does_not_blame_an_alert_xcode_does_not_have(monkeypatch):
+    monkeypatch.setattr(mac_run, "xcode_alert", lambda xcode: None)
+    error = _osascript_error("execution error: Xcode-beta got an error: AppleEvent timed out. (-1712)")
+    message = mac_run.osascript_failure("/Applications/Xcode.app", "closing its HaloRunner projects", error)
+    assert "no alert open" in message
+
+
+def test_osascript_failure_passes_on_any_other_error(monkeypatch):
+    monkeypatch.setattr(mac_run, "xcode_alert", lambda xcode: pytest.fail("sampled Xcode for a script error"))
+    error = _osascript_error("execution error: run failed after 3 attempts: Build operations are disabled (-2700)")
+    message = mac_run.osascript_failure("/Applications/Xcode.app", "running HaloRunner", error)
+    assert "Build operations are disabled" in message
+
+
+@pytest.fixture
+def wrapper(tmp_path, monkeypatch):
+    """build_wrapper with Xcode open and xcodegen and xcodebuild faked: returns the programs it ran"""
+    calls = []
+    monkeypatch.setattr(mac_run, "RUNNER", tmp_path / "build/mac-runner")
+    monkeypatch.setattr(mac_run, "xcode_app", lambda: "/Applications/Xcode.app")
+    monkeypatch.setattr(mac_run, "xcode_running", lambda xcode: True)
+
+    def run_command(*args, **options):
+        calls.append(args[0])
+        if args[0] == "xcodegen":
+            project = mac_run.RUNNER / "HaloRunner.xcodeproj"
+            project.mkdir(parents=True, exist_ok=True)
+            (project / "project.pbxproj").write_text("// made by the fake xcodegen\n")
+        return mac_run.subprocess.CompletedProcess(args, 0, stdout="0\n", stderr="")
+    monkeypatch.setattr(mac_run, "run_command", run_command)
+    return calls
+
+
+def _wrapper_args(tmp_path, **overrides):
+    values = dict(team="T", bundle_id="org.example.runner", app=tmp_path / "VISR.app")
+    values.update(overrides)
+    return mac_run.argparse.Namespace(**values)
+
+
+def test_build_wrapper_leaves_an_unchanged_project_alone(tmp_path, wrapper):
+    """rewriting the project Xcode has open is what raised the "changed on disk" alert"""
+    mac_run.build_wrapper(_wrapper_args(tmp_path))
+    wrapper.clear()
+    mac_run.build_wrapper(_wrapper_args(tmp_path))
+    assert "xcodegen" not in wrapper
+    assert "osascript" not in wrapper
+    assert "xcodebuild" in wrapper
+
+
+def test_build_wrapper_regenerates_a_changed_project(tmp_path, wrapper):
+    mac_run.build_wrapper(_wrapper_args(tmp_path))
+    wrapper.clear()
+    mac_run.build_wrapper(_wrapper_args(tmp_path, metal_validation=True))
+    assert wrapper.index("osascript") < wrapper.index("xcodegen")
+
+
+def test_build_wrapper_regenerates_when_the_stamp_does_not_match(tmp_path, wrapper):
+    mac_run.build_wrapper(_wrapper_args(tmp_path))
+    (mac_run.RUNNER / "project.yml.sha256").write_text("stale\n")
+    wrapper.clear()
+    mac_run.build_wrapper(_wrapper_args(tmp_path))
+    assert "xcodegen" in wrapper
+
+
+def _failing_osascript(stderr, calls=None):
+    """run_command where every osascript call fails with stderr"""
+    def run_command(*args, **options):
+        if calls is not None:
+            calls.append(args[0])
+        if args[0] == "osascript":
+            raise _osascript_error(stderr)
+        return mac_run.subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+    return run_command
+
+
+@pytest.fixture
+def xcode_open(monkeypatch):
+    monkeypatch.setattr(mac_run, "xcode_app", lambda: "/Applications/Xcode.app")
+    monkeypatch.setattr(mac_run, "xcode_running", lambda xcode: True)
+
+
+def test_closing_projects_in_a_held_xcode_names_the_alert(xcode_open, monkeypatch):
+    monkeypatch.setattr(mac_run, "run_command", _failing_osascript("AppleEvent timed out. (-1712)"))
+    monkeypatch.setattr(mac_run, "xcode_alert", lambda xcode: "a project file that changed on disk")
+    with pytest.raises(SystemExit, match="closing its HaloRunner projects: it is held by a modal alert about a project"):
+        mac_run.close_runner_projects()
+
+
+def test_closing_projects_without_automation_permission_says_so(xcode_open, monkeypatch):
+    monkeypatch.setattr(mac_run, "run_command", _failing_osascript("Not authorized to send Apple events to Xcode. (-1743)"))
+    monkeypatch.setattr(mac_run, "xcode_alert", lambda xcode: None)
+    with pytest.raises(SystemExit, match="Automation"):
+        mac_run.close_runner_projects()
+
+
+def test_a_failed_launch_script_exits_with_the_reason_not_a_traceback(xcode_open, monkeypatch):
+    """an M4 build host's LAUNCH failed with "Build operations are disabled" inside a CalledProcessError traceback"""
+    monkeypatch.setattr(mac_run, "xcode_alert", lambda xcode: None)
+
+    def run_command(*args, **options):
+        # CLOSE_OTHERS goes through run_command too: only LAUNCH fails
+        if args[0] == "osascript" and "run doc" in options.get("input", ""):
+            raise _osascript_error("run failed after 3 attempts: Build operations are disabled: "
+                                   "'project.xcworkspace' has changed and is reloading. (-2700)")
+        return mac_run.subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+    monkeypatch.setattr(mac_run, "run_command", run_command)
+    with pytest.raises(SystemExit, match="while running HaloRunner: run failed after 3 attempts: Build operations"):
+        mac_run.launch()
+
+
+def test_xcode_alert_samples_xcode_s_main_thread(monkeypatch):
+    monkeypatch.setattr(mac_run, "xcode_pid", lambda xcode: 2748)
+
+    def sample(command, **options):
+        assert command[:3] == ["sample", "2748", "1"]
+        Path(command[command.index("-file") + 1]).write_text(HELD_SAMPLE)
+        return mac_run.subprocess.CompletedProcess(command, 0)
+    monkeypatch.setattr(mac_run.subprocess, "run", sample)
+    assert mac_run.xcode_alert("/Applications/Xcode.app") == "a project file that changed on disk"
+
+
+def test_xcode_alert_is_none_when_sample_writes_nothing(monkeypatch):
+    monkeypatch.setattr(mac_run, "xcode_pid", lambda xcode: 2748)
+    monkeypatch.setattr(mac_run.subprocess, "run", lambda command, **options: mac_run.subprocess.CompletedProcess(command, 1))
+    assert mac_run.xcode_alert("/Applications/Xcode.app") is None

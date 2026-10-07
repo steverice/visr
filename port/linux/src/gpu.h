@@ -156,8 +156,12 @@ enum { GPU_STAGE_COUNT = 4, GPU_ATTRIBUTE_COUNT = 16 };
 struct gpu_constant_store
 {
 	float c[GPU_CONSTANT_COUNT][4];
-	uint32_t serials[GPU_CONSTANT_COUNT];
-	uint32_t serial;
+	/* 64-bit, so they never wrap: a skinned model's draw changes up to 132
+	registers, and 32 bits wrapped within minutes to an hour at a high frame
+	rate, after which a program found none of its registers changed and drew
+	with another object's node matrices (upstream's b449c43e) */
+	uint64_t serials[GPU_CONSTANT_COUNT];
+	uint64_t serial;
 	uint8_t log[GPU_CONSTANT_LOG_SIZE];
 };
 
@@ -429,6 +433,10 @@ enum
 	/* display.immersive: the picture goes on a screen in an immersive space
 	(Metal, visionOS 26 and later) */
 	GPU_INITIALIZE_IMMERSIVE = 256,
+	/* debug.metal_state_cache = false: the Metal backend makes every encoder
+	call a draw has, without skipping the ones that set what the encoder
+	already holds (metal_state_cache.h) */
+	GPU_INITIALIZE_NO_STATE_CACHE = 512,
 };
 /* probe the context, which must be current, and set it up */
 void gpu_initialize(uint32_t flags, struct gpu_capabilities *capabilities);

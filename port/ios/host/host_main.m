@@ -2,11 +2,17 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #include "ios_host.h"
+#include "guest_image.h"
+#include "host_display_pin.h"
+#include "host_join_link.h"
 #if !TARGET_OS_TV
 #include "host_texture_settings.h"
 #endif
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
+#if TARGET_OS_MACCATALYST
+#include <objc/message.h>
+#endif
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -28,7 +34,7 @@ void host_log(int priority,const char *text) { host_logf(priority,"%s",text); }
 void host_fatal(const char *format,...) {
     va_list ap;va_start(ap,format);char text[1024];vsnprintf(text,sizeof(text),format,ap);va_end(ap);
     host_logf(HOST_LOG_ERROR,"FATAL: %s",text);
-    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,"Halo",text,NULL);exit(1);
+    if(!getenv("HALO_RUNNER"))SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,"VISR",text,NULL);exit(1);
 }
 void host_abort(const char *reason) { host_logf(HOST_LOG_ERROR,"guest abort: %s",reason);abort(); }
 void host_exit(int code) {host_logf(HOST_LOG_INFO,"game exit %d",code);exit(code);}
@@ -36,6 +42,30 @@ int host_errno(void) {return host_linux_errno(errno);}
 void host_debug_thread_started(void) {}
 void host_debug_thread_exited(void) {}
 void host_debug_start_sampler(const char *setting) {(void)setting;}
+
+#if TARGET_OS_MACCATALYST
+/* AppKit hands a Mac app its Apple Events (among them GetURL: a halo:// link
+   opened while the app runs) only when NSApplication looks at its event queue,
+   and nothing here ever does: the game, SDL and the import screen pump the run
+   loop with CFRunLoopRunInMode, so such a link was never opened. Looking with an empty mask dispatches the waiting Apple Events and
+   takes nothing else off the queue. (A link the app is launched with comes
+   another way, through the scene's connection options.) */
+static void apple_events_timer(CFRunLoopTimerRef timer,void *info) {
+    (void)timer;(void)info;
+    static id application,distant_past;
+    if(!application){
+        application=((id(*)(id,SEL))objc_msgSend)((id)NSClassFromString(@"NSApplication"),sel_registerName("sharedApplication"));
+        distant_past=NSDate.distantPast;
+    }
+    if(application)((id(*)(id,SEL,unsigned long long,id,id,BOOL))objc_msgSend)(application,
+        sel_registerName("nextEventMatchingMask:untilDate:inMode:dequeue:"),0,distant_past,NSDefaultRunLoopMode,NO);
+}
+static void install_apple_events_timer(void) {
+    CFRunLoopTimerRef timer=CFRunLoopTimerCreate(NULL,CFAbsoluteTimeGetCurrent()+0.25,0.25,0,0,apple_events_timer,NULL);
+    CFRunLoopAddTimer(CFRunLoopGetMain(),timer,kCFRunLoopCommonModes);
+    CFRelease(timer);
+}
+#endif
 
 static uint32_t copy_string(const char *text) {
     char *p=host_low_map(strlen(text)+1,PROT_READ|PROT_WRITE);
@@ -48,6 +78,13 @@ int main(int argc,char **argv) {
         /* tvOS apps may only write to Caches (purgeable). */
         NSString *documents=[NSSearchPathForDirectoriesInDomains(NSCachesDirectory,NSUserDomainMask,YES).firstObject stringByAppendingPathComponent:@"Halo"];
         [NSFileManager.defaultManager createDirectoryAtPath:documents withIntermediateDirectories:YES attributes:nil error:nil];
+#elif TARGET_OS_MACCATALYST
+        /* Not sandboxed, so NSDocumentDirectory would be the user's own ~/Documents:
+           HALO_DATA_ROOT (a runner's data folder), else Application Support/<bundle ID>. */
+        NSString *documents=NSProcessInfo.processInfo.environment[@"HALO_DATA_ROOT"];
+        if(!documents.length)documents=[NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory,NSUserDomainMask,YES).firstObject
+            stringByAppendingPathComponent:NSBundle.mainBundle.bundleIdentifier];
+        [NSFileManager.defaultManager createDirectoryAtPath:documents withIntermediateDirectories:YES attributes:nil error:nil];
 #else
         NSString *documents=NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject;
 #endif
@@ -55,10 +92,26 @@ int main(int argc,char **argv) {
         snprintf(save_root,sizeof(save_root),"%s/save",data_root);mkdir(save_root,0755);
         chdir(data_root);
         log_file=fopen("ios-runtime.log","w");setvbuf(stderr,NULL,_IONBF,0);
+        /* internet play's MQTT brokers (network.brokers_file, p2p_signal.c): the app's
+           list, written beside config.toml at each start, as upstream's Android app does */
+        {
+            NSString *brokers=[NSBundle.mainBundle pathForResource:@"brokers" ofType:@"txt"];
+            NSData *list=brokers?[NSData dataWithContentsOfFile:brokers]:nil;
+            if(!list||![list writeToFile:@"brokers.txt" atomically:YES])
+                host_logf(HOST_LOG_ERROR,"cannot write brokers.txt from the app bundle");
+        }
         /* Tools (tools/mac_run.py) create stderr.log to keep the guest's own log, platform_log
            and debug.gpu_stats among it, which otherwise only a debugger's console shows. */
         if(access("stderr.log",F_OK)==0){int fd=open("stderr.log",O_WRONLY|O_APPEND);if(fd>=0){dup2(fd,2);close(fd);}}
         host_logf(HOST_LOG_INFO,"Halo iOS native guest starting");
+        /* names the exact game image a result folder came from (tools/mac_run.py compare-inputs) */
+        host_logf(HOST_LOG_INFO,"guest image sha256 %s",HALO_GUEST_SHA256);
+        /* halo://join links (host_join_link.c): before the import screen can spin the run loop,
+           which is when SDL's scene delegate passes on the link the app was launched with */
+        host_join_link_install(data_root);
+#if TARGET_OS_MACCATALYST
+        install_apple_events_timer();
+#endif
 #if TARGET_OS_VISION
         /* Closing the window is how a visionOS app is left, and an app reopened
            into a new scene would have no game window: quit (the game saves at
@@ -69,6 +122,16 @@ int main(int argc,char **argv) {
             usingBlock:^(NSNotification *notification){(void)notification;host_exit(0);}];
 #endif
         UIApplication.sharedApplication.idleTimerDisabled=YES;
+#if TARGET_OS_MACCATALYST
+        /* a runner's run (tools/mac_run.py sets HALO_RUNNER) must not slow down when its window is covered
+           or minimized: App Nap would throttle its timers and drawable presentation */
+        static id runner_activity;
+        if(getenv("HALO_RUNNER")){
+            runner_activity=[NSProcessInfo.processInfo beginActivityWithOptions:NSActivityUserInitiated|NSActivityLatencyCritical
+                reason:@"a test run"];
+            host_logf(HOST_LOG_INFO,"runner: App Nap held off");
+        }
+#endif
         host_ios_prepare_assets(data_root);
 #if !TARGET_OS_TV
         /* the Settings app's texture pane: acted on now and at every return to the foreground */
@@ -92,6 +155,19 @@ int main(int argc,char **argv) {
             width=(480*longer/shorter)&~1;
             pixel_width=(int)(longer*density+0.5f);pixel_height=(int)(shorter*density+0.5f);
         }
+        /* The runner's pinned display (HALO_HOST_DISPLAY=1366x1024@2, what the iPad runner's SDL
+           reports): the guest's display and drawable size, whatever the window's (host_sdl.c). */
+        const char *pin_text=getenv("HALO_HOST_DISPLAY");
+        struct host_display_pin pin;
+        int pinned=host_display_pin_parse(pin_text,&pin);
+        if(pinned<0)host_fatal("HALO_HOST_DISPLAY=%s is not WIDTHxHEIGHT@SCALE (the runner pins 1366x1024@2)",pin_text);
+        if(pinned){
+            width=pin.screen_width;pixel_width=pin.pixel_width;pixel_height=pin.pixel_height;
+            host_sdl_pin_window_pixels(pixel_width,pixel_height);
+            host_logf(HOST_LOG_INFO,"display pinned to %s: %dx%d pixels, width %d",pin_text,pixel_width,pixel_height,width);
+        }
+        /* what the guest is told, under either runner (tools/mac_run.py compare-inputs) */
+        host_logf(HOST_LOG_INFO,"guest display: width %d, pixels %dx%d",width,pixel_width,pixel_height);
         char env_data[1200],env_save[1200],env_width[64],env_pixel_width[64],env_pixel_height[64];
         snprintf(env_data,sizeof(env_data),"HALO_DATA_ROOT=%s",data_root);
         snprintf(env_save,sizeof(env_save),"HALO_SAVE_ROOT=%s",save_root);

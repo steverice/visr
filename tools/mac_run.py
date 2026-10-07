@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Run the iPad build on this Mac as a "Designed for iPad" app, and compare runs.
+"""Run the game on this Mac, and compare runs. The native Mac Catalyst runner is the default;
+`run --runner ipad` runs the iPad build as a "Designed for iPad" app instead.
 
-macOS launches an iPad app only if Xcode installed it. It also kills the app
+For the iPad runner: macOS launches an iPad app only if Xcode installed it. It also kills the app
 that port/ios's CMake project builds ("Code Signature Invalid"), although the
 same executable runs when a plain Xcode project signs it. So `run` generates a
-small wrapper project around the CMake-built HaloCE executable and Info.plist,
+small wrapper project around the CMake-built VISR executable and Info.plist,
 installs and launches it through Xcode with the debugger off (memory_watch.c
 write-protects pages and expects their faults, which would stop a debugger),
 waits for the game to quit (debug.exit_after), and copies the logs,
@@ -14,15 +15,24 @@ such result folders against each other.
 `run --simulator UDID` runs a simulator build (an iOS or visionOS simulator app,
 tools/ios_build.py --simulator) in that simulator instead, with the same
 config.toml, init.txt and result folders, so its runs compare with the Mac's.
+
+`run` (`--runner native`, the default) runs the Mac Catalyst build (tools/ios_build.py --mac): no Xcode,
+no device registration, started with `open` on a persistent data folder per host, with the
+display pinned to what the iPad runner sees, so its results compare with the iPad runner's.
 """
 
 import argparse
+import datetime
+import difflib
+import hashlib
+import os
 import plistlib
 import re
 import shutil
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -87,6 +97,7 @@ DEFAULTS = {
     "input.stick_dead_zone": "0.27",
     "debug.null_renderer": "false",
     "debug.gl_debug": "false",
+    "debug.metal_state_cache": "true",
     "debug.fixed_timestep": "false",
     "debug.input_record": '""',
     "debug.input_replay": '""',
@@ -209,6 +220,82 @@ def capability_lines(log):
     return [match.group(1) for match in map(CAPABILITIES.search, log.splitlines()) if match]
 
 
+# The log lines that name a run's inputs and environment, which the iPad and native runners must print
+# identically (the native runner's parity runs): the guest image, the display the guest is told, the
+# render size, the GL implementation and the entry points it lacks, the
+# capabilities, the audio device, and a shader replay's verdict. "display pinned" is the native runner's
+# own and is not compared.
+INPUT_LINES = re.compile(
+    r"(guest image sha256 [0-9a-f]{64}"
+    r"|guest display: .*"
+    r"|screen: .* drawn at .*"
+    r"|OpenGL ES \d+\.\d+: .*"
+    r"|OpenGL function \S+ is unavailable"
+    r"|OpenGL .* on .*"
+    r"|Metal on .*"
+    r"|GPU capabilities: .*"
+    r"|audio device: .*"
+    r"|audio output active: .*"
+    r"|shader replay: .*)$")
+# the lines every game run's log must have, under either runner and either renderer: a pair of logs that
+# both lack one would otherwise compare equal on that point
+REQUIRED_INPUTS = {
+    "the guest's SHA-256": re.compile(r"^guest image sha256 "),
+    "the guest's display": re.compile(r"^guest display: "),
+    "the renderer": re.compile(r"^(OpenGL .* on |Metal on )"),
+    "the GPU capabilities": re.compile(r"^GPU capabilities: "),
+    "the audio device": re.compile(r"^audio device: "),
+}
+# a path into a run's own data folder in config.toml, which differs between the runners
+RUNNER_PATH = re.compile(r'^"[^"]*/runner(/|")')
+
+
+def input_lines(log):
+    """the lines of a log that name the run's inputs (INPUT_LINES), in order"""
+    return [match.group(1) for match in map(INPUT_LINES.search, log.splitlines()) if match]
+
+
+def config_settings(text):
+    """{"section.key": raw value} of a config.toml as prepare writes it, with paths into the run's
+    data folder written as $DATA, so two runners' files compare by their settings"""
+    settings, section = {}, ""
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1]
+            continue
+        key, _, value = line.partition("=")
+        settings[f"{section}.{key.strip()}"] = RUNNER_PATH.sub(r'"$DATA/runner\1', value.strip())
+    return settings
+
+
+def compare_inputs(a, b):
+    """the differences between what two result folders' runs were given (empty: none): the
+    INPUT_LINES of their logs, in order, and their config.toml settings"""
+    a, b = Path(a), Path(b)
+    problems = [f"{folder / name} missing" for folder in (a, b) for name in ("stderr.log", "config.toml")
+                if not (folder / name).is_file()]
+    if problems:
+        return problems
+    lines_a, lines_b = (input_lines((folder / "stderr.log").read_text(errors="replace")) for folder in (a, b))
+    for folder, lines in ((a, lines_a), (b, lines_b)):
+        for what, pattern in REQUIRED_INPUTS.items():
+            if not any(pattern.search(line) for line in lines):
+                problems.append(f"{folder}/stderr.log does not name {what}")
+    if not lines_a and not lines_b:
+        problems.append(f"{a}/stderr.log and {b}/stderr.log name none of the run's inputs")
+    elif lines_a != lines_b:
+        diff = difflib.unified_diff(lines_a, lines_b, str(a), str(b), lineterm="", n=0)
+        problems.append("log lines differ:\n  " + "\n  ".join(list(diff)[2:]))
+    config_a, config_b = (config_settings((folder / "config.toml").read_text()) for folder in (a, b))
+    for key in sorted(config_a.keys() | config_b.keys()):
+        if config_a.get(key) != config_b.get(key):
+            problems.append(f"config.toml {key}: {config_a.get(key)} against {config_b.get(key)}")
+    return problems
+
+
 def compare(a, b, tolerance=0, ignore_gl_calls=False, channel_tolerance=0, fraction=0.0, across_backends=False):
     """the differences between two result folders (empty: they match). A pixel
     differs when a channel differs by more than channel_tolerance, and a frame
@@ -268,9 +355,13 @@ TARGET = "HaloRunner"
 CONTAINERS = Path.home() / "Library/Containers"
 DESTINATION = "platform=macOS,arch=arm64,variant=Designed for iPad"
 
+# The run scheme turns off Xcode's GPU validation and frame capture. A scheme
+# that doesn't say leaves Metal's API validation on, even with the debugger off:
+# every Metal run got an MTLDebugDevice, whose checks cost most of a frame's CPU.
+# --metal-validation turns validation on through the environment instead.
 PROJECT = """name: {target}
 options:
-  bundleIdPrefix: org.haloce
+  bundleIdPrefix: org.steverice.visr
 targets:
   {target}:
     type: application
@@ -285,10 +376,10 @@ targets:
       MARKETING_VERSION: "1.0"
       ENABLE_DEBUG_DYLIB: NO
     postBuildScripts:
-      - name: Use the CMake-built HaloCE
+      - name: Use the CMake-built app
         basedOnDependencyAnalysis: false
         script: |
-          cp "{app}/HaloCE" "$TARGET_BUILD_DIR/$EXECUTABLE_PATH"
+          cp "{app}/{executable}" "$TARGET_BUILD_DIR/$EXECUTABLE_PATH"
           cp "{app}/Info.plist" "$TARGET_BUILD_DIR/$INFOPLIST_PATH"
           plutil -replace CFBundleExecutable -string "$EXECUTABLE_NAME" "$TARGET_BUILD_DIR/$INFOPLIST_PATH"
           plutil -replace CFBundleIdentifier -string "$PRODUCT_BUNDLE_IDENTIFIER" "$TARGET_BUILD_DIR/$INFOPLIST_PATH"
@@ -300,6 +391,8 @@ schemes:
     run:
       config: Debug
       debugEnabled: false
+      enableGPUValidationMode: disabled
+      enableGPUFrameCaptureMode: disabled
 {environment}"""
 
 # Metal's API validation (gpu_metal.m), reported to the logs rather than
@@ -337,10 +430,39 @@ def scheme_environment(variables):
 # open -a returns before a cold Xcode has the project open, and a freshly
 # loaded project lists its run destinations a little later still
 # Xcode keeps one project of a name open: another checkout's runner project would
-# block this one from opening, and be driven in its place
+# block this one from opening, and be driven in its place. Match by path, not
+# name: Xcode can list another runner project as ".../HaloRunner.xcodeproj/
+# project.xcworkspace", named "project.xcworkspace", and one whose worktree was
+# deleted stays open that way, leaving this project's run "not yet started" for
+# good. Close each on its own, since such a stale one can fail to answer.
 CLOSE_OTHERS = """tell application "{xcode}"
-	close (every workspace document whose name is "{target}.xcodeproj" and path is not "{project}") saving no
+	repeat with other in (every workspace document whose path contains "/{target}.xcodeproj" and path does not start with "{project}")
+		try
+			close other saving no
+		end try
+	end repeat
 end tell
+"""
+
+# xcodegen rewrites HaloRunner.xcodeproj whenever its inputs change (regenerate_project).
+# With the project open, Xcode reloads it, and sometimes answers with a modal "changed
+# on disk" alert instead, which no one is there to click: every later run then fails
+# with "Build operations are disabled: 'project.xcworkspace' has changed and is
+# reloading" or stays "not yet started" (an M4 build host, 2026-10-05), and Xcode later aborted
+# in that same handler (an M6 build host, 2026-10-06). So every runner project is closed before
+# xcodegen runs, and LAUNCH opens this one again. An Xcode held by such an alert does
+# not answer: give up in seconds, with the reason (osascript_failure)
+CLOSE_RUNNER_PROJECTS = """with timeout of 30 seconds
+	tell application "{xcode}"
+		repeat with runner in (every workspace document whose path contains "/{target}.xcodeproj")
+			try
+				close runner saving no
+			end try
+		end repeat
+		-- a close can fail quietly (inside the try): report what is still open
+		return count of (every workspace document whose path contains "/{target}.xcodeproj")
+	end tell
+end timeout
 """
 
 LAUNCH = """tell application "{xcode}"
@@ -377,11 +499,21 @@ LAUNCH = """tell application "{xcode}"
 				if (status of result_of_run as text) is not "not yet started" then exit repeat
 				delay 1
 			end repeat
-			if (status of result_of_run as text) is not "error occurred" then
+			set run_status to (status of result_of_run as text)
+			-- xcodegen rewrites the open project before each run; when Xcode reloads it
+			-- only after the run was asked for, the reload cancels the run before it
+			-- launches anything (seen on an M4 Mac mini): ask again
+			if run_status is "cancelled" then
+				set last_error to "Xcode cancelled the run"
+			-- still pending after two minutes (a cold Xcode can still be building or
+			-- indexing): don't ask again over a pending run; mac_run.py keeps waiting for the
+			-- game and checks Xcode for a modal alert meanwhile
+			else if run_status is not "error occurred" then
 				set started_run to true
 				exit repeat
+			else
+				set last_error to (error message of result_of_run as text)
 			end if
-			set last_error to (error message of result_of_run as text)
 		on error message_of_error
 			set last_error to message_of_error
 		end try
@@ -400,6 +532,89 @@ def run_command(*args, **options):
 def xcode_app():
     developer = subprocess.check_output(["xcode-select", "--print-path"], text=True).strip()
     return str(Path(developer).parents[1])
+
+
+def xcode_pid(xcode):
+    pids = subprocess.run(["pgrep", "-f", f"{xcode}/Contents/MacOS/Xcode"], capture_output=True, text=True).stdout.split()
+    return int(pids[0]) if pids else None
+
+
+def xcode_running(xcode):
+    return xcode_pid(xcode) is not None
+
+
+def modal_alert(sample_text):
+    """what holds Xcode's main thread in a modal alert, from `sample`'s output; None when nothing does.
+    Neither AppleScript nor the window list (no titles without Screen Recording) tells an alert apart,
+    but the main thread's stack does"""
+    lines = sample_text.splitlines()
+    start = next((i for i, line in enumerate(lines) if "com.apple.main-thread" in line), None)
+    if start is None:
+        return None
+    main = []
+    for line in lines[start + 1:]:
+        if re.match(r"^\s*\d+ Thread_", line) or not line.strip():
+            break
+        main.append(line)
+    main = "\n".join(main)
+    if "runModal" not in main and "_doModalLoop" not in main:
+        return None
+    if "responseToExternalChangesToBackingFileForContainer" in main:
+        return "a project file that changed on disk"
+    if "presentError" in main:
+        return "an error"
+    return "something unknown"
+
+
+def xcode_alert(xcode):
+    """the modal alert holding Xcode, if any: a 1-second `sample` of its main thread (about 2 s)"""
+    pid = xcode_pid(xcode)
+    if pid is None:
+        return None
+    with tempfile.TemporaryDirectory() as folder:
+        report = Path(folder) / "sample.txt"
+        subprocess.run(["sample", str(pid), "1", "-file", report], capture_output=True)
+        return modal_alert(report.read_text(errors="replace")) if report.exists() else None
+
+
+def osascript_failure(xcode, doing, error):
+    """why an osascript call to Xcode failed, from its error number: a denied Automation permission,
+    an Xcode that stopped answering (held by an alert, or busy), or the script's own error"""
+    message = (error.stderr or "").strip()
+    if "(-1743)" in message:
+        return (f"this Mac does not let the process running mac_run.py (Terminal, or sshd-keygen-wrapper over ssh) "
+                f"control Xcode, so it failed while {doing}: allow it under System Settings > Privacy & Security > "
+                f"Automation on this Mac's screen ({message})")
+    if "(-1712)" in message:
+        alert = xcode_alert(xcode)
+        if alert:
+            return (f"Xcode ({xcode}) did not answer while {doing}: it is held by a modal alert about {alert} "
+                    "on this Mac's screen; answer the alert (or quit Xcode), then run again")
+        return f"Xcode ({xcode}) did not answer in time while {doing}, with no alert open: it may be busy ({message})"
+    return f"osascript failed while {doing}: {message or f'exit status {error.returncode}'}"
+
+
+def exit_if_xcode_alert(xcode):
+    alert = xcode_alert(xcode)
+    if alert:
+        sys.exit(f"Xcode ({xcode}) is held by a modal alert about {alert} on this Mac's screen, so it can't "
+                 f"load or run {TARGET}: answer the alert (or quit Xcode), then run again")
+
+
+def close_runner_projects():
+    """close every runner project in Xcode before xcodegen rewrites this one (see CLOSE_RUNNER_PROJECTS)"""
+    xcode = xcode_app()
+    if not xcode_running(xcode):
+        return
+    try:
+        closed = run_command("osascript", input=CLOSE_RUNNER_PROJECTS.format(xcode=xcode, target=TARGET), text=True,
+                             capture_output=True)
+    except subprocess.CalledProcessError as error:
+        sys.exit(osascript_failure(xcode, f"closing its {TARGET} projects", error))
+    still_open = closed.stdout.strip()
+    if still_open != "0":
+        sys.exit(f"Xcode ({xcode}) still has {still_open or 'an unknown number of'} {TARGET} projects open after "
+                 f"closing them, and xcodegen would rewrite one under it; close them in Xcode, then run again")
 
 
 def running():
@@ -421,17 +636,53 @@ def wait_for(condition, seconds):
     return False
 
 
+def app_executable(app):
+    """the CMake-built device app's executable name, from its Info.plist: VISR, or HaloCE in an app built before
+    the VISR rename (VISR when the plist can't be read)"""
+    try:
+        with (Path(app) / "Info.plist").open("rb") as file:
+            return plistlib.load(file).get("CFBundleExecutable") or "VISR"
+    except (OSError, plistlib.InvalidFileException):
+        return "VISR"
+
+
 def build_wrapper(args):
     RUNNER.mkdir(parents=True, exist_ok=True)
     (RUNNER / "stub.c").write_text("int main(void) { return 0; }\n")
     (RUNNER / "project.yml").write_text(PROJECT.format(
         target=TARGET, team=args.team, bundle_id=args.bundle_id, app=args.app.resolve(),
+        executable=app_executable(args.app),
         environment=scheme_environment(validation_environment(getattr(args, "metal_validation", False),
                                                              getattr(args, "metal_shader_validation", False)))))
-    run_command("xcodegen", "generate", "--spec", RUNNER / "project.yml", "--project", RUNNER, "--quiet")
+    regenerate_project()
     run_command("xcodebuild", "-project", RUNNER / f"{TARGET}.xcodeproj", "-scheme", TARGET,
                 "-destination", DESTINATION, "-allowProvisioningUpdates", "build",
                 stdout=subprocess.DEVNULL)
+
+
+def project_inputs_hash():
+    """what xcodegen makes HaloRunner.xcodeproj from: the spec, the stub and the xcodegen it runs"""
+    xcodegen = shutil.which("xcodegen")
+    digest = hashlib.sha256()
+    for part in ((RUNNER / "project.yml").read_bytes(), (RUNNER / "stub.c").read_bytes(),
+                 str(Path(xcodegen).resolve() if xcodegen else "").encode()):
+        digest.update(hashlib.sha256(part).digest())
+    return digest.hexdigest()
+
+
+def regenerate_project():
+    """run xcodegen only when its inputs changed since the last run, so an unchanged project stays as
+    Xcode has it open; when they did, close the runner projects first (CLOSE_RUNNER_PROJECTS)"""
+    stamp = RUNNER / "project.yml.sha256"
+    inputs = project_inputs_hash()
+    project = RUNNER / f"{TARGET}.xcodeproj/project.pbxproj"
+    if project.is_file() and stamp.is_file() and stamp.read_text().strip() == inputs:
+        print(f"{TARGET}.xcodeproj is up to date: not regenerating it", flush=True)
+        return
+    stamp.unlink(missing_ok=True)
+    close_runner_projects()
+    run_command("xcodegen", "generate", "--spec", RUNNER / "project.yml", "--project", RUNNER, "--quiet")
+    stamp.write_text(inputs + "\n")
 
 
 def launch(documents=None):
@@ -441,9 +692,29 @@ def launch(documents=None):
     project = RUNNER / f"{TARGET}.xcodeproj"
     run_command("osascript", input=CLOSE_OTHERS.format(xcode=xcode, target=TARGET, project=project), text=True)
     run_command("open", "-a", xcode, project)
-    run_command("osascript", input=LAUNCH.format(xcode=xcode, target=TARGET, project=project), text=True)
-    if not wait_for(lambda: started(documents, running), 300):
+    exit_if_xcode_alert(xcode)
+    try:
+        run_command("osascript", input=LAUNCH.format(xcode=xcode, target=TARGET, project=project), text=True,
+                    stderr=subprocess.PIPE)
+    except subprocess.CalledProcessError as error:
+        sys.exit(osascript_failure(xcode, f"running {TARGET}", error))
+    if not wait_for_start(lambda: started(documents, running), lambda: exit_if_xcode_alert(xcode), 300):
         sys.exit(f"{TARGET} did not start within 300 seconds; see Xcode's report navigator")
+
+
+def wait_for_start(has_started, check_xcode, seconds, every=30):
+    """wait_for, checking Xcode for a modal alert every so often, so a held Xcode fails the run in
+    seconds rather than at the deadline"""
+    deadline = time.monotonic() + seconds
+    next_check = time.monotonic() + every
+    while time.monotonic() < deadline:
+        if has_started():
+            return True
+        if time.monotonic() >= next_check:
+            check_xcode()
+            next_check = time.monotonic() + every
+        time.sleep(2)
+    return False
 
 
 def container_documents(args):
@@ -459,7 +730,7 @@ def container_documents(args):
     return find_container(CONTAINERS, args.bundle_id)
 
 
-def prepare(args, documents):
+def prepare(args, documents, rewrite=False):
     documents.mkdir(parents=True, exist_ok=True)
     if args.xiso and not (documents / "maps").is_dir():
         run_command("cp", "-c", args.xiso, documents / args.xiso.name)
@@ -480,7 +751,10 @@ def prepare(args, documents):
         key, value = assignment.split("=", 1)
         settings[key.strip()] = value.strip()
     config = documents / "config.toml"
-    config.write_text(merge_config(config.read_text() if config.is_file() else "", settings))
+    # rewrite: from DEFAULTS and this run's settings only (the native runner's persistent data
+    # folder); otherwise merged into the container's file, as the iPad runner always has
+    old = "" if rewrite or not config.is_file() else config.read_text()
+    config.write_text(merge_config(old, settings))
     init = documents / "init.txt"
     if args.init:
         init.write_text("\n".join(args.init) + "\n")
@@ -502,7 +776,7 @@ def collect(documents, out):
 
 def simulator_pattern(udid):
     """a pgrep -f pattern matching the game's executable in simulator udid"""
-    return f"CoreSimulator/Devices/{udid}/.*/HaloCE.app/HaloCE"
+    return f"CoreSimulator/Devices/{udid}/.*/VISR.app/VISR"
 
 
 def simulator_running(udid):
@@ -512,8 +786,8 @@ def simulator_running(udid):
 
 def run_simulator(args):
     udid = args.simulator
-    app = args.app or ROOT / "build/visionos/app-simulator/Release-xrsimulator/HaloCE.app"
-    if not (app / "HaloCE").is_file():
+    app = args.app or ROOT / "build/visionos/app-simulator/Release-xrsimulator/VISR.app"
+    if not (app / "VISR").is_file():
         sys.exit(f"no simulator app at {app}; run tools/ios_build.py --simulator (--visionos) first")
     with (app / "Info.plist").open("rb") as file:
         bundle_id = plistlib.load(file)["CFBundleIdentifier"]
@@ -542,18 +816,223 @@ def run_simulator(args):
     print(f"results: {args.out}")
 
 
+def native_app_default(environment=None):
+    """the Catalyst app tools/ios_build.py --mac built: in the checkout, or under $HALO_MAC_BUILD (a host
+    that runs developer-built apps only from one folder)"""
+    environment = os.environ if environment is None else environment
+    if environment.get("HALO_MAC_BUILD"):
+        return Path(environment["HALO_MAC_BUILD"]) / ROOT.name / "app/Release-maccatalyst/VISR.app"
+    return ROOT / "build/mac/app/Release-maccatalyst/VISR.app"
+
+
+NATIVE_EXECUTABLE = "Contents/MacOS/VISR"
+# what the iPad runner's SDL reports on a 2x screen, pinned for the native app (host_main.m)
+NATIVE_DISPLAY = "1366x1024@2"
+# the game's exit (host_exit, host_main.m) in ios-runtime.log: open --wait-apps returns 0 whatever it was
+GAME_EXIT = re.compile(r"game exit (-?\d+)$")
+# characters a pgrep pattern (extended regular expression) treats specially
+ERE_SPECIAL = re.compile(r"([.^$*+?()\[\]{}|\\])")
+
+
+def native_data_folder(bundle_id, environment=None, home=None):
+    """the native runner's data folder (one per host, kept between runs): $HALO_NATIVE_DATA (a remote
+    host's, set by its job runner), else ~/Library/Application Support/BUNDLE_ID/runner-data"""
+    environment = os.environ if environment is None else environment
+    if environment.get("HALO_NATIVE_DATA"):
+        return Path(environment["HALO_NATIVE_DATA"])
+    return (home or Path.home()) / "Library/Application Support" / bundle_id / "runner-data"
+
+
+def native_command(app, data, out, environment):
+    """the open command that starts the native app on data, pinned, with environment for the game"""
+    variables = {"HALO_DATA_ROOT": str(data), "HALO_HOST_DISPLAY": NATIVE_DISPLAY, "HALO_RUNNER": "1",
+                 **environment}
+    command = ["open", "--new", "--wait-apps"]
+    for name, value in variables.items():
+        command += ["--env", f"{name}={value}"]
+    # open's own stdout and stderr go to files in the data folder, not to out: launchd opens them, and
+    # macOS's TCC denies its helper (xpcproxy) access to removable volumes, so a path on one (a
+    # baselines symlink to an external drive) fails the launch with -10810 before the app starts. The
+    # data folder is on the internal disk on every host; launch_native copies the logs into out afterward
+    return command + ["--stdout", str(data / "open-stdout.log"), "--stderr", str(data / "open-stderr.log"),
+                      str(app)]
+
+
+def native_pattern(app):
+    """a pgrep -f pattern matching the native app's executable"""
+    return ERE_SPECIAL.sub(r"\\\1", f"{Path(app).resolve()}/{NATIVE_EXECUTABLE}")
+
+
+def native_pids(app):
+    """the processes running the native app's executable"""
+    result = subprocess.run(["pgrep", "-f", native_pattern(app)], capture_output=True, text=True)
+    return [int(pid) for pid in result.stdout.split()]
+
+
+def game_exit(log):
+    """the status the game exited with, from its log, or None if it never got to exit"""
+    for line in reversed(log.splitlines()):
+        match = GAME_EXIT.search(line)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+OPEN_LOGS = ("open-stdout.log", "open-stderr.log")
+
+
+def launch_native(app, data, out, environment, limit):
+    """start the native app with open and wait for it to quit: True when it did within limit
+    seconds, False when it was still running and was killed"""
+    out.mkdir(parents=True, exist_ok=True)
+    data.mkdir(parents=True, exist_ok=True)
+    for name in OPEN_LOGS:
+        (data / name).unlink(missing_ok=True)
+    try:
+        return _launch_native(app, data, out, environment, limit)
+    finally:
+        for name in OPEN_LOGS:
+            if (data / name).is_file():
+                shutil.copy2(data / name, out / name)
+
+
+def _launch_native(app, data, out, environment, limit):
+    command = native_command(app, data, out, environment)
+    print("+", " ".join(command), flush=True)
+    opener = subprocess.Popen(command)
+    try:
+        status = opener.wait(timeout=limit)
+    except subprocess.TimeoutExpired:
+        subprocess.run(["pkill", "-f", native_pattern(app)])
+        try:
+            opener.wait(timeout=60)
+        except subprocess.TimeoutExpired:
+            opener.kill()
+        return False
+    if status != 0:
+        sys.exit(f"open could not start {app} (exit {status}): a user must be logged in to this Mac's "
+                 f"screen; see {out}/open-stderr.log")
+    return True
+
+
+SEED_MARKER = "seeded"
+
+
+def seeding_run(args, data, label, out, init, exit_after, unseed=True):
+    """play one throwaway run of a data folder's seed: the menu or a10, fixed timestep, no
+    screenshots. When open fails or the game does not exit cleanly, exit naming the logs. For a
+    folder this runner cloned (unseed), first rename maps back to maps.partial so the next run
+    clones again rather than trusting the folder; maps that were already there are left alone. No
+    marker is written either way, so the next run seeds again."""
+    settings = argparse.Namespace(xiso=None, screenshot_every=0, dump_shaders=False, replay=None,
+                                  exit_after=exit_after, set=["debug.fixed_timestep=true"], init=init)
+    prepare(settings, data, rewrite=True)
+    try:
+        finished = launch_native(args.app, data, out, {}, 600)
+    except SystemExit:
+        # open itself failed: unseed here too, or the next run would trust the folder
+        if unseed:
+            (data / "maps").rename(data / "maps.partial")
+        raise
+    collect(data, out)
+    log = out / "ios-runtime.log"
+    if not finished or (game_exit(log.read_text(errors="replace")) if log.is_file() else None) != 0:
+        if unseed:
+            (data / "maps").rename(data / "maps.partial")
+        sys.exit(f"the throwaway {label} run in the data folder {data} failed; its logs are in {out}")
+
+
+def seed_native_data(args, data):
+    """seed a data folder that has no `seeded` marker: play two throwaway runs, then write the marker.
+    The a10 run comes first: a host's first a10 GL run in a newly seeded folder has fallen behind on
+    two of the build hosts. The menu run comes second: the first menu run in a new folder
+    writes last_language.dat and savegame.bin and precaches the ui map once more, so it differs from
+    every later menu run, and the iPad runner's container is always past that state. A folder without
+    maps is cloned from --maps first (into maps.partial, renamed when complete, so an interrupted
+    clone is redone); a failed throwaway run then unseeds it. A folder that already has maps (made some
+    other way, such as by an earlier Catalyst spike) is not cloned into and its maps are never renamed
+    or removed, so --maps is not needed; a failed throwaway run just exits. The marker is written only
+    after both runs succeed."""
+    cloned = not (data / "maps").is_dir()
+    if cloned:
+        if not args.maps or not Path(args.maps).is_dir():
+            sys.exit(f"no maps in {data}: pass --maps with a folder of extracted maps to seed it from")
+        data.mkdir(parents=True, exist_ok=True)
+        partial = data / "maps.partial"
+        shutil.rmtree(partial, ignore_errors=True)
+        run_command("cp", "-c", "-R", Path(args.maps), partial)
+        partial.rename(data / "maps")
+        print(f"seeded {data}: cloned the maps, then a throwaway a10 run and a throwaway menu run (the "
+              f"first menu run in a new folder writes the language and savegame files and precaches ui "
+              f"once more)", flush=True)
+    else:
+        print(f"seeded {data}: it has maps but no {SEED_MARKER} marker, so no clone; a throwaway a10 run "
+              f"and a throwaway menu run (the first a10 run in such a folder would precache a10, and the "
+              f"first menu run writes the language and savegame files and precaches ui once more)",
+              flush=True)
+    seeding_run(args, data, "a10", args.out.parent / f"{args.out.name}-seed", ["map_name a10"], 40.0, cloned)
+    seeding_run(args, data, "menu", args.out.parent / f"{args.out.name}-seed-menu", [], 20.0, cloned)
+    note = f"{datetime.date.today().isoformat()}: throwaway a10 run, then throwaway menu run"
+    (data / SEED_MARKER).write_text(note + "\n")
+
+
+def run_native(args):
+    args.app = args.app or native_app_default()
+    if not (args.app / NATIVE_EXECUTABLE).is_file():
+        sys.exit(f"no native app at {args.app}; run tools/ios_build.py --mac first")
+    with (args.app / "Contents/Info.plist").open("rb") as file:
+        bundle_id = plistlib.load(file)["CFBundleIdentifier"]
+    if args.bundle_id and args.bundle_id != bundle_id:
+        sys.exit(f"{args.app} was built for {bundle_id}, not {args.bundle_id}; "
+                 f"rebuild it with tools/ios_build.py --mac --bundle-id {args.bundle_id}")
+    pids = native_pids(args.app)
+    if pids:
+        sys.exit(f"{args.app} is already running (pid {', '.join(map(str, pids))}); a second copy would "
+                 f"share its data folder. Stop it, or wait for it to finish")
+    data = native_data_folder(bundle_id)
+    if not (data / SEED_MARKER).is_file():
+        seed_native_data(args, data)
+    prepare(args, data, rewrite=True)
+    limit = args.time_limit or args.exit_after + 120
+    environment = validation_environment(args.metal_validation, args.metal_shader_validation)
+    if "MTL_DEBUG_LAYER_WARNING_MODE" in environment:
+        # an open-launched app's NSLog lands in stderr.log, which check-metal greps for validation errors,
+        # while the Xcode-launched iPad runner's goes to the unified log. Both runners get the same warnings
+        # (unused bindings, redundant sets), so ignore them here (Metal's default): any validation line
+        # left in the native stderr.log is then an error
+        environment["MTL_DEBUG_LAYER_WARNING_MODE"] = "ignore"
+    finished = launch_native(args.app, data, args.out, environment, limit)
+    collect(data, args.out)
+    if not finished:
+        sys.exit(f"the native app was still running {limit} seconds after launch and was killed; "
+                 f"logs are in {args.out}")
+    log = args.out / "ios-runtime.log"
+    status = game_exit(log.read_text(errors="replace")) if log.is_file() else None
+    if status != 0:
+        sys.exit(f"the game did not exit cleanly (game exit {status}); logs are in {args.out}")
+    print(f"results: {args.out}")
+
+
 def run(args):
     if args.simulator:
+        if args.runner == "native":
+            sys.exit("--simulator runs the simulator app; drop --runner native")
         run_simulator(args)
         return
+    if args.runner == "native":
+        if args.team or args.xiso:
+            sys.exit("--runner native needs no --team, and seeds its data folder from --maps, not --xiso")
+        run_native(args)
+        return
+    args.bundle_id = args.bundle_id or "org.steverice.visr.macrunner"
     if not args.team:
-        sys.exit("--team is required, except with --simulator")
-    args.app = args.app or ROOT / "build/ios/app-device/Release-iphoneos/HaloCE.app"
-    if not (args.app / "HaloCE").is_file():
+        sys.exit("--runner ipad needs --team")
+    args.app = args.app or ROOT / "build/ios/app-device/Release-iphoneos/VISR.app"
+    if not (args.app / app_executable(args.app)).is_file():
         sys.exit(f"no CMake-built app at {args.app}; run tools/ios_build.py --team ... first")
     build_wrapper(args)
     documents = container_documents(args)
-    prepare(args, documents)
+    prepare(args, documents, rewrite=args.fresh_config)
     launch(documents)
     limit = args.time_limit or args.exit_after + 120
     finished = wait_for(lambda: not running(), limit)
@@ -570,16 +1049,21 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
     run_parser = commands.add_parser("run", help="run the game once and collect its results")
-    run_parser.add_argument("--team", help="Apple development team ID (not needed with --simulator)")
-    run_parser.add_argument("--bundle-id", default="org.haloce.macrunner")
+    run_parser.add_argument("--team", help="Apple development team ID (--runner ipad only)")
+    run_parser.add_argument("--runner", choices=("ipad", "native"), default="native",
+                            help="native: the Mac Catalyst app (tools/ios_build.py --mac), started with open (the default); "
+                                 'ipad: the "Designed for iPad" app, installed and started by Xcode, which needs --team')
+    run_parser.add_argument("--bundle-id",
+                            help="ipad: the runner's bundle ID (default org.steverice.visr.macrunner); "
+                                 "native: checked against the app's own")
     run_parser.add_argument("--app", type=Path,
                             help="the CMake-built device app (tools/ios_build.py --team ...; the default), or "
                                  "with --simulator the simulator app (default: the visionOS one)")
     run_parser.add_argument("--simulator", metavar="UDID",
                             help="run the simulator app in this simulator (xcrun simctl list devices)")
     run_parser.add_argument("--maps", type=Path,
-                            help="with --simulator: a folder of imported maps to copy into a new container, "
-                                 "in place of importing --xiso")
+                            help="a folder of extracted maps: with --simulator, copied into a new container; "
+                                 "with --runner native, cloned into a new data folder, in place of importing --xiso")
     run_parser.add_argument("--out", type=Path, required=True, help="folder to copy the results to")
     run_parser.add_argument("--xiso", type=Path, help="the player's XISO, imported on the first run")
     run_parser.add_argument("--exit-after", type=float, default=60.0, help="seconds before the game quits")
@@ -597,6 +1081,11 @@ def main():
                             help="turn on Metal's API validation (for display.renderer=\"metal\" runs)")
     run_parser.add_argument("--metal-shader-validation", action="store_true",
                             help="turn on Metal's shader validation too (slow: a10 needs a longer --time-limit)")
+    run_parser.add_argument("--fresh-config", action="store_true", default=os.environ.get("HALO_FRESH_CONFIG") == "1",
+                            help="iPad runner: write config.toml from the defaults and this run's settings instead of "
+                                 "merging into the container's file (parity: a container shared with other branches "
+                                 "carries their settings); the native runner always does. "
+                                 "HALO_FRESH_CONFIG=1 turns it on")
     compare_parser = commands.add_parser("compare", help="compare two result folders")
     compare_parser.add_argument("a", type=Path)
     compare_parser.add_argument("b", type=Path)
@@ -609,9 +1098,18 @@ def main():
                                 help="compare gpu_stats without the GL call totals")
     compare_parser.add_argument("--across-backends", action="store_true",
                                 help="a GL run against a Metal run: shader inputs, not sources; capabilities; no GL calls")
+    inputs_parser = commands.add_parser("compare-inputs",
+                                        help="compare what two runs were given: the log lines that name their "
+                                             "inputs, and config.toml (the native runner's parity runs)")
+    inputs_parser.add_argument("a", type=Path)
+    inputs_parser.add_argument("b", type=Path)
     args = parser.parse_args()
     if args.command == "run":
         run(args)
+    elif args.command == "compare-inputs":
+        problems = compare_inputs(args.a, args.b)
+        print("\n".join(problems) if problems else "match")
+        sys.exit(1 if problems else 0)
     else:
         problems = compare(args.a, args.b, args.tolerance, args.ignore_gl_calls, args.channel_tolerance,
                            args.fraction, args.across_backends)
