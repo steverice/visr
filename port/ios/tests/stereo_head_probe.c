@@ -120,6 +120,9 @@ int halo_cutscene_camera_first_person(void) { return game_first_person; }
 static float game_field_of_view = 1.2217305f;
 float halo_cutscene_camera_field_of_view(void) { return game_field_of_view; }
 int halo_look_disabled_first_person(void) { return game_look_disabled; }
+/* the director holding the facing (a seat's entry or exit animation) */
+static int game_inhibited_facing;
+int halo_director_inhibited_facing(void) { return game_inhibited_facing; }
 int halo_cutscene_camera_settled(void) { return game_settled; }
 void halo_cutscene_state(struct halo_cutscene_state *state)
 {
@@ -1180,6 +1183,10 @@ static void glide(void)
 halo_stereo_seat_yaw_clamp): the seat's marker and its bounds off it */
 static float seat_marker, seat_minimum = -45.0f * DEGREES, seat_maximum = 45.0f * DEGREES;
 static int seated;
+/* a second turn in the frame after the look's (a damage effect's camera
+impulse, player_control_permanent_impulse), in radians; applied once */
+static float seat_impulse;
+static int seat_impulse_due;
 
 /* the game's yaw through a turn: the turn added, then the seat's clamp
 (stereo's, or the game's own nearest-bound rule when it declines) while
@@ -1221,7 +1228,13 @@ static float seat_step(struct seat_run *run, float head_degrees, float stick)
 
 	halo_stereo_stick_look(0, response(stick), 1.0f / 90.0f, &yaw_in, &pitch_in);
 	halo_stereo_head_look(0, 0.0f, &look_yaw, &look_pitch);
-	seat_modify(&run->facing_yaw, look_yaw);
+	/* (the game takes no turn while the director holds the facing) */
+	if (!game_inhibited_facing)
+		seat_modify(&run->facing_yaw, look_yaw);
+	if (seat_impulse_due) {
+		seat_modify(&run->facing_yaw, seat_impulse);
+		seat_impulse_due = 0;
+	}
 	run->frame++;
 	if (run->frame % 3 == 0) {
 		if (run->glide_tick > 0 && run->glide_tick <= 6) {
@@ -1250,6 +1263,8 @@ static void seat_start(struct seat_run *run, const char *turn)
 	seat_marker = 0.0f;
 	seated = 1;
 	game_settled = 1;
+	game_inhibited_facing = 0;
+	seat_impulse_due = 0;
 	camera_keep(&run->camera, run->facing_yaw);
 }
 
@@ -1506,6 +1521,59 @@ static void seat_yaw_limit(void)
 	game_third_person = 0;
 	for (frame = 0; frame < 3; frame++)
 		seat_step(&run, head, 0.0f);
+	seated = 0;
+}
+
+/* the leftover kept where the game takes no head yaw: a second turn in the
+frame (a damage effect's camera impulse, after the look's), frames with the
+director holding the facing (a seat's exit animation) and the first frame on
+foot after them */
+static void seat_leftover_kept(void)
+{
+	struct seat_run run;
+	float head = 0.0f, body0, facing0, worst = 0.0f;
+	int frame, kept = 1;
+
+	printf("a seat's leftover kept through other turns and held facing:\n");
+	seat_start(&run, "snap");
+	seat_turn_to(&run, &head, 65.0f, 0.0f);
+	seat_hold(&run, head, 9);
+	body0 = run.body;
+	facing0 = run.facing_yaw;
+	/* camera impulses: into the bound (refused), and none at all */
+	for (frame = 0; frame < 12; frame++) {
+		seat_impulse = frame < 6 ? 2.0f * DEGREES : 0.0f;
+		seat_impulse_due = frame % 3 == 0;
+		seat_step(&run, head, 0.0f);
+		worst = fmaxf(worst, fabsf(remainderf(run.body - body0, 360.0f)));
+		kept &= fabsf(head_seat_leftover / DEGREES - 20.0f) < 0.01f;
+	}
+	printf("  second turns in the frame: the leftover %.4f deg, the facing %.4f, the body %.4f deg at worst from "
+		"before\n", head_seat_leftover / DEGREES, run.facing_yaw / DEGREES, worst);
+	check(kept && worst < 0.01f && degrees_apart(run.facing_yaw / DEGREES, facing0 / DEGREES) < 0.01f,
+		"a camera impulse after the look's turn keeps the leftover: the eyes and the aim stay");
+	/* the director holding the facing for 30 frames, then on foot */
+	worst = 0.0f;
+	kept = 1;
+	game_inhibited_facing = 1;
+	for (frame = 0; frame < 30; frame++) {
+		seat_step(&run, head, 0.0f);
+		worst = fmaxf(worst, fabsf(remainderf(run.body - body0, 360.0f)));
+		kept &= fabsf(head_seat_leftover / DEGREES - 20.0f) < 0.01f;
+	}
+	game_inhibited_facing = 0;
+	printf("  30 frames with the facing held: the leftover %.4f deg, the body %.4f deg at worst from before\n",
+		head_seat_leftover / DEGREES, worst);
+	check(kept && worst < 0.01f, "while the director holds the facing the leftover stays and the world holds");
+	seated = 0;
+	for (frame = 0; frame < 12; frame++) {
+		seat_step(&run, head, 0.0f);
+		worst = fmaxf(worst, fabsf(remainderf(run.body - body0, 360.0f)));
+	}
+	printf("  then on foot: the facing %.4f deg, the leftover %.4f, the body %.4f deg at worst from before\n",
+		remainderf(run.facing_yaw / DEGREES, 360.0f), head_seat_leftover / DEGREES, worst);
+	check(degrees_apart(run.facing_yaw / DEGREES, 65.0f) < 0.01f && head_seat_leftover == 0.0f && worst < 0.01f,
+		"the first look the game takes folds the leftover in: the aim at the eyes, the world still");
 	seated = 0;
 }
 
@@ -2344,6 +2412,7 @@ int main(void)
 	interpolated_turns();
 	glide();
 	seat_yaw_limit();
+	seat_leftover_kept();
 	first_person_cutscenes();
 	look_disabled();
 	cutscene_end();

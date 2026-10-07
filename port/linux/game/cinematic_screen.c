@@ -88,6 +88,11 @@ int halo_look_disabled_first_person(void)
 		(perspective == _director_perspective_scripted && scripted_camera_first_person());
 }
 
+int halo_director_inhibited_facing(void)
+{
+	return director_inhibited_facing(0) ? 1 : 0;
+}
+
 /* the observer's camera's distance from the player's unit's camera position
 (world units), negative without a unit */
 static float camera_distance_from_eyes(void)

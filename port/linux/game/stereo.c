@@ -1703,10 +1703,18 @@ int halo_stereo_head_look(short gamepad_index, float current_pitch, float *yaw, 
 	}
 	/* the head's yaw since the look last ran, and all a seat's limit refused
 	so far: in a seat the clamp refuses what the limit still holds back
-	(halo_stereo_seat_yaw_clamp); elsewhere the game takes it all */
-	head_request = head_pending_yaw + head_seat_leftover;
-	head_fold = head_seat_leftover;
-	head_seat_leftover = 0.0f;
+	(halo_stereo_seat_yaw_clamp); elsewhere the game takes it all. Not while
+	the director holds the facing (a seat's entry or exit animation): the
+	game drops the frame's turn there, so the leftover stays the eyes' until
+	a look the game takes */
+	if (halo_director_inhibited_facing()) {
+		head_request = head_pending_yaw;
+		head_fold = 0.0f;
+	} else {
+		head_request = head_pending_yaw + head_seat_leftover;
+		head_fold = head_seat_leftover;
+		head_seat_leftover = 0.0f;
+	}
 	*yaw = head_request + snap_pending + smooth_yaw;
 	head_yaw_taken = remainderf(head_yaw_taken + head_request, TWO_PI);
 	/* the look's pitch is the head's, whatever moved it meanwhile (the game
@@ -1776,7 +1784,10 @@ int halo_stereo_seat_yaw_clamp(short local_player_index, float *desired_yaw, flo
 	what the bounds refuse of it is dropped, as in mono */
 	yaw = fmaxf(yaw_minimum, fminf(yaw_maximum, yaw + (delta_yaw - head)));
 	refused = head - applied;
-	head_seat_leftover = remainderf(refused, TWO_PI);
+	/* (added to: a second call this frame, a damage effect's camera impulse
+	through player_control_permanent_impulse, carries no head yaw and must
+	keep what the first held back) */
+	head_seat_leftover = remainderf(head_seat_leftover + refused, TWO_PI);
 	head_yaw_taken = remainderf(head_yaw_taken - refused, TWO_PI);
 	/* (the leftover the look folded in, taken back: no fold landed) */
 	head_fold = 0.0f;

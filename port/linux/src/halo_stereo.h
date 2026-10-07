@@ -532,6 +532,10 @@ int halo_cutscene_camera_first_person(void);
 with the script holding its look (a10's cryo pod), or a scripted camera in
 first-person mode. HEAD mode turns its picture by the head, never the look */
 int halo_look_disabled_first_person(void);
+/* 1 while the director holds player one's facing (director_inhibited_facing:
+a seat's entry or exit animation): player_control drops the frame's turn,
+so the look hands it none of a seat's held-back yaw (stereo.c) */
+int halo_director_inhibited_facing(void);
 /* the camera has reached the player's eyes after a cutscene: the observer's
 command finished, or the camera within this many world units of the unit's
 camera position with its orientation settled. The film holds until it has
