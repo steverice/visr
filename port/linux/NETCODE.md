@@ -175,7 +175,10 @@ lists a public game with a password with its invite's token sealed with the
 password's key (`p2p_lobby.c`), a listing of another layout; version 21
 sends each killing blow again reliably and an object come to rest three
 times (a client waits for a player's blow before its body dies without one),
-and switches co-op's BSP on the host's crossing alone.
+and switches co-op's BSP on the host's crossing alone; version 22 names a
+Halo Custom Edition map's level `custom_maps\<name>`
+(`port/linux/game/custom_edition_cache.h`), which a client of an older
+version can neither load nor explain, so it is told to update instead.
 
 A client plays by its host's rules: in another's game (searching for it,
 in its lobby, or playing it) the developer console, the telnet console
