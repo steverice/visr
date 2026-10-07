@@ -49,7 +49,9 @@ the camera: on foot (no seat), no custom animation (a10's cryo pod leans
 the Chief back with the camera in front of his chest), not dead, and its
 pelvis within BODY_PELVIS_MAXIMUM_DISTANCE of the camera horizontally.
 debug.gpu_stats logs the first skip of each stretch, and once a second the
-camera and the drawn pelvis and feet in the camera's frame.
+camera and the drawn pelvis and feet in the camera's frame; and once a
+second while the unit sits in a seat, whether or not a body draws, the
+seat, its vehicle and the pose in the seat's frame (the seat log).
 
 Scale 0 is enough: render_model multiplies each matrix by the node's
 runtime_default_inverse_matrix, which keeps the position and the zero
@@ -77,6 +79,7 @@ its node names are logged under debug.gpu_stats.
 #ifndef FIRST_PERSON_BODY_PROBE
 #include "cseries.h"
 #include "math/real_math.h"
+#include "tag_files/tag_files.h"
 #include "tag_files/tag_groups.h"
 #include "models/model_definitions.h"
 #include "camera/director.h"
@@ -85,6 +88,7 @@ its node names are logged under debug.gpu_stats.
 #include "objects/objects.h"
 #include "objects/object_definitions.h"
 #include "render/render.h"
+#include "units/unit_definitions.h"
 #include "units/units.h"
 #include "../src/halo_stereo.h"
 
@@ -154,6 +158,11 @@ struct body_model
 	short neck;                   /* NONE if not found */
 	short neck_base;              /* spine1, or the neck's parent; NONE if neither */
 	short feet[2];                /* NONE if not found */
+	/* for the seat log (NONE if not found): the knees (calf), the chest
+	(spine1) and the head */
+	short calves[2];
+	short spine1;
+	short head;
 	/* per node: the node whose position it collapses to (the neck's
 	subtree, or with no neck the head's), or NONE */
 	signed char target[MAXIMUM_NODES_PER_MODEL];
@@ -274,7 +283,7 @@ static const struct body_model *body_model_get(long model_index)
 	short count = (short)model->nodes.count;
 	short node_index;
 	short spine = NONE, spine1 = NONE, neck = NONE, head = NONE;
-	int feet = 0;
+	int feet = 0, calves = 0;
 	int slot;
 
 	for (slot = 0; slot < BODY_CACHE_SIZE; slot++) {
@@ -288,7 +297,8 @@ static const struct body_model *body_model_get(long model_index)
 	body->checksum = model->node_list_checksum;
 	body->node_count = count;
 	body->feet[0] = body->feet[1] = NONE;
-	body->spine = NONE;
+	body->calves[0] = body->calves[1] = NONE;
+	body->spine = body->spine1 = body->head = NONE;
 	if (count <= 0 || count > MAXIMUM_NODES_PER_MODEL) {
 		platform_log("first_person_body: model %ld has %d nodes (at most %d); no body",
 			model_index, (int)count, MAXIMUM_NODES_PER_MODEL);
@@ -310,6 +320,8 @@ static const struct body_model *body_model_get(long model_index)
 			head = node_index;
 		if (feet < 2 && node_name_is(node->name, "foot"))
 			body->feet[feet++] = node_index;
+		if (calves < 2 && node_name_is(node->name, "calf"))
+			body->calves[calves++] = node_index;
 	}
 	for (node_index = 0; node_index < count; node_index++) {
 		short ancestor;
@@ -332,6 +344,8 @@ static const struct body_model *body_model_get(long model_index)
 		}
 	}
 	body->spine = spine;
+	body->spine1 = spine1;
+	body->head = head;
 	body->neck = neck;
 	body->neck_base = NONE;
 	if (neck != NONE) {
@@ -625,6 +639,123 @@ static short body_node_count(long object_index, long model_index)
 	return count < model_count ? count : model_count;
 }
 
+/* " name (f r d)": node's position in the seat's frame (forward along
+facing, right, down; facing horizontal and unit length) from camera, or
+nothing for a node not found */
+static size_t body_seat_log_node(char *line, size_t length, size_t size, const char *name,
+	const real_matrix4x3 *matrices, short node_count, short node, const float camera[3], const float facing[2])
+{
+	float dx, dy, dz;
+
+	if (length >= size || node == NONE || node >= node_count)
+		return length;
+	dx = matrices[node].position.x - camera[0];
+	dy = matrices[node].position.y - camera[1];
+	dz = matrices[node].position.z - camera[2];
+	return length + (size_t)snprintf(line + length, size - length, " %s (%.3f %.3f %.3f)", name,
+		dx * facing[0] + dy * facing[1], dx * facing[1] - dy * facing[0], -dz);
+}
+
+/* debug.gpu_stats, once a second of game time while the unit has a parent,
+whether or not a body draws: the seat, its parent, the animation state, the
+camera, and the pelvis, spine, knees, feet, spine1 and head in the seat's
+frame (forward along the unit's world facing made horizontal, right, down),
+with the facing's angle from the root parent's forward (positive to its
+left). The first time a vehicle is logged, its whole seats block, each
+seat's label and flags. Its own tick, apart from the on-foot log's */
+static void first_person_body_seat_log(long object_index, const float camera[3])
+{
+	static long last_tick = -1;
+	static long logged_definitions[BODY_CACHE_SIZE];
+	static int logged_count;
+	static int stats = -1;
+	struct object_datum *object = object_get(object_index);
+	struct object_datum *parent = object_get(object->object.parent_object_index);
+	struct unit_datum *unit = unit_get(object_index);
+	const struct render_camera *view = &render.camera;
+	long tick = game_time_get();
+	long model_index = body_model_index(object_index);
+	long root_index = object->object.parent_object_index;
+	const struct unit_seat *seat;
+	const real_vector3d *root_forward;
+	real_vector3d forward;
+	float facing[2], length, root_length, angle = 0.0f;
+	char line[1024];
+	size_t size = sizeof(line), written;
+	int i;
+
+	if (stats < 0)
+		stats = config_boolean("debug.gpu_stats") != 0;
+	if (!stats || (last_tick >= 0 && tick >= last_tick && tick - last_tick < 30))
+		return;
+	last_tick = tick;
+	if (!TEST_FLAG(_object_mask_unit, parent->object.type) || unit->unit.parent_seat_index == NONE) {
+		platform_log("first_person_body: seated on %s (type %d), not in a unit's seat",
+			tag_get_name(parent->definition_index), (int)parent->object.type);
+		return;
+	}
+	for (i = 0; i < logged_count && logged_definitions[i] != parent->definition_index; i++)
+		;
+	if (i == logged_count && logged_count < BODY_CACHE_SIZE) {
+		const struct tag_block *seats = &unit_definition_get(parent->definition_index)->unit.seats;
+		short seat_index;
+
+		logged_definitions[logged_count++] = parent->definition_index;
+		written = (size_t)snprintf(line, size, "first_person_body: seats of %s (type %d):",
+			tag_get_name(parent->definition_index), (int)parent->object.type);
+		for (seat_index = 0; seat_index < seats->count && written < size; seat_index++) {
+			const struct unit_seat *each = TAG_BLOCK_GET_ELEMENT(seats, seat_index, struct unit_seat);
+
+			written += (size_t)snprintf(line + written, size - written, "%s %d \"%s\" 0x%lx",
+				seat_index ? "," : "", (int)seat_index, each->label, (unsigned long)each->flags);
+		}
+		platform_log("%s", line);
+	}
+	seat = TAG_BLOCK_GET_ELEMENT(&unit_definition_get(parent->definition_index)->unit.seats,
+		unit->unit.parent_seat_index, struct unit_seat);
+	while (object_get(root_index)->object.parent_object_index != NONE)
+		root_index = object_get(root_index)->object.parent_object_index;
+	root_forward = &object_get(root_index)->object.forward;
+	object_get_orientation(object_index, &forward, NULL);
+	length = sqrtf(forward.i * forward.i + forward.j * forward.j);
+	facing[0] = length > 1e-4f ? forward.i / length : 1.0f;
+	facing[1] = length > 1e-4f ? forward.j / length : 0.0f;
+	root_length = sqrtf(root_forward->i * root_forward->i + root_forward->j * root_forward->j);
+	if (root_length > 1e-4f)
+		angle = atan2f(root_forward->i * facing[1] - root_forward->j * facing[0],
+			root_forward->i * facing[0] + root_forward->j * facing[1]) * 57.29578f;
+	written = (size_t)snprintf(line, size, "first_person_body: seat \"%s\" flags 0x%lx on %s (type %d), state %d: "
+		"camera (%.3f %.3f %.3f) pitch %.1f; in the seat's frame (forward along the facing made horizontal, right, "
+		"down):", seat->label, (unsigned long)seat->flags, tag_get_name(parent->definition_index),
+		(int)parent->object.type, (int)unit->unit.animation.state, camera[0], camera[1], camera[2],
+		asinf(view->forward.k > 1.0f ? 1.0f : view->forward.k < -1.0f ? -1.0f : view->forward.k) * 57.29578f);
+	if (model_index != NONE) {
+		const struct body_model *body = body_model_get(model_index);
+		const real_matrix4x3 *matrices = object_get_node_matrices(object_index);
+		short node_count = body_node_count(object_index, model_index);
+
+		if (body->recognized) {
+			written = body_seat_log_node(line, written, size, "pelvis", matrices, node_count, body->pelvis, camera,
+				facing);
+			written = body_seat_log_node(line, written, size, "spine", matrices, node_count, body->spine, camera,
+				facing);
+			for (i = 0; i < 2; i++)
+				written = body_seat_log_node(line, written, size, "knee", matrices, node_count, body->calves[i],
+					camera, facing);
+			for (i = 0; i < 2; i++)
+				written = body_seat_log_node(line, written, size, "foot", matrices, node_count, body->feet[i],
+					camera, facing);
+			written = body_seat_log_node(line, written, size, "spine1", matrices, node_count, body->spine1, camera,
+				facing);
+			written = body_seat_log_node(line, written, size, "head", matrices, node_count, body->head, camera,
+				facing);
+		}
+	}
+	if (written < size)
+		snprintf(line + written, size - written, "; facing %.1f degrees from the vehicle's forward", angle);
+	platform_log("%s", line);
+}
+
 /* why the unit's pose doesn't take a body: a seat, a custom animation
 (a10's pod), death, or its pelvis away from under the camera */
 static enum body_skip first_person_body_pose(long object_index)
@@ -633,6 +764,8 @@ static enum body_skip first_person_body_pose(long object_index)
 	long model_index = body_model_index(object_index);
 	float camera[3] = { render.camera.position.x, render.camera.position.y, render.camera.position.z };
 
+	if (object->object.parent_object_index != NONE)
+		first_person_body_seat_log(object_index, camera);
 	if (object->object.parent_object_index != NONE)
 		return BODY_SKIP_SEATED;
 	if (unit_is_playing_custom_animation(object_index))
