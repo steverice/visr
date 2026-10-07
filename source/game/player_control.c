@@ -1949,6 +1949,8 @@ static void player_control_modify_desired_angles(
 	struct player_control_unit_camera_info camera_info;
 	real pitch_minimum = -DEGREES_TO_RADIANS(85.5f);
 	real pitch_maximum = DEGREES_TO_RADIANS(85.5f);
+	/* port: the look before this turn, for head-tracked stereo's seat clamp */
+	real yaw_before;
 
 	match_assert(
 		"c:\\halo\\SOURCE\\game\\player_control.c",
@@ -1956,6 +1958,7 @@ static void player_control_modify_desired_angles(
 		valid_euler_angles2d(&player->desired_angles));
 	player_control_get_unit_camera_info(local_player_index, &camera_info);
 
+	yaw_before = player->desired_angles.yaw;
 	player->desired_angles.yaw += delta_yaw;
 	if (camera_info.seat_index != NONE)
 	{
@@ -1982,26 +1985,39 @@ static void player_control_modify_desired_angles(
 				&marker,
 				1);
 			euler_angles2d_from_vector3d(&marker_angles, &marker.matrix.forward);
-			yaw_minimum = marker_angles.yaw + seat->yaw_minimum;
-			yaw_maximum = marker_angles.yaw + seat->yaw_maximum;
-			arc = signed_angular_difference(yaw_minimum, yaw_maximum);
-			to_maximum = signed_angular_difference(player->desired_angles.yaw, yaw_maximum);
-			to_minimum = signed_angular_difference(yaw_minimum, player->desired_angles.yaw);
-			if (arc < 0.f)
+			/* port: head-tracked stereo (port/linux/game/stereo.c) clamps the
+			head's share of the turn itself, keeping what the bounds refuse
+			for the view; otherwise the game's clamp */
+			if (!halo_stereo_seat_yaw_clamp(
+				local_player_index,
+				&player->desired_angles.yaw,
+				yaw_before,
+				delta_yaw,
+				marker_angles.yaw,
+				seat->yaw_minimum,
+				seat->yaw_maximum))
 			{
-				arc += _pi * 2.f;
-			}
-
-			if (!(to_maximum >= 0.f && to_maximum < arc) &&
-				!(to_minimum >= 0.f && to_minimum < arc))
-			{
-				if (fabs(to_minimum) < fabs(to_maximum))
+				yaw_minimum = marker_angles.yaw + seat->yaw_minimum;
+				yaw_maximum = marker_angles.yaw + seat->yaw_maximum;
+				arc = signed_angular_difference(yaw_minimum, yaw_maximum);
+				to_maximum = signed_angular_difference(player->desired_angles.yaw, yaw_maximum);
+				to_minimum = signed_angular_difference(yaw_minimum, player->desired_angles.yaw);
+				if (arc < 0.f)
 				{
-					player->desired_angles.yaw = yaw_minimum;
+					arc += _pi * 2.f;
 				}
-				else
+
+				if (!(to_maximum >= 0.f && to_maximum < arc) &&
+					!(to_minimum >= 0.f && to_minimum < arc))
 				{
-					player->desired_angles.yaw = yaw_maximum;
+					if (fabs(to_minimum) < fabs(to_maximum))
+					{
+						player->desired_angles.yaw = yaw_minimum;
+					}
+					else
+					{
+						player->desired_angles.yaw = yaw_maximum;
+					}
 				}
 			}
 		}

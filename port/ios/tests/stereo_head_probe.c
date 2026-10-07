@@ -319,6 +319,7 @@ static void restart(const char *turn, double snap_angle, double smooth_turn_spee
 	memset(&head, 0, sizeof(head));
 	head_pending_yaw = 0.0f;
 	head_yaw_now = head_yaw_taken = 0.0f;
+	head_request = head_seat_leftover = 0.0f;
 	set_pose(0.0f, 0.0f, 0.0f);
 	/* a frame with the Compositor's eyes: the head drives the view */
 	halo_stereo_frame_begin();
@@ -1174,6 +1175,334 @@ static void glide(void)
 	check(worst_step[0] <= 2.05f && worst_step[1] < 0.01f, "into a glide and out of it, no hitch, turning or still");
 }
 
+/* a first-person seat's yaw limit (player_control_modify_desired_angles,
+halo_stereo_seat_yaw_clamp): the seat's marker and its bounds off it */
+static float seat_marker, seat_minimum = -45.0f * DEGREES, seat_maximum = 45.0f * DEGREES;
+static int seated;
+
+/* the game's yaw through a turn: the turn added, then the seat's clamp
+(stereo's, or the game's own nearest-bound rule when it declines) while
+seated, then the game's wrap to 0..2 pi */
+static void seat_modify(float *facing_yaw, float delta_yaw)
+{
+	float before = *facing_yaw;
+
+	*facing_yaw += delta_yaw;
+	if (seated && !halo_stereo_seat_yaw_clamp(0, facing_yaw, before, delta_yaw, seat_marker, seat_minimum,
+		seat_maximum))
+		*facing_yaw = seat_marker + seat_nearest_bound(remainderf(*facing_yaw - seat_marker, TWO_PI), seat_minimum,
+			seat_maximum);
+	while (*facing_yaw < 0.0f)
+		*facing_yaw += TWO_PI;
+	while (*facing_yaw > TWO_PI)
+		*facing_yaw -= TWO_PI;
+}
+
+/* one frame of the seat at 90 Hz, three frames a tick: the stick (a snap
+when stick is past the flick), the look, the seat's clamp, the tick's camera
+(posed, or the exit glide's), the head's pose (degrees), the frame, the
+camera's report (halo_stereo_camera_posed) and the eye cameras' yaw
+(degrees). Returns the look's yaw (degrees) */
+struct seat_run
+{
+	struct ticked_camera camera;
+	float facing_yaw, view, body;
+	int frame;
+	/* the exit glide: from the seat camera's yaw, its ticks so far (0: none,
+	-1: over) */
+	float glide_from;
+	int glide_tick;
+};
+
+static float seat_step(struct seat_run *run, float head_degrees, float stick)
+{
+	float yaw_in = stick, pitch_in = 0.0f, look_yaw = 0.0f, look_pitch = 0.0f, t, view_pitch;
+
+	halo_stereo_stick_look(0, response(stick), 1.0f / 90.0f, &yaw_in, &pitch_in);
+	halo_stereo_head_look(0, 0.0f, &look_yaw, &look_pitch);
+	seat_modify(&run->facing_yaw, look_yaw);
+	run->frame++;
+	if (run->frame % 3 == 0) {
+		if (run->glide_tick > 0 && run->glide_tick <= 6) {
+			camera_keep_posed(&run->camera, run->glide_from +
+				remainderf(run->facing_yaw - run->glide_from, TWO_PI) * (float)run->glide_tick / 6.0f, 0);
+			run->glide_tick = run->glide_tick < 6 ? run->glide_tick + 1 : -1;
+		} else
+			camera_keep(&run->camera, run->facing_yaw);
+	}
+	t = (float)(run->frame % 3) / 3.0f;
+	/* the observer settles once the glide's last camera has gone by */
+	if (run->glide_tick < 0 && run->camera.latest_posed && run->camera.previous_posed)
+		game_settled = 1;
+	set_pose(head_degrees * DEGREES, 0.0f, 0.0f);
+	halo_stereo_frame_begin();
+	oriented(camera_blended_yaw(&run->camera, t), 0.0f, &run->view, &view_pitch);
+	run->body = remainderf(run->view - head_degrees, 360.0f);
+	return look_yaw / DEGREES;
+}
+
+static void seat_start(struct seat_run *run, const char *turn)
+{
+	restart(turn, 30.0, 120.0, 0);
+	memset(run, 0, sizeof(*run));
+	seat_marker = 0.0f;
+	seated = 1;
+	game_settled = 1;
+	camera_keep(&run->camera, run->facing_yaw);
+}
+
+/* the head turned from where it is to a yaw at 1 degree a frame, then held
+for a few frames, the camera settled; the worst change of the body's yaw
+from body on the way */
+static float seat_turn_to(struct seat_run *run, float *head, float to, float body)
+{
+	float worst = 0.0f;
+
+	while (fabsf(to - *head) > 0.5f) {
+		*head += to > *head ? 1.0f : -1.0f;
+		seat_step(run, *head, 0.0f);
+		worst = fmaxf(worst, fabsf(remainderf(run->body - body, 360.0f)));
+	}
+	*head = to;
+	return worst;
+}
+
+static void seat_hold(struct seat_run *run, float head, int frames)
+{
+	while (frames-- > 0)
+		seat_step(run, head, 0.0f);
+}
+
+/* the logged left (debug.head_yaw_log's line, degrees), and its pending */
+static int logged_left(float *left, float *pending)
+{
+	const char *at = strstr(last_log, "pending ");
+
+	return strstr(last_log, "stereo: head yaw:") && at && sscanf(at, "pending %f, left %f", pending, left) == 2;
+}
+
+static void seat_exit(float past, float *worst_step, int *cut_right, int *cut_seen, float *first_look)
+{
+	struct seat_run run;
+	float head = 0.0f, last_body;
+	int frame;
+
+	seat_start(&run, "snap");
+	seat_turn_to(&run, &head, 45.0f + past, 0.0f);
+	seat_hold(&run, head, 9);
+	/* the seat ends on a tick: the next frame's tick is the glide's first */
+	while ((run.frame + 1) % 3 != 0)
+		seat_step(&run, head, 0.0f);
+	seated = 0;
+	game_settled = 0;
+	run.glide_from = run.facing_yaw;
+	run.glide_tick = 1;
+	last_body = run.body;
+	*worst_step = 0.0f;
+	*cut_right = 1;
+	*cut_seen = 0;
+	for (frame = 0; frame < 36; frame++) {
+		float look = seat_step(&run, head, 0.0f);
+
+		if (frame == 0)
+			*first_look = look;
+		*worst_step = fmaxf(*worst_step, fabsf(remainderf(run.body - last_body, 360.0f)));
+		last_body = run.body;
+	}
+	game_settled = 1;
+	seated = 0;
+}
+
+/* a first-person seat with a yaw limit (a10's pod, b30's Warthog passenger):
+the seat's marker at 0 with bounds of 45 degrees either way, the game's
+camera kept per tick (90 Hz, three frames a tick). Past a bound the aim
+stops at it while the eye cameras follow the head exactly: the world holds
+still in the room, and what the bound refused (the leftover) comes back as
+the head returns. A snap at the bound is dropped as in mono, the seat's own
+turn drags the aim at the bound, the crosshair follows the aim, the
+leftover is held to 180 degrees with its flip past the far side, and
+leaving the seat folds it into the facing (the exit glide's step measured)
+or into a third-person camera's turn */
+static void seat_yaw_limit(void)
+{
+	struct seat_run run;
+	float head = 0.0f, worst_body = 0.0f, worst_facing = 0.0f, worst_left = 0.0f, worst_logged = 0.0f;
+	float body0, facing0, view0, left0, flip_head = 0.0f, worst_step, first_look;
+	float direction[3], length;
+	int passed_logged = 1, logged = 0, cut_right, cut_seen, frame;
+
+	printf("a first-person seat's yaw limit (45 deg either way), the game's camera blended between ticks:\n");
+	seat_start(&run, "snap");
+	head_yaw_log = 1;
+	seat_hold(&run, head, 3);
+	body0 = run.body;
+	/* the sweep: 0 to +70 to -70 to 0 at 1 deg a frame */
+	{
+		static const float stops[3] = { 70.0f, -70.0f, 0.0f };
+		int stop;
+
+		for (stop = 0; stop < 3; stop++) {
+			while (fabsf(stops[stop] - head) > 0.5f) {
+				float taken_head = head, left, pending;
+
+				head += stops[stop] > head ? 1.0f : -1.0f;
+				seat_step(&run, head, 0.0f);
+				worst_body = fmaxf(worst_body, fabsf(remainderf(run.body - body0, 360.0f)));
+				/* the head the look took this frame (the last frame's) past
+				the bound: the aim at it, the leftover the rest */
+				if (taken_head >= 45.0f) {
+					worst_facing = fmaxf(worst_facing, degrees_apart(run.facing_yaw / DEGREES, 45.0f));
+					worst_left = fmaxf(worst_left, fabsf(head_seat_leftover / DEGREES - (taken_head - 45.0f)));
+					if (logged_left(&left, &pending)) {
+						logged++;
+						worst_logged = fmaxf(worst_logged, fabsf(left - (head - pending - 45.0f)));
+					} else
+						passed_logged = 0;
+				}
+			}
+		}
+	}
+	printf("  the sweep: the body's yaw %.4f deg at worst from its start; past +45 deg the facing %.4f deg at worst "
+		"from 45, the leftover %.4f from the head's less 45, the logged left %.4f (%d lines)\n", worst_body,
+		worst_facing, worst_left, worst_logged, logged);
+	check(worst_body < 0.01f, "past the limit and back, the body's yaw holds: the world never moves");
+	check(worst_facing < 0.01f && worst_left < 0.01f, "past the bound the aim stays at 45 deg, the leftover the rest");
+	check(passed_logged && logged > 0 && worst_logged < 0.01f,
+		"the logged left is the head's yaw less 45 (less the frame's pending turn)");
+	seat_hold(&run, head, 6);
+	printf("  after the sweep: the facing %.4f deg, the leftover %.4f, the body %.4f (%.4f before)\n",
+		remainderf(run.facing_yaw / DEGREES, 360.0f), head_seat_leftover / DEGREES, run.body, body0);
+	check(degrees_apart(run.facing_yaw / DEGREES, head) < 0.01f && head_seat_leftover == 0.0f &&
+		fabsf(remainderf(run.body - body0, 360.0f)) < 0.01f,
+		"after the sweep the facing is the head's and the body's yaw is what it was");
+	halo_stereo_reticle(direction);
+	check(fabsf(direction[0]) < 1e-4f && fabsf(direction[1]) < 1e-4f && direction[2] < 0.0f,
+		"no leftover: the crosshair straight ahead, as on foot");
+	head_yaw_log = 0;
+
+	/* snaps with the head 20 deg past the bound */
+	seat_turn_to(&run, &head, 65.0f, 0.0f);
+	seat_hold(&run, head, 9);
+	halo_stereo_reticle(direction);
+	length = sqrtf(direction[0] * direction[0] + direction[1] * direction[1] + direction[2] * direction[2]);
+	printf("  20 deg of leftover: the crosshair at (%.4f, %.4f, %.4f)\n", direction[0] / length,
+		direction[1] / length, direction[2] / length);
+	check(fabsf(direction[0] / length - sinf(20.0f * DEGREES)) < 1e-3f && fabsf(direction[1] / length) < 1e-3f &&
+		fabsf(direction[2] / length + cosf(20.0f * DEGREES)) < 1e-3f,
+		"20 deg of leftover: the crosshair on the aim, 20 deg right of the head's forward");
+	facing0 = run.facing_yaw;
+	view0 = run.view;
+	left0 = head_seat_leftover;
+	seat_step(&run, head, 1.0f);
+	seat_hold(&run, head, 9);
+	printf("  a +30 deg snap at the bound: the facing %.4f deg, the eyes %.4f (were %.4f, %.4f)\n",
+		run.facing_yaw / DEGREES, run.view, facing0 / DEGREES, view0);
+	check(degrees_apart(run.facing_yaw / DEGREES, facing0 / DEGREES) < 0.01f && degrees_apart(run.view, view0) < 0.01f &&
+		fabsf(head_seat_leftover - left0) < 1e-4f, "a snap past the bound is dropped: the facing and the eyes stay");
+	seat_step(&run, head, -1.0f);
+	printf("  a -30 deg snap: the facing %.4f deg on the snap's frame\n", remainderf(run.facing_yaw / DEGREES, 360.0f));
+	check(degrees_apart(run.facing_yaw / DEGREES, 15.0f) < 0.01f, "a snap back inside the bounds: the facing at 15 deg");
+	seat_hold(&run, head, 9);
+	printf("  then the eyes %.4f deg (were %.4f), the facing %.4f, the leftover %.4f\n", run.view, view0,
+		remainderf(run.facing_yaw / DEGREES, 360.0f), head_seat_leftover / DEGREES);
+	check(degrees_apart(run.view, view0 - 30.0f) < 0.01f, "and the eyes turn by -30 deg, as the snap turns the body");
+	check(degrees_apart(run.facing_yaw / DEGREES, 35.0f) < 0.01f && head_seat_leftover == 0.0f,
+		"then the aim takes the leftover inside the bounds: the facing at the eyes, 35 deg");
+
+	/* the seat's own turn under a still head 20 deg past the bound */
+	seat_start(&run, "snap");
+	head = 0.0f;
+	seat_turn_to(&run, &head, 65.0f, 0.0f);
+	seat_hold(&run, head, 9);
+	facing0 = run.facing_yaw;
+	view0 = run.view;
+	left0 = head_seat_leftover;
+	seat_marker = -10.0f * DEGREES;
+	seat_hold(&run, head, 9);
+	printf("  the marker turning -10 deg with the head 20 deg past: the facing %.4f deg, the eyes %.4f, the leftover "
+		"%.4f (were %.4f, %.4f, %.4f)\n", run.facing_yaw / DEGREES, run.view, head_seat_leftover / DEGREES,
+		facing0 / DEGREES, view0, left0 / DEGREES);
+	check(degrees_apart(run.facing_yaw / DEGREES, facing0 / DEGREES - 10.0f) < 0.01f &&
+		degrees_apart(run.view, view0 - 10.0f) < 0.01f && fabsf(head_seat_leftover - left0) < 1e-4f,
+		"at the bound the seat's turn drags the aim and the eyes by it, as in mono; the leftover stays");
+	seat_marker = 0.0f;
+	seat_hold(&run, head, 9);
+	printf("  the marker back to 0 (toward the head): the facing %.4f deg, the eyes %.4f, the leftover %.4f\n",
+		run.facing_yaw / DEGREES, run.view, head_seat_leftover / DEGREES);
+	check(degrees_apart(run.facing_yaw / DEGREES, facing0 / DEGREES) < 0.01f &&
+		degrees_apart(run.view, view0 - 10.0f) < 0.01f && fabsf(head_seat_leftover / DEGREES - 10.0f) < 0.01f,
+		"turning toward the head it frees the aim, which follows the bound; the eyes stay");
+	seat_start(&run, "snap");
+	head = 0.0f;
+	seat_turn_to(&run, &head, 20.0f, 0.0f);
+	seat_hold(&run, head, 9);
+	facing0 = run.facing_yaw;
+	view0 = run.view;
+	seat_marker = 10.0f * DEGREES;
+	seat_hold(&run, head, 9);
+	seat_marker = -10.0f * DEGREES;
+	seat_hold(&run, head, 9);
+	check(degrees_apart(run.facing_yaw / DEGREES, facing0 / DEGREES) < 0.01f && degrees_apart(run.view, view0) < 0.01f &&
+		head_seat_leftover == 0.0f, "inside the bounds the marker's turn moves nothing");
+
+	/* far past: the leftover held to 180 deg */
+	seat_start(&run, "snap");
+	head = 0.0f;
+	body0 = run.body;
+	worst_body = seat_turn_to(&run, &head, 220.0f, body0);
+	printf("  the head at +220 deg: the facing %.4f deg, the leftover %.4f\n", run.facing_yaw / DEGREES,
+		head_seat_leftover / DEGREES);
+	check(degrees_apart(run.facing_yaw / DEGREES, 45.0f) < 0.01f, "the head 220 deg round: the aim still at +45 deg");
+	for (flip_head = 0.0f; head < 230.0f - 0.5f;) {
+		head += 1.0f;
+		seat_step(&run, head, 0.0f);
+		worst_body = fmaxf(worst_body, fabsf(remainderf(run.body - body0, 360.0f)));
+		if (flip_head == 0.0f && degrees_apart(run.facing_yaw / DEGREES, -45.0f) < 0.01f)
+			flip_head = head;
+	}
+	printf("  the aim flips to -45 deg with the head at %.1f deg\n", flip_head);
+	check(flip_head > 225.0f && flip_head <= 228.0f && degrees_apart(run.facing_yaw / DEGREES, -45.0f) < 0.01f,
+		"past 225 deg the aim moves to the other bound, -45 deg, within a tick");
+	worst_body = fmaxf(worst_body, seat_turn_to(&run, &head, 140.0f, body0));
+	check(degrees_apart(run.facing_yaw / DEGREES, -45.0f) < 0.01f, "back to 140 deg: the aim still at -45 deg");
+	for (flip_head = 0.0f; head > 130.0f + 0.5f;) {
+		head -= 1.0f;
+		seat_step(&run, head, 0.0f);
+		worst_body = fmaxf(worst_body, fabsf(remainderf(run.body - body0, 360.0f)));
+		if (flip_head == 0.0f && degrees_apart(run.facing_yaw / DEGREES, 45.0f) < 0.01f)
+			flip_head = head;
+	}
+	printf("  the aim flips back to +45 deg with the head at %.1f deg; the body's yaw %.4f deg at worst throughout\n",
+		flip_head, worst_body);
+	check(flip_head < 135.0f && flip_head >= 132.0f && degrees_apart(run.facing_yaw / DEGREES, 45.0f) < 0.01f,
+		"below 135 deg it comes back to +45 deg within a tick");
+	check(worst_body < 0.02f, "far past the bound and through both flips the body's yaw holds");
+
+	/* leaving the seat into the director's glide */
+	seat_exit(20.0f, &worst_step, &cut_right, &cut_seen, &first_look);
+	printf("  leaving with 20 deg of leftover: the first look %.4f deg; through the glide the body steps %.4f deg at "
+		"worst in a frame\n", first_look, worst_step);
+	check(fabsf(first_look - 20.0f) < 0.01f, "leaving the seat, the next look takes the 20 deg leftover");
+	seat_exit(1.0f, &worst_step, &cut_right, &cut_seen, &first_look);
+	printf("  leaving with 1 deg of leftover: the body steps %.4f deg at worst in a frame\n", worst_step);
+	check(fabsf(first_look - 1.0f) < 0.01f, "1 deg of leftover: the next look takes it");
+
+	/* a third-person camera beginning with a leftover */
+	seat_start(&run, "snap");
+	head = 0.0f;
+	seat_turn_to(&run, &head, 65.0f, 0.0f);
+	seat_hold(&run, head, 9);
+	view0 = run.view;
+	game_third_person = 1;
+	seat_step(&run, head, 0.0f);
+	printf("  a third-person camera with 20 deg of leftover: the view %.4f deg (was %.4f)\n", run.view, view0);
+	check(degrees_apart(run.view, view0) < 0.01f, "a third-person camera begins where the view was: no jump");
+	game_third_person = 0;
+	for (frame = 0; frame < 3; frame++)
+		seat_step(&run, head, 0.0f);
+	seated = 0;
+}
+
 static void interpolated_turns(void)
 {
 	printf("the head's yaw at render time, the game's camera blended between ticks:\n");
@@ -2008,6 +2337,7 @@ int main(void)
 	paused();
 	interpolated_turns();
 	glide();
+	seat_yaw_limit();
 	first_person_cutscenes();
 	look_disabled();
 	cutscene_end();

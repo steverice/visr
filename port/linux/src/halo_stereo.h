@@ -255,8 +255,9 @@ void halo_stereo_ui_dim_add(const void *texture, float alpha);
 /* HEAD mode: where the game's crosshair (the center of the HUD layer)
 points, as a direction in the eye cameras' frame (x right, y up, z back,
 unnormalized): straight ahead (0, 0, -1) on foot, where the game's look is
-the head's; in a head-tracked third-person camera (a vehicle seat), the game
-camera's forward, which the gun follows, in the picture the head turned
+the head's; in a head-tracked third-person camera (a vehicle seat), and in
+a first-person seat whose yaw limit holds the aim back from the head, the
+game camera's forward, which the gun follows, in the picture the head turned
 (halo_stereo_head_orient). For the presenter's reticle (gpu_stereo_present) */
 void halo_stereo_reticle(float direction[3]);
 /* the HUD pass's projection this frame (render.c): its half tangents across
@@ -279,6 +280,21 @@ third-person camera (a vehicle seat's chase camera), where the stick turns
 and pitches the look as in mono and the head never turns it. */
 void halo_stereo_stick_look(short gamepad_index, float yaw_response, float time_delta, float *yaw, float *pitch);
 int halo_stereo_head_look(short gamepad_index, float current_pitch, float *yaw, float *pitch);
+/* A seat's yaw limit (player_control_modify_desired_angles, inside its seat
+block): 0, and the game's own clamp runs, unless the head drives local
+player 0's look. Otherwise it sets *desired_yaw from the look before this
+turn (yaw_before, 0 to 2 pi), the turn (delta_yaw, which holds the head's
+share halo_stereo_head_look handed the game on this call of
+player_control_update), the seat marker's yaw and the seat's bounds off it
+(radians): the look before is dragged inside the bounds as the game's rule
+drags it, then takes the head's share, then the rest of the turn, each
+inside the bounds; what the bounds refuse of the head's share stays out of
+the yaw the look took (halo_stereo_head_yaw_taken), the eye cameras add it
+(halo_stereo_head_orient) and the next look asks for it again, so the aim
+stops at the bound while the view follows the head. What they refuse of the
+rest is dropped, as in mono. Returns 1 */
+int halo_stereo_seat_yaw_clamp(short local_player_index, float *desired_yaw, float yaw_before, float delta_yaw,
+	float marker_yaw, float yaw_minimum, float yaw_maximum);
 /* 1 while the head drives the look (HEAD mode with the Compositor's eyes),
 for the look's autolevel */
 int halo_stereo_head_drives_look(short gamepad_index);

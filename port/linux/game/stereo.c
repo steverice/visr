@@ -196,6 +196,13 @@ before the next */
 over the head-tracked frames (head_yaw_now), and the part of them the look has
 taken (head_yaw_taken, halo_stereo_head_look) */
 static float head_yaw_now, head_yaw_taken;
+/* a seat's yaw limit (halo_stereo_seat_yaw_clamp): the head's yaw the look
+handed the game on this call of player_control_update (once a frame), which
+the seat's clamp consumes; and the part of it the clamp refused (radians,
+held to -pi..pi), which the eye cameras add, so the view follows the head
+past the limit while the aim stays at it, and which every later look asks
+for again until the aim can take it */
+static float head_request, head_seat_leftover;
 /* what render_interpolation.c said of this frame's camera
 (halo_stereo_camera_head_yaw): the head yaw it holds, its blend and how it was
 made; camera_noted is 0 until it says */
@@ -770,7 +777,9 @@ static void third_person_begin(void)
 	int third_person = head_frame && ((!vehicle_screen && halo_third_person_camera()) || look_disabled);
 
 	if (third_person && !third_person_head) {
-		third_person_yaw = head_pitch_known ? head_pending_yaw + stereo_frame.head_yaw : 0.0f;
+		/* (with the yaw a seat's limit refused, which the eye cameras had
+		added: the picture doesn't jump) */
+		third_person_yaw = head_pitch_known ? head_pending_yaw + head_seat_leftover + stereo_frame.head_yaw : 0.0f;
 		third_person_pitch_from = fmaxf(-PITCH_LIMIT, fminf(PITCH_LIMIT,
 			head_pitch_known ? head_pitch_now : stereo_frame.head_pitch));
 		platform_log(look_disabled ? "stereo: a first-person camera with the look taken away, head-tracked: the "
@@ -1168,10 +1177,13 @@ void halo_stereo_frame_begin(void)
 		and the eye cameras turn by it meanwhile, halo_stereo_head_orient);
 		the look's pitch follows the head's. SCREEN mode, the film and HEAD
 		mode's third person have neither: a turn the look never took there is
-		dropped */
+		dropped, and so is the yaw a seat's limit refused (head_seat_leftover,
+		which third_person_begin folded into a third-person camera's turn) */
 		head_pending_yaw = head_look_frame ?
 			remainderf(head_pending_yaw + stereo_frame.head_yaw + third_person_handover + film_handover, TWO_PI) :
 			0.0f;
+		if (!head_look_frame)
+			head_seat_leftover = 0.0f;
 		head_pitch_known = head_look_frame;
 		head_pitch_now = stereo_frame.head_pitch;
 	} else
@@ -1662,8 +1674,13 @@ int halo_stereo_head_look(short gamepad_index, float current_pitch, float *yaw, 
 			snap_pending = 0.0f;
 		return 0;
 	}
-	*yaw = head_pending_yaw + snap_pending + smooth_yaw;
-	head_yaw_taken = remainderf(head_yaw_taken + head_pending_yaw, TWO_PI);
+	/* the head's yaw since the look last ran, and all a seat's limit refused
+	so far: in a seat the clamp refuses what the limit still holds back
+	(halo_stereo_seat_yaw_clamp); elsewhere the game takes it all */
+	head_request = head_pending_yaw + head_seat_leftover;
+	head_seat_leftover = 0.0f;
+	*yaw = head_request + snap_pending + smooth_yaw;
+	head_yaw_taken = remainderf(head_yaw_taken + head_request, TWO_PI);
 	/* the look's pitch is the head's, whatever moved it meanwhile (the game
 	levels it as the player walks, a script sets it) */
 	/* changes under a few hundredths of a degree are noise: they would set
@@ -1679,6 +1696,62 @@ int halo_stereo_head_look(short gamepad_index, float current_pitch, float *yaw, 
 	snap_pending = 0.0f;
 	smooth_yaw = 0.0f;
 	return *yaw != 0.0f || *pitch != 0.0f;
+}
+
+/* the game's signed_angular_difference (source/math/real_math.h): from one
+angle to another, -pi..pi */
+static float signed_difference(float from, float to)
+{
+	float result = to - from;
+
+	if (result >= 3.14159265f)
+		result -= TWO_PI;
+	if (result <= -3.14159265f)
+		result += TWO_PI;
+	return result;
+}
+
+/* the game's seat clamp (player_control_modify_desired_angles) on a yaw off
+the seat's marker: outside the arc from minimum to maximum, the nearer bound */
+static float seat_nearest_bound(float yaw, float minimum, float maximum)
+{
+	float arc = signed_difference(minimum, maximum);
+	float to_maximum = signed_difference(yaw, maximum);
+	float to_minimum = signed_difference(minimum, yaw);
+
+	if (arc < 0.0f)
+		arc += TWO_PI;
+	if (!(to_maximum >= 0.0f && to_maximum < arc) && !(to_minimum >= 0.0f && to_minimum < arc))
+		return fabsf(to_minimum) < fabsf(to_maximum) ? minimum : maximum;
+	return yaw;
+}
+
+int halo_stereo_seat_yaw_clamp(short local_player_index, float *desired_yaw, float yaw_before, float delta_yaw,
+	float marker_yaw, float yaw_minimum, float yaw_maximum)
+{
+	float yaw, head, target, applied, refused;
+
+	if (local_player_index != 0 || !head_tracking(0) || yaw_minimum > yaw_maximum)
+		return 0;
+	/* the look before this turn, off the marker (the game's yaw is 0..2 pi,
+	the marker's -pi..pi), dragged by the seat's own motion as in mono */
+	yaw = seat_nearest_bound(remainderf(yaw_before - marker_yaw, TWO_PI), yaw_minimum, yaw_maximum);
+	/* the head's share first, inside the bounds on the unwrapped angle: what
+	they hold back stays the head's, for the eye cameras and the next look */
+	head = head_request;
+	head_request = 0.0f;
+	/* (inside them, all of it, exactly: no leftover from rounding) */
+	target = yaw + head;
+	applied = target > yaw_maximum ? yaw_maximum - yaw : target < yaw_minimum ? yaw_minimum - yaw : head;
+	yaw += applied;
+	/* then the rest (the stick's snap or smooth turn, a script's impulse):
+	what the bounds refuse of it is dropped, as in mono */
+	yaw = fmaxf(yaw_minimum, fminf(yaw_maximum, yaw + (delta_yaw - head)));
+	refused = head - applied;
+	head_seat_leftover = remainderf(refused, TWO_PI);
+	head_yaw_taken = remainderf(head_yaw_taken - refused, TWO_PI);
+	*desired_yaw = marker_yaw + yaw;
+	return 1;
 }
 
 /* v turned by angle about the unit axis (Rodrigues) */
@@ -1741,10 +1814,11 @@ static void head_yaw_log_frame(float camera_yaw, float eye_yaw)
 	if (stereo_frame.head_yaw == 0.0f && fabsf(step) < 1e-6f && head_log_last_known)
 		return;
 	platform_log("stereo: head yaw: frame %lu head %.3f eye %.3f body %.3f step %+.4f; camera %.3f holds %.3f "
-		"(taken %.3f, pending %.3f), %s t %.3f%s", head_log_frame, head_yaw_now * RADIANS_TO_DEGREES,
+		"(taken %.3f, pending %.3f, left %.3f), %s t %.3f%s", head_log_frame, head_yaw_now * RADIANS_TO_DEGREES,
 		eye_yaw * RADIANS_TO_DEGREES, offset * RADIANS_TO_DEGREES, step * RADIANS_TO_DEGREES,
 		camera_yaw * RADIANS_TO_DEGREES, (camera_noted ? camera_head_yaw : head_yaw_taken) * RADIANS_TO_DEGREES,
 		head_yaw_taken * RADIANS_TO_DEGREES, head_pending_yaw * RADIANS_TO_DEGREES,
+		head_seat_leftover * RADIANS_TO_DEGREES,
 		camera_noted && camera_source ? camera_source : "unnoted", camera_noted ? camera_fraction : 1.0f,
 		third_person_head ? ", third person" : "");
 	head_log_last_offset = offset;
@@ -1858,12 +1932,14 @@ void halo_stereo_head_orient(float forward[3], float up[3])
 		as of the later tick it blends, or as of now); since then the look
 		took more (taken less held: none for a camera posed this frame), and
 		it hasn't taken the rest yet (pending: this frame's, the paused
-		frames', and the seat's on leaving one). Left positive, as the
+		frames', and the seat's on leaving one), nor what a seat's limit
+		holds back (head_seat_leftover). Left positive, as the
 		game's yaw. Then the head's own pitch, inside the game's limit, so
 		the camera is level when the head is, whatever the look's pitch was */
 		float held = camera_noted ? camera_head_yaw : head_yaw_taken;
 
-		yaw = atan2f(forward[1], forward[0]) + remainderf(head_yaw_taken - held, TWO_PI) + head_pending_yaw;
+		yaw = atan2f(forward[1], forward[0]) + remainderf(head_yaw_taken - held, TWO_PI) + head_pending_yaw +
+			head_seat_leftover;
 		pitch = head_pitch_limited();
 	}
 	forward[0] = cosf(pitch) * cosf(yaw);
@@ -1880,9 +1956,10 @@ void halo_stereo_head_orient(float forward[3], float up[3])
 	head_yaw_log_frame(camera_yaw, yaw);
 	/* a seat's gun aims along the game's camera, which only the stick turns:
 	the crosshair goes where that points in the picture the head turned
-	(halo_stereo_reticle). On foot the game's look is the head's, and the
-	crosshair is straight ahead */
-	if (third_person_head) {
+	(halo_stereo_reticle). So does a first-person seat's while its limit
+	holds the aim back from the head (head_seat_leftover). On foot the game's
+	look is the head's, and the crosshair is straight ahead */
+	if (third_person_head || head_seat_leftover != 0.0f) {
 		normalize(aim);
 		reticle_set(aim, forward, up);
 	} else
