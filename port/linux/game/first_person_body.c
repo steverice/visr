@@ -120,10 +120,11 @@ units: walking it stays within about 0.05; in the cryo pod it's 0.175 */
 /* display.first_person_body_seat_offset's default, world units */
 #define BODY_SEAT_OFFSET_DEFAULT 0.0f
 /* in a seat, the farthest the pelvis may sit from the seat's camera
-horizontally, world units: the Warthog passenger's sits 0.21 behind it, and
-0.35 to the side in the first seated frame (Task 7f-2's Mac log), plus 0.05,
-rounded up to 0.05 */
-#define BODY_SEAT_PELVIS_MAXIMUM_DISTANCE 0.45f
+horizontally, world units: the Warthog passenger's sits 0.215 from it,
+seated (Task 7f-2's Mac log), plus 0.05, rounded up to 0.05. The frame the
+director hands the camera into the seat, with the pelvis 0.35 to 0.41 to
+the side, is skipped */
+#define BODY_SEAT_PELVIS_MAXIMUM_DISTANCE 0.3f
 /* in a seat, the farthest the pelvis may sit ahead of the seat's camera
 along the facing, world units: a passenger's is behind the camera marker,
 while in a10's cryo pod (a vehicle, levels\a10\devices\cryotube) it's

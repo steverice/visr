@@ -602,6 +602,16 @@ static void check_seat_pose(void)
 	input[PELVIS].position = (real_point3d){ -0.12f, 0.0f, -5.0f };
 	check(body_seat_pose_skip(1, 1, 0, 0, model, input, CYBORG_NODES, camera, facing) == BODY_DRAWS,
 		"the seat: the height never counts");
+	/* the frame the camera is handed into the seat: the pelvis 0.351 to the
+	side, not ahead (Task 7f-2's Mac log), takes no body */
+	input[PELVIS].position = (real_point3d){ -0.0f, 0.351f, -0.226f };
+	check(body_seat_pose_skip(1, 1, 0, 0, model, input, CYBORG_NODES, camera, facing) == BODY_SKIP_PELVIS_FAR,
+		"the seat: the hand-off frame, the pelvis 0.351 to the side");
+	/* the passenger seated: 0.213 behind, 0.031 beside */
+	input[PELVIS].position = (real_point3d){ -0.213f, -0.031f, -0.226f };
+	check(body_seat_pose_skip(1, 1, 0, 0, model, input, CYBORG_NODES, camera, facing) == BODY_DRAWS,
+		"the seat: the Warthog passenger, seated");
+
 	/* the pod: the pelvis ahead of the camera along the facing */
 	input[PELVIS].position = (real_point3d){ BODY_SEAT_PELVIS_MAXIMUM_FORWARD + 0.01f, 0.0f, -0.25f };
 	check(body_seat_pose_skip(1, 1, 0, 0, model, input, CYBORG_NODES, camera, facing) == BODY_SKIP_PELVIS_FAR,
