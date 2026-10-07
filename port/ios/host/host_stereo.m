@@ -326,28 +326,33 @@ static NSString *const shader_source =
 	"		color.rgb = select(pow((color.rgb + 0.055) / 1.055, 2.4), color.rgb / 12.92, color.rgb <= 0.04045);\n"
 	"	return float4(color.rgb * u.brightness, covered);\n"
 	"}\n"
-	/* the HUD's depth (host_stereo_hud_depth_ease): one threadgroup for each
-	of a view's pieces' rectangles of the eye's depth (physical texels, x0 y0
-	x1 y1, the end excluded), each thread striding it; the largest depth
-	(reverse-Z: the nearest) of the texels whose stencil has neither the
-	weapon's value 1 nor the first-person body's value 4, and how many were
-	skipped, a simd reduction then the threadgroup's. An empty rectangle
-	gives 0, the far plane */
-	"struct hud_depth_result { float depth; uint skipped; };\n"
+	/* the HUD's depth (host_stereo_hud_depth_ease): over each of a view's
+	pieces' rectangles of the eye's depth (physical texels, x0 y0 x1 y1, the
+	end excluded), the largest depth (reverse-Z: the nearest) of the texels
+	whose stencil has neither the weapon's value 1 nor the first-person
+	body's value 4, and how many were skipped. HUD_DEPTH_TILES threadgroups
+	share a rectangle (the reticle's is its whole layer, a million texels or
+	more), each thread striding it; a simd reduction, the threadgroup's, then
+	one atomic each into the piece's result (a depth's bits order as the
+	depth, which is never negative). The results start at 0: an empty
+	rectangle gives the far plane */
+	"struct hud_depth_result { atomic_uint depth; atomic_uint skipped; };\n"
 	"kernel void hud_depth_reduce(depth2d<float, access::read> depth [[texture(0)]],\n"
 	"	texture2d<uint, access::read> stencil [[texture(1)]], constant uint4 *rectangles [[buffer(0)]],\n"
 	"	constant uint &use_stencil [[buffer(1)]], device hud_depth_result *results [[buffer(2)]],\n"
-	"	uint group [[threadgroup_position_in_grid]], uint item [[thread_index_in_threadgroup]],\n"
-	"	uint threads [[threads_per_threadgroup]], uint lane [[thread_index_in_simdgroup]],\n"
-	"	uint simd_group [[simdgroup_index_in_threadgroup]], uint simds [[simdgroups_per_threadgroup]])\n"
+	"	uint2 group [[threadgroup_position_in_grid]], uint2 groups [[threadgroups_per_grid]],\n"
+	"	uint item [[thread_index_in_threadgroup]], uint2 size [[threads_per_threadgroup]],\n"
+	"	uint lane [[thread_index_in_simdgroup]], uint simd_group [[simdgroup_index_in_threadgroup]],\n"
+	"	uint simds [[simdgroups_per_threadgroup]])\n"
 	"{\n"
 	"	threadgroup float depths[32];\n"
 	"	threadgroup uint skips[32];\n"
-	"	uint4 r = rectangles[group];\n"
+	"	uint4 r = rectangles[group.y];\n"
 	"	uint width = r.z > r.x ? r.z - r.x : 0, count = width * (r.w > r.y ? r.w - r.y : 0);\n"
-	"	float nearest = 0.0;\n"
+	"	uint threads = size.x;\n"
+"	float nearest = 0.0;\n"
 	"	uint skipped = 0;\n"
-	"	for (uint i = item; i < count; i += threads)\n"
+	"	for (uint i = group.x * threads + item; i < count; i += groups.x * threads)\n"
 	"	{\n"
 	"		uint2 at = uint2(r.x + i % width, r.y + i / width);\n"
 	"		if (use_stencil != 0 && (stencil.read(at).r & 5u) != 0)\n"
@@ -363,14 +368,15 @@ static NSString *const shader_source =
 	"		skips[simd_group] = skipped;\n"
 	"	}\n"
 	"	threadgroup_barrier(mem_flags::mem_threadgroup);\n"
-	"	if (item == 0)\n"
+	"	if (item == 0 && count > 0)\n"
 	"	{\n"
 	"		for (uint s = 1; s < simds; s++)\n"
 	"		{\n"
 	"			nearest = max(nearest, depths[s]);\n"
 	"			skipped += skips[s];\n"
 	"		}\n"
-	"		results[group] = hud_depth_result{ nearest, skipped };\n"
+	"		atomic_fetch_max_explicit(&results[group.y].depth, as_type<uint>(nearest), memory_order_relaxed);\n"
+	"		atomic_fetch_add_explicit(&results[group.y].skipped, skipped, memory_order_relaxed);\n"
 	"	}\n"
 	"}\n";
 
@@ -1531,6 +1537,8 @@ host_stereo_present reads the newest published at its start (a frame or
 two late, inside the pull-in's time) */
 #define HUD_DEPTH_RING 3
 #define HUD_DEPTH_THREADS 256
+/* the threadgroups sharing each piece's rectangle (hud_depth_reduce) */
+#define HUD_DEPTH_TILES 32
 struct hud_depth_result
 {
 	float depth;
@@ -1708,7 +1716,7 @@ static void hud_depth_encode(id<MTLCommandBuffer> commands, cp_drawable_t drawab
 		[compute setBytes:&use_stencil length:sizeof(use_stencil) atIndex:1];
 		[compute setBuffer:hud_depth_buffers[slot] offset:(NSUInteger)eye * HOST_STEREO_HUD_PIECE_COUNT *
 			sizeof(struct hud_depth_result) atIndex:2];
-		[compute dispatchThreadgroups:MTLSizeMake(HOST_STEREO_HUD_PIECE_COUNT, 1, 1)
+		[compute dispatchThreadgroups:MTLSizeMake(HUD_DEPTH_TILES, HOST_STEREO_HUD_PIECE_COUNT, 1)
 			threadsPerThreadgroup:MTLSizeMake(threads, 1, 1)];
 		stenciled |= use_stencil;
 	}
