@@ -1595,8 +1595,9 @@ void rasterizer_model_draw_environment_shader(
 /* port: head-tracked stereo's first-person body, its second pass
 (halo_first_person_body_fill, render_objects.c): its geometry with the cull
 reversed, so only the inside faces seen through the cut neck draw, in a
-flat dark color, at LESSEQUAL so the outside faces the first pass drew stay
-in front. The pixel shader is a local one, so the next model's draw sets
+flat dark color, at LESS so the outside faces the first pass drew stay in
+front, even where both are clamped to the nearest depth
+(halo_first_person_body_depth_clamp). The pixel shader is a local one, so the next model's draw sets
 its own whole again */
 #define FIRST_PERSON_BODY_FILL_COLOR 0xFF0D0D0D /* RGB 0.05 */
 static void rasterizer_model_draw_first_person_body_fill(
@@ -1626,7 +1627,7 @@ static void rasterizer_model_draw_first_person_body_fill(
 	local_pixel_shader_dirty_flag = TRUE;
 	IDirect3DDevice8_SetRenderState(global_d3d_device, D3DRS_ZENABLE, TRUE);
 	IDirect3DDevice8_SetRenderState(global_d3d_device, D3DRS_ZWRITEENABLE, TRUE);
-	IDirect3DDevice8_SetRenderState(global_d3d_device, D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+	IDirect3DDevice8_SetRenderState(global_d3d_device, D3DRS_ZFUNC, D3DCMP_LESS);
 	IDirect3DDevice8_SetRenderState(global_d3d_device, D3DRS_ZBIAS, 0);
 	IDirect3DDevice8_SetRenderState(global_d3d_device, D3DRS_CULLMODE, D3DCULL_CW);
 	IDirect3DDevice8_SetRenderState(

@@ -201,6 +201,10 @@ static id<MTLRenderCommandEncoder> encoder;
 /* what encoder holds, to skip calls that set it again (metal_state_cache.h;
 debug.metal_state_cache) */
 static struct metal_state_cache state_cache;
+/* the encoder's depth clip mode: 1 after setDepthClipMode:MTLDepthClipModeClamp
+(only the first-person body's draws, gpu_raster_state.depth_clamp); outside
+the state cache, so a frame with no such draw makes no call and counts none */
+static int encoder_depth_clamp;
 _Static_assert(GPU_STAGE_COUNT == 4 && GPU_ATTRIBUTE_COUNT == 16, "metal_state_cache.h's slots");
 static gpu_texture pass_color, pass_depth;
 static unsigned long pass_commands;
@@ -460,6 +464,7 @@ static void pass_finish(BOOL frame_end)
 	[encoder endEncoding];
 	encoder = nil;
 	metal_state_reset(&state_cache);
+	encoder_depth_clamp = 0;
 	visibility.entry_open = 0;
 	pass_color = pass_depth = 0;
 	pass_commands = 0;
@@ -1425,6 +1430,7 @@ static BOOL pass_begin(gpu_texture color, gpu_texture depth, const struct gpu_cl
 	}
 	encoder = [command_buffer() renderCommandEncoderWithDescriptor:pass];
 	metal_state_reset(&state_cache);
+	encoder_depth_clamp = 0;
 	if (metal_debug)
 		encoder.label = [NSString stringWithFormat:@"targets %u/%u", color, depth];
 	pass_color = color;
@@ -2978,6 +2984,11 @@ static uint32_t gpu_metal_draw(const struct gpu_draw *draw, const struct gpu_con
 				[encoder setDepthBias:bias[0] slopeScale:bias[1] clamp:bias[2]];
 			if (metal_state_value(&state_cache, METAL_STATE_BLEND_COLOR, blend, sizeof(blend)))
 				[encoder setBlendColorRed:blend[0] green:blend[1] blue:blend[2] alpha:blend[3]];
+			if ((draw->raster.depth_clamp != 0) != encoder_depth_clamp)
+			{
+				encoder_depth_clamp = draw->raster.depth_clamp != 0;
+				[encoder setDepthClipMode:encoder_depth_clamp ? MTLDepthClipModeClamp : MTLDepthClipModeClip];
+			}
 		}
 		bind_stages(draw, exact);
 		bind_constants(constants, uniforms);

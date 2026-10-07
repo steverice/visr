@@ -169,10 +169,10 @@ static const struct config_setting config_settings[] =
 		"view (no head or neck, and no third-person arms while you hold a weapon),\n"
 		"so looking down shows your chest and feet. None while a script animates\n"
 		"him; in a seat, as display.first_person_body_seats says." },
-	{ "display.first_person_body_offset", _config_real, "0.12", "HALO_FIRST_PERSON_BODY_OFFSET", _environment_value,
+	{ "display.first_person_body_offset", _config_real, "0.08", "HALO_FIRST_PERSON_BODY_OFFSET", _environment_value,
 		_platform_ios,
 		"With display.first_person_body: how far behind your eyes the body stands,\n"
-		"in world units (0 to 0.2; 0.12 is about 37 cm), so the feet show past the\n"
+		"in world units (0 to 0.2; 0.08 is about 24 cm), so the feet show past the\n"
 		"chest when you look down. Read at start." },
 	{ "display.first_person_body_seats", _config_boolean, "true", "HALO_FIRST_PERSON_BODY_SEATS", _environment_set_is_true,
 		_platform_ios,

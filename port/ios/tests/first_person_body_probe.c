@@ -674,6 +674,14 @@ static void check_predicate(void)
 	check(logs == 2 && strstr(last_log, "takes no body") != NULL, "a seat that takes no body logs");
 	probe_pose = BODY_DRAWS;
 	check(halo_first_person_body(probe_unit), "back on in a seat");
+
+	/* the depth clamp's flag, which render_objects.c sets around the body's
+	two passes and d3d8_device.c reads into each draw */
+	check(!halo_first_person_body_depth_clamp(), "no depth clamp outside the body's passes");
+	halo_first_person_body_set_depth_clamp(1);
+	check(halo_first_person_body_depth_clamp(), "the depth clamp in the body's passes");
+	halo_first_person_body_set_depth_clamp(0);
+	check(!halo_first_person_body_depth_clamp(), "no depth clamp after them");
 }
 
 int main(void)

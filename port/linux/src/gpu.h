@@ -267,6 +267,11 @@ struct gpu_raster_state
 	uint8_t depth_bias_enable;
 	float depth_bias_slope;
 	float depth_bias_constant;
+	/* nonzero: depth is clamped to the viewport's range instead of the
+	primitive being clipped at the near and far planes (only head-tracked
+	stereo's first-person body, halo_first_person_body_depth_clamp) */
+	uint8_t depth_clamp;
+	uint8_t pad[3];
 };
 
 /* texture filters (D3DTSS_MINFILTER, MAGFILTER, MIPFILTER); the GL backend

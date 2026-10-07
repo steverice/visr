@@ -34,12 +34,14 @@ with a render-only copy of its node matrices:
   display.first_person_body_offset (world units): the game's camera sits
   on the body's axis, where the pelvis hides the feet straight down; set
   back, the feet show past the front of the chest, as a person's do past
-  their belly, and the collar stays behind the eye passes' near plane
-  (0.0625 units): at 0.08 looking straight down showed the shell's inside
-  through it, at 0.12 it doesn't. In a seat the camera is the seat's
-  camera marker on the vehicle, not a point on the body, so the set-back
-  there is display.first_person_body_seat_offset instead, along the unit's
-  world facing (object_get_orientation: the seat marker's).
+  their belly. The shoulders come nearer the eyes than the eye passes'
+  near plane (0.0625 units), so the body's draws clamp their depth there
+  instead of being cut open (halo_first_person_body_set_depth_clamp; at
+  0.08 without it, looking straight down showed the shell's inside). In a
+  seat the camera is the seat's camera marker on the vehicle, not a point
+  on the body, so the set-back there is
+  display.first_person_body_seat_offset instead, along the unit's world
+  facing (object_get_orientation: the seat marker's).
 
 The shadow takes a second copy, the full silhouette (head and arms
 included) set back the same way, so the feet's shadow lies under the drawn
@@ -110,7 +112,7 @@ void platform_log(const char *format, ...);
 after a map with another (the Elite's or a marine's in a scripted swap) */
 #define BODY_CACHE_SIZE 8
 /* display.first_person_body_offset's default and range, world units */
-#define BODY_OFFSET_DEFAULT 0.12f
+#define BODY_OFFSET_DEFAULT 0.08f
 #define BODY_OFFSET_MAXIMUM 0.2f
 /* the farthest the pelvis may sit from the camera horizontally, world
 units: walking it stays within about 0.05; in the cryo pod it's 0.175 */
@@ -212,6 +214,8 @@ static float body_clamp_degrees;
 static float body_lean_degrees;
 /* render_objects.c's inside-faces pass (halo_first_person_body_set_fill) */
 static int body_fill;
+/* render_objects.c's body passes (halo_first_person_body_set_depth_clamp) */
+static int body_depth_clamp;
 
 /* the name's last word ("bip01 l upperarm": "upperarm") is word (lower
 case), ignoring the name's case */
@@ -992,4 +996,14 @@ void halo_first_person_body_set_fill(int on)
 int halo_first_person_body_fill(void)
 {
 	return body_fill;
+}
+
+void halo_first_person_body_set_depth_clamp(int on)
+{
+	body_depth_clamp = on;
+}
+
+int halo_first_person_body_depth_clamp(void)
+{
+	return body_depth_clamp;
 }

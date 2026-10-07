@@ -1287,7 +1287,8 @@ pass skipped as in mono, drawn alone after the first-person weapon
 (port/linux/game/first_person_body.c), then again with the cull reversed
 for the inside faces its cut neck shows, in a flat dark color
 (halo_first_person_body_fill, rasterizer_xbox_models.c), both under the
-weapon pass's stencil reject. It draws when its root (the vehicle when
+weapon pass's stencil reject, with its depth clamped rather than clipped
+at the near plane (halo_first_person_body_set_depth_clamp). It draws when its root (the vehicle when
 seated, the unit itself on foot) is in the rendered list: a seated unit is
 a child object, never in a cluster, so the list holds only its vehicle.
 Never in a mirror's window, where the object pass draws the whole player
@@ -1318,11 +1319,13 @@ static void render_first_person_body(
 		if (render_object_globals.rendered_object_indices[rendered_object_index] == root_index)
 		{
 			first_person_body_pass = TRUE;
+			halo_first_person_body_set_depth_clamp(TRUE);
 			data->object_index = unit_index;
 			render_object(data);
 			halo_first_person_body_set_fill(TRUE);
 			render_object(data);
 			halo_first_person_body_set_fill(FALSE);
+			halo_first_person_body_set_depth_clamp(FALSE);
 			first_person_body_pass = FALSE;
 			break;
 		}

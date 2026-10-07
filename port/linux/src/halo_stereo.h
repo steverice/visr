@@ -348,6 +348,13 @@ with the cull reversed, which the model rasterizer
 (rasterizer_xbox_models.c) draws in a flat dark color */
 void halo_first_person_body_set_fill(int on);
 int halo_first_person_body_fill(void);
+/* 1 while render_objects.c draws the body (both passes): the backends clamp
+its depth to the viewport's range instead of clipping it at the near plane,
+so the shell nearer than the eye passes' near plane (0.0625 units) draws at
+the nearest depth rather than opening onto its inside; the projection, and
+so every depth compare past the near plane, stays the world's */
+void halo_first_person_body_set_depth_clamp(int on);
+int halo_first_person_body_depth_clamp(void);
 /* the eye cameras' near and far planes in world units, for the presenter's
 depth (d3d8_device.c), set by the eye loop each stereo frame */
 void halo_stereo_set_depth_range(float z_near, float z_far);

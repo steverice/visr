@@ -288,6 +288,39 @@ static void state_invalidate(void)
 	memset(&gl_state, 0xff, sizeof(gl_state));
 }
 
+/* GL_DEPTH_CLAMP (GL_DEPTH_CLAMP_EXT on ES, 0x864f either way), which only
+the first-person body's draws turn on (gpu_raster_state.depth_clamp). Its
+state lives apart from gl_state: nothing else turns it on, so it stays
+known across state_invalidate, and a frame without such a draw makes no GL
+call for it (the GL records count every call). ES checks GL_EXT_depth_clamp
+on the first draw that asks; without it the body is clipped at the near
+plane as before */
+static void depth_clamp_apply(int enabled)
+{
+	static int on, supported = -1;
+
+	enabled = enabled != 0;
+	if (enabled == on)
+		return;
+	if (supported < 0)
+	{
+#ifdef GPU_GL_ES
+		supported = gl_extension_supported("GL_EXT_depth_clamp") ? 1 : 0;
+#else
+		supported = 1;
+#endif
+		platform_log("the first-person body's depth clamp: %s", supported ? "on" :
+			"not supported (no GL_EXT_depth_clamp), so the body is clipped at the near plane");
+	}
+	if (!supported)
+		return;
+	on = enabled;
+	if (on)
+		glEnable(0x864f);
+	else
+		glDisable(0x864f);
+}
+
 static void state_enable(unsigned char *shadow, GLenum capability, int enabled)
 {
 	unsigned char value = enabled ? 1 : 0;
@@ -703,6 +736,7 @@ static void apply_raster_state(const struct gpu_viewport *viewport, const struct
 	}
 #endif
 
+	depth_clamp_apply(raster->depth_clamp);
 	state_enable(&gl_state.offset_fill, GL_POLYGON_OFFSET_FILL, raster->depth_bias_enable);
 #ifndef GPU_GL_ES
 	state_enable(&gl_state.offset_line, GL_POLYGON_OFFSET_LINE, raster->depth_bias_enable);

@@ -3111,6 +3111,9 @@ static void raster_state_fill(BOOL has_depth, struct gpu_viewport *viewport, str
 	raster->depth_bias_enable = rs[D3DRS_SOLIDOFFSETENABLE] != 0;
 	raster->depth_bias_slope = dword_to_float(rs[D3DRS_POLYGONOFFSETZSLOPESCALE]);
 	raster->depth_bias_constant = dword_to_float(rs[D3DRS_POLYGONOFFSETZOFFSET]);
+	/* head-tracked stereo's first-person body: its shell nearer than the
+	near plane draws at the nearest depth instead of being cut open */
+	raster->depth_clamp = halo_first_person_body_depth_clamp() != 0;
 }
 
 /* the uniforms of the latest draws, converted from these inputs; the serial
