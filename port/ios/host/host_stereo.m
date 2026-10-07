@@ -924,14 +924,22 @@ goes through the maps (composite-only) */
 static void foveated_eyes(struct halo_stereo_frame *frame, cp_drawable_t drawable, size_t views)
 	API_AVAILABLE(visionos(26.0))
 {
-	char value[16];
 	id<MTLRasterizationRateMap> maps[2] = { nil, nil };
 	int allocated_width = 0, allocated_height = 0, eye;
 	const char *why = NULL;
 	unsigned long key;
+	/* read once: this runs every foveated frame, and host_config reopens
+	config.toml on each call */
+	static int eye_passes = -1;
 
-	host_config_string("debug.foveation_eye_passes", "true", value, sizeof(value));
-	if (!strcmp(value, "false"))
+	if (eye_passes < 0)
+	{
+		char value[16];
+
+		host_config_string("debug.foveation_eye_passes", "true", value, sizeof(value));
+		eye_passes = strcmp(value, "false") != 0;
+	}
+	if (!eye_passes)
 		why = "debug.foveation_eye_passes is off";
 	else if (views < 2)
 		why = "the drawable has one view";
