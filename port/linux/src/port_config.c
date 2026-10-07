@@ -163,7 +163,10 @@ static const struct config_setting config_settings[] =
 		"With display.foveation: the Compositor's render quality, 0 to 1 (the\n"
 		"headset's lowest to its highest): how many pixels the middle of each view\n"
 		"gets. Higher is sharper and costs more frame time and memory. In place of\n"
-		"display.render_scale for the eyes. Set when the immersive space opens." },
+		"display.render_scale for the eyes. The default, 0.6, is the highest\n"
+		"quality that held 90 Hz in the 2026-10-07 headset sweep (a10, foveated):\n"
+		"0.7 and 0.8 begin to miss refreshes, 0.9 and 1.0 miss 5 to 9%, and\n"
+		"unfoveated rendering ran at 45 Hz. Set when the immersive space opens." },
 	{ "display.first_person_body", _config_boolean, "true", "HALO_FIRST_PERSON_BODY", _environment_set_is_true, _platform_ios,
 		"With display.stereo = \"head\": draw the Master Chief's body below the\n"
 		"view (no head or neck, and no third-person arms while you hold a weapon),\n"
