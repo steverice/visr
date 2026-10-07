@@ -862,7 +862,7 @@ void halo_stereo_reticle(float direction[3])
 
 void halo_stereo_frame_begin(void)
 {
-	int film, screen, on_screen, head_look_frame, cutscene;
+	int film, screen, on_screen, head_look_frame, cutscene, live_reason, settle_frame = 0;
 	float time_delta;
 
 	if (stereo_mode < 0) {
@@ -930,6 +930,9 @@ void halo_stereo_frame_begin(void)
 		if (!cutscene_third_person)
 			film_reason = 0;
 	}
+	/* the cutscene's own reason this frame, before any hold (Task 12k's
+	immersive cutscene reads it) */
+	live_reason = film_reason;
 	/* the title bars the last frame drew, if it was the film's */
 	if (film_frame)
 		title_bars_film = title_bars_now;
@@ -948,6 +951,7 @@ void halo_stereo_frame_begin(void)
 		while it eases into a window onto the world (portal_eyes) */
 		int settled = halo_cutscene_camera_settled();
 
+		settle_frame = 1;
 		settle_elapsed += time_delta;
 		if (settled && portal_begun)
 			portal_elapsed += time_delta;
@@ -978,13 +982,19 @@ void halo_stereo_frame_begin(void)
 	portal_full_shown = portal_share >= 1.0f;
 	film = film_reason != 0;
 	/* Task 12k's spike: a cutscene's film frame (the third-person latch
-	holds, or its hold) in HEAD mode or the side-by-side view is immersive
-	instead, if its camera is at least debug.cutscene_immersive_min_fov
-	across; below it, the film, through the existing cut. Its reason stands
-	as the film's would (the holds read it), but nothing goes on the screen */
+	holds) in HEAD mode or the side-by-side view is immersive instead, if
+	its camera is at least debug.cutscene_immersive_min_fov across; below it,
+	the film, through the existing cut. Its reason stands as the film's would
+	(the holds read it), but nothing goes on the screen. Once the cutscene's
+	own reason drops, the hold stays immersive only while the camera is at
+	the player's eyes (a10's two-tick gap in its letterbox); a camera gliding
+	back to them, or the hold's end, goes to the film, through the cut, which
+	holds until the camera has settled and then expands out to the full view
+	as after any cutscene's film: the observer's glide never shows immersive */
 	cutscene_immersive = 0;
 	if (cutscene_immersive_setting && film && !screen && (film_reason == 1 || film_reason == 2) &&
-		(stereo_mode == HALO_STEREO_HEAD || stereo_mode == HALO_STEREO_SIDE_BY_SIDE)) {
+		(stereo_mode == HALO_STEREO_HEAD || stereo_mode == HALO_STEREO_SIDE_BY_SIDE) &&
+		(live_reason != 0 || (cutscene_immersive_last && !settle_frame && halo_cutscene_camera_settled()))) {
 		float field_of_view = halo_cutscene_camera_field_of_view();
 
 		if (field_of_view >= cutscene_immersive_min_fov) {
@@ -1000,12 +1010,26 @@ void halo_stereo_frame_begin(void)
 			film_reason != film_reason_logged))
 			platform_log("stereo: the cutscene's camera, %.1f degrees across: %s", field_of_view * 360.0f / TWO_PI,
 				cutscene_immersive ? "immersive, its frame anchored in the room" : "telephoto: on the film");
+	} else if (cutscene_immersive_setting && cutscene_immersive_last && live_reason == 0 && !screen &&
+		(film_reason_logged == 1 || film_reason_logged == 2)) {
+		/* the immersive cutscene ends: on the film (through the cut) until
+		the camera has settled */
+		film_reason = film_reason_logged;
+		film = 1;
+		film_hold = 0;
+		settle_elapsed = 0.0f;
+		settle_gave_up = 0;
+		portal_elapsed = 0.0f;
+		portal_begun = portal_full_shown = 0;
+		portal_share = 0.0f;
+		platform_log("stereo: the immersive cutscene ends on the film, until the camera reaches the player's eyes");
 	}
 	/* the cutscene window expands from the film's rectangle out to the full
 	view once a cutscene's film has held until the camera reached the eyes,
 	at the letterbox bars' rate (halo_stereo_window.h); the film again, or
-	no full view with eyes (below), stops it */
-	if (film) {
+	no full view with eyes (below), stops it. A film shot cutting to an
+	immersive cutscene's isn't a cutscene's end (Task 12k) */
+	if (film || cutscene_immersive) {
 		expansion_on = 0;
 	} else if (film_frame && !screen && (film_reason_logged == 1 || film_reason_logged == 2) && !settle_gave_up &&
 		(stereo_mode == HALO_STEREO_HEAD || stereo_mode == HALO_STEREO_SIDE_BY_SIDE)) {
@@ -1719,19 +1743,22 @@ static void head_yaw_log_frame(float camera_yaw, float eye_yaw)
 	head_log_last_known = 1;
 }
 
-/* Task 12k's immersive cutscene: the cutscene camera turned by the head
-from the director's frame, which sits level in the room at the yaw the head
-had as the cutscene began (cutscene_anchor_yaw); each cut re-aims the new
-camera at it, since the turn is the head's against the room, not the
-camera's. HEAD mode's head, or the side-by-side view's simulated one. The
-frame's axes go to cutscene_frame_forward and _up, in the eye camera's
-frame (x right, y up, z back), for the presenter's mask */
+/* Task 12k's immersive cutscene: the cutscene camera turned by the head,
+as the third-person head path turns a seat's camera (the stereo spec's "How
+it would work"): its yaw about the world's up by the head's yaw since the
+cutscene began (from cutscene_anchor_yaw, so each cut re-aims the new
+camera at the same direction in the room), its pitch by the head's pitch
+from level, inside the game's limit, and the head's roll. The world's
+vertical stays the room's; the director's frame pitches with the camera.
+HEAD mode's head, or the side-by-side view's simulated one. The frame's
+axes go to cutscene_frame_forward and _up, in the eye camera's frame (x
+right, y up, z back), for the presenter's mask */
 static void cutscene_orient(float forward[3], float up[3])
 {
 	float camera_forward[3] = { forward[0], forward[1], forward[2] };
 	float camera_up[3] = { up[0], up[1], up[2] };
-	float camera_left[3], eye_right[3];
-	float yaw = 0.0f, pitch = 0.0f, roll = 0.0f;
+	float eye_right[3];
+	float yaw = 0.0f, pitch = 0.0f, roll = 0.0f, eye_yaw, eye_pitch;
 	int i;
 
 	normalize(camera_forward);
@@ -1744,21 +1771,20 @@ static void cutscene_orient(float forward[3], float up[3])
 			camera_up[i] -= along * camera_forward[i];
 		normalize(camera_up);
 	}
-	camera_left[0] = camera_up[1] * camera_forward[2] - camera_up[2] * camera_forward[1];
-	camera_left[1] = camera_up[2] * camera_forward[0] - camera_up[0] * camera_forward[2];
-	camera_left[2] = camera_up[0] * camera_forward[1] - camera_up[1] * camera_forward[0];
 	if (stereo_frame.mode == HALO_STEREO_HEAD) {
 		yaw = remainderf(head_yaw_now - cutscene_anchor_yaw, TWO_PI);
 		pitch = stereo_frame.head_pitch;
 		roll = stereo_frame.head_roll;
 	} else if (side_by_side_head_period > 0.0f)
 		yaw = side_by_side_head_amplitude * sinf(TWO_PI * side_by_side_head_clock / side_by_side_head_period);
-	for (i = 0; i < 3; i++) {
-		forward[i] = cosf(pitch) * (cosf(yaw) * camera_forward[i] + sinf(yaw) * camera_left[i]) +
-			sinf(pitch) * camera_up[i];
-		up[i] = -sinf(pitch) * (cosf(yaw) * camera_forward[i] + sinf(yaw) * camera_left[i]) +
-			cosf(pitch) * camera_up[i];
-	}
+	eye_yaw = atan2f(camera_forward[1], camera_forward[0]) + yaw;
+	eye_pitch = fmaxf(-PITCH_LIMIT, fminf(PITCH_LIMIT, asinf(fmaxf(-1.0f, fminf(1.0f, camera_forward[2]))) + pitch));
+	forward[0] = cosf(eye_pitch) * cosf(eye_yaw);
+	forward[1] = cosf(eye_pitch) * sinf(eye_yaw);
+	forward[2] = sinf(eye_pitch);
+	up[0] = -sinf(eye_pitch) * cosf(eye_yaw);
+	up[1] = -sinf(eye_pitch) * sinf(eye_yaw);
+	up[2] = cosf(eye_pitch);
 	rotate(up, forward, -roll);
 	normalize(forward);
 	normalize(up);

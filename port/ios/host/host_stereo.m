@@ -709,8 +709,14 @@ static BOOL prepare(id<MTLDevice> device, MTLPixelFormat color, MTLPixelFormat d
 		blur.fragmentFunction = [library newFunctionWithName:@"blur_fragment"];
 		blur_pipeline = blur_down_foveated_pipeline ? [device newRenderPipelineStateWithDescriptor:blur error:&error] :
 			nil;
+		/* without them the immersive cutscene draws sharp throughout
+		(cutscene_blur); the presenter itself doesn't depend on them */
 		if (hud_pipeline && !blur_pipeline)
-			hud_pipeline = nil;
+		{
+			host_logf(HOST_LOG_ERROR, "stereo: the immersive cutscene's blur pipelines failed: %s",
+				error.description.UTF8String);
+			blur_down_pipeline = blur_down_foveated_pipeline = nil;
+		}
 	}
 	if (!eye_pipeline || !eye_foveated_pipeline || !hud_pipeline)
 	{

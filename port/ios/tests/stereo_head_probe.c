@@ -1810,6 +1810,25 @@ static void immersive_cutscene(void)
 		check(fabsf(yaw - 120.0f) < 0.01f && fabsf(after[0] - forward[0]) < 1e-4f && fabsf(after[2] - forward[2]) < 1e-4f,
 			"a cut re-aims the new camera at the room-anchored frame");
 	}
+	/* a camera pitched 20 degrees up: the head's yaw turns about the
+	world's up (the third-person path's reading), so the eyes keep the
+	room's vertical and the frame pitches with the camera */
+	{
+		float pitched_forward[3] = { cosf(20.0f * DEGREES), 0.0f, sinf(20.0f * DEGREES) };
+		float pitched_up[3] = { -sinf(20.0f * DEGREES), 0.0f, cosf(20.0f * DEGREES) };
+		float right_z, frame[3];
+
+		halo_stereo_head_orient(pitched_forward, pitched_up);
+		/* the eyes' right (forward x up) stays level: no roll from the turn */
+		right_z = pitched_forward[0] * pitched_up[1] - pitched_forward[1] * pitched_up[0];
+		halo_stereo_cutscene_frame(frame, up, tangents, &dim);
+		printf("  a camera 20 deg up, the head 30 left and 10 up: the eyes at %.3f, %.3f deg; their right's rise %.5f\n",
+			atan2f(pitched_forward[1], pitched_forward[0]) / DEGREES,
+			asinf(fminf(1.0f, pitched_forward[2])) / DEGREES, right_z);
+		check(fabsf(atan2f(pitched_forward[1], pitched_forward[0]) / DEGREES - 30.0f) < 0.01f &&
+			fabsf(asinf(fminf(1.0f, pitched_forward[2])) / DEGREES - 30.0f) < 0.01f && fabsf(right_z) < 1e-5f,
+			"a pitched camera: the yaw about the world's up, the pitch added, the eyes level across");
+	}
 	check(!halo_stereo_head_look(0, 0.0f, &look_yaw, &look_pitch) || (look_yaw == 0.0f && look_pitch == 0.0f),
 		"the head never turns the look in the immersive cutscene");
 	/* a telephoto camera: the film, through the cut */
@@ -1821,14 +1840,70 @@ static void immersive_cutscene(void)
 	immersive_orient(0.0f, &yaw, &pitch);
 	check(immersive() && halo_stereo_cutscene_immersive() && fabsf(yaw - 30.0f) < 0.01f,
 		"70 degrees again: immersive, the frame still where the cutscene anchored it");
-	/* a first-person cutscene camera stays immersive as before, not this */
+	{
+		float progress, bars;
+
+		check(!halo_stereo_expansion(&progress, &bars),
+			"a film shot cutting to an immersive one doesn't start the cutscene window's expansion");
+	}
+	/* a two-tick gap in the letterbox with the camera at the eyes: still
+	immersive */
+	game_settled = 1;
+	passed = 1;
+	game_letterbox = 0;
+	for (frame = 0; frame < 2; frame++) {
+		cutscene_frame();
+		passed &= halo_stereo_cutscene_immersive() && !halo_stereo_film();
+	}
+	game_letterbox = 1;
+	cutscene_frame();
+	check(passed && halo_stereo_cutscene_immersive(), "a two-tick gap in the letterbox, the camera at the eyes: immersive");
+	/* the cutscene's end with the camera gliding back to the eyes: the film
+	at once, through the cut, until it settles; then the window expands out
+	to the full view */
+	game_letterbox = 0;
+	game_settled = 0;
+	cutscene_frame();
+	check(on_film() && !halo_stereo_cutscene_immersive(), "the end, the camera gliding: the film at once");
+	passed = 1;
+	for (frame = 0; frame < 30; frame++) {
+		cutscene_frame();
+		passed &= on_film();
+	}
+	check(passed, "the film holds while the camera glides");
+	game_settled = 1;
+	{
+		float progress, bars;
+		int expanded = 0;
+
+		passed = 1;
+		for (frame = 0; frame < 8 * FILM_HOLD_FRAMES && !expanded; frame++) {
+			cutscene_frame();
+			expanded = halo_stereo_expansion(&progress, &bars);
+			passed &= !halo_stereo_cutscene_immersive();
+		}
+		check(expanded && passed, "settled: the film expands out to the full view, never immersive again");
+	}
+	for (frame = 0; frame < 8 * FILM_HOLD_FRAMES; frame++)
+		cutscene_frame();
+	check(immersive() && !halo_stereo_film() && !halo_stereo_cutscene_immersive(), "then the full view");
+	/* the next cutscene ends with the camera already at the eyes: the hold
+	immersive, then the film (the cut covers the handoff), then the expansion */
+	game_letterbox = 1;
+	for (frame = 0; frame < 5; frame++)
+		cutscene_frame();
+	check(halo_stereo_cutscene_immersive(), "the next cutscene: immersive");
 	game_letterbox = 0;
 	passed = 1;
-	for (frame = 0; frame < 8 * FILM_HOLD_FRAMES; frame++) {
+	for (frame = 0; frame < FILM_HOLD_FRAMES; frame++) {
 		cutscene_frame();
-		passed &= !halo_stereo_film();
+		passed &= halo_stereo_cutscene_immersive();
 	}
-	check(passed && !halo_stereo_cutscene_immersive(), "the cutscene's end: the full view, never the film");
+	cutscene_frame();
+	check(passed && on_film(), "its end, the camera at the eyes: immersive through the hold, then the film");
+	for (frame = 0; frame < 8 * FILM_HOLD_FRAMES; frame++)
+		cutscene_frame();
+	check(immersive() && !halo_stereo_film() && !halo_stereo_cutscene_immersive(), "then the full view again");
 	/* the setting off: the film, as before */
 	cutscene_immersive_setting = 0;
 	game_letterbox = 1;
