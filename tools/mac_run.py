@@ -97,6 +97,10 @@ DEFAULTS = {
     "debug.null_renderer": "false",
     "debug.gl_debug": "false",
     "debug.metal_state_cache": "true",
+    "debug.metal_specialize": "true",
+    "debug.metal_pipeline_archive": "false",
+    "debug.shader_list_warm": "true",
+    "debug.shader_list_record": '"shader-lists-missed"',
     "debug.fixed_timestep": "false",
     "debug.input_record": '""',
     "debug.input_replay": '""',
@@ -740,10 +744,14 @@ def prepare(args, documents, rewrite=False):
         (runner / "shots").mkdir()
     if args.dump_shaders:
         (runner / "shaders").mkdir()
+    if getattr(args, "record_shader_lists", False):
+        (runner / "shader-lists").mkdir()
     if args.replay:
         shutil.copytree(args.replay, runner / "replay",
                         ignore=lambda folder, names: [n for n in names if not n.endswith((".vsh", ".key"))])
     settings = reset_settings(documents, args.screenshot_every, args.dump_shaders, bool(args.replay))
+    if getattr(args, "record_shader_lists", False):
+        settings["debug.shader_list_record"] = f'"{runner}/shader-lists"'
     settings["debug.exit_after"] = f"{float(args.exit_after)}"
     for assignment in args.set:
         key, value = assignment.split("=", 1)
@@ -1074,6 +1082,9 @@ def main():
                             help="a console command for init.txt, e.g. 'map_name a10' (repeatable)")
     run_parser.add_argument("--screenshot-every", type=int, default=0, metavar="FRAMES")
     run_parser.add_argument("--dump-shaders", action="store_true")
+    run_parser.add_argument("--record-shader-lists", action="store_true",
+                            help="append the shaders and pipelines made while drawing to runner/shader-lists/MAP.txt "
+                                 "(tools/shader_lists.py merges them into port/shader-lists)")
     run_parser.add_argument("--replay", type=Path, help="a folder of recorded .vsh/.key shader inputs")
     run_parser.add_argument("--metal-validation", action="store_true",
                             help="turn on Metal's API validation (for display.renderer=\"metal\" runs)")

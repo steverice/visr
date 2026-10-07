@@ -58,7 +58,16 @@ backend describes each of the 16 in an AttributeTable entry, the C struct
 gpu_metal_attribute (gpu_metal.m), and binds the buffer it reads at offset 0,
 since the front end's offsets need not be aligned. The formats are gpu.h's
 GPU_ATTRIBUTE_*, converted as OpenGL ES converts them; missing components are
-(0, 0, 0, 1) */
+(0, 0, 0, 1).
+
+Each attribute's kind may also come as function constant n (attribute_kind_in
+n): 0 for a constant attribute, else its GPU_ATTRIBUTE_* format. The Metal
+backend specializes each pipeline's vertex function with the kinds of the
+draws that use it (pipeline_key), so the compiler folds the format switch
+away; without them (the shader replays, xcrun metal) the kind is read from
+the table per draw, as before. Both read the same bytes the same way.
+Function constant indices 0-15 are the attribute kinds; any other constant a
+vertex shader takes must start at 16. */
 static const char msl_vertex_fetch[] =
 	"struct AttributeEntry\n"
 	"{\n"
@@ -72,19 +81,27 @@ static const char msl_vertex_fetch[] =
 	"\tAttributeEntry entries[16];\n"
 	"\tfloat4 constants[16];\n"
 	"};\n"
+	"#define ATTRIBUTE_KIND(n) \\\n"
+	"\tconstant uint attribute_kind_in##n [[function_constant(n)]]; \\\n"
+	"\tconstant uint attribute_kind##n = is_function_constant_defined(attribute_kind_in##n) ? attribute_kind_in##n : 0xffffffffu;\n"
+	"ATTRIBUTE_KIND(0) ATTRIBUTE_KIND(1) ATTRIBUTE_KIND(2) ATTRIBUTE_KIND(3)\n"
+	"ATTRIBUTE_KIND(4) ATTRIBUTE_KIND(5) ATTRIBUTE_KIND(6) ATTRIBUTE_KIND(7)\n"
+	"ATTRIBUTE_KIND(8) ATTRIBUTE_KIND(9) ATTRIBUTE_KIND(10) ATTRIBUTE_KIND(11)\n"
+	"ATTRIBUTE_KIND(12) ATTRIBUTE_KIND(13) ATTRIBUTE_KIND(14) ATTRIBUTE_KIND(15)\n"
 	"static inline uint read_u16(device const uchar *p) { return uint(p[0]) | (uint(p[1]) << 8); }\n"
 	"static inline uint read_u32(device const uchar *p) { return read_u16(p) | (read_u16(p + 2) << 16); }\n"
 	"static inline float read_f32(device const uchar *p) { return as_type<float>(read_u32(p)); }\n"
 	"static inline float read_s16(device const uchar *p) { return float(short(ushort(read_u16(p)))); }\n"
 	"static inline float read_n16(device const uchar *p) { return max(read_s16(p) / 32767.0, -1.0); }\n"
-	"static inline float4 fetch_attribute(uint index, uint vid, constant AttributeTable &table, device const uchar *stream)\n"
+	"static inline float4 fetch_attribute(uint index, uint vid, constant AttributeTable &table, device const uchar *stream,\n"
+	"\tuint kind)\n"
 	"{\n"
 	"\tAttributeEntry e = table.entries[index];\n"
-	"\tif (e.stream >= 16)\n"
+	"\tif (kind == 0xffffffffu ? e.stream >= 16 : kind == 0u)\n"
 	"\t\treturn table.constants[index];\n"
 	"\tdevice const uchar *p = stream + e.offset + vid * e.stride;\n"
 	"\tfloat4 v = float4(0.0, 0.0, 0.0, 1.0);\n"
-	"\tswitch (e.format)\n"
+	"\tswitch (kind == 0xffffffffu ? e.format : kind)\n"
 	"\t{\n"
 	"\tcase 1: v.x = read_f32(p); break;\n"
 	"\tcase 2: v.xy = float2(read_f32(p), read_f32(p + 4)); break;\n"
@@ -111,10 +128,11 @@ static const char msl_vertex_fetch[] =
 	/* NORMPACKED3: the raw word unpack_normpacked3 expects; a constant
 	packed attribute is 0, which unpacks to (0, 0, 0, 1), as GL's
 	glVertexAttribI4ui(0, 0, 0, 0) (gpu_gl.c) */
-	"static inline uint fetch_packed(uint index, uint vid, constant AttributeTable &table, device const uchar *stream)\n"
+	"static inline uint fetch_packed(uint index, uint vid, constant AttributeTable &table, device const uchar *stream,\n"
+	"\tuint kind)\n"
 	"{\n"
 	"\tAttributeEntry e = table.entries[index];\n"
-	"\tif (e.stream >= 16)\n"
+	"\tif (kind == 0xffffffffu ? e.stream >= 16 : kind == 0u)\n"
 	"\t\treturn 0u;\n"
 	"\treturn read_u32(stream + e.offset + vid * e.stride);\n"
 	"}\n";
@@ -195,9 +213,11 @@ void nv2a_msl_vertex_main(struct xgpu_text *text, const struct nv2a_dialect *dia
 	for (index = 0; index < XGPU_VERTEX_ATTRIBUTE_COUNT; index++)
 	{
 		if (packed_attribute_mask & (1UL << index))
-			xgpu_text_append(text, "\tuint v%lu_packed = fetch_packed(%lu, vid, table, stream%lu);\n", index, index, index);
+			xgpu_text_append(text, "\tuint v%lu_packed = fetch_packed(%lu, vid, table, stream%lu, attribute_kind%lu);\n",
+				index, index, index, index);
 		else
-			xgpu_text_append(text, "\tvec4 v%lu_in = fetch_attribute(%lu, vid, table, stream%lu);\n", index, index, index);
+			xgpu_text_append(text, "\tvec4 v%lu_in = fetch_attribute(%lu, vid, table, stream%lu, attribute_kind%lu);\n",
+				index, index, index, index);
 	}
 	xgpu_text_append(text, "\tfloat4 gl_Position;\n\tfloat gl_PointSize;\n");
 	for (index = 0; index < VARYING_COUNT; index++)

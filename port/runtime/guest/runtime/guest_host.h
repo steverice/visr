@@ -113,6 +113,11 @@ uint32_t host_gpu_visibility_result(uint32_t slot, uint32_t *samples);
 void host_gpu_flush(void);
 uint32_t host_gpu_present(gpu_texture back_buffer);
 uint32_t host_gpu_call_count_take(void);
+uint32_t host_gpu_warm_list_read(const char *name, char *text, uint32_t size);
+void host_gpu_warm_begin(void);
+void host_gpu_pipeline_warm(const struct gpu_pipeline_description *description);
+void host_gpu_warm_end(void);
+uint32_t host_gpu_pipeline_built_take(struct gpu_pipeline_description *description);
 void host_gpu_initialize(uint32_t flags, struct gpu_capabilities *capabilities);
 
 #endif

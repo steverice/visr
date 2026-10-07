@@ -1883,6 +1883,36 @@ static uint32_t gpu_gl_call_count_take(void)
 	return count;
 }
 
+/* ---------- compiling at map load: GL links its programs as it draws, and
+carries no lists (gpu.h) */
+
+static uint32_t gpu_gl_warm_list_read(const char *name, char *text, uint32_t size)
+{
+	(void)name;
+	(void)text;
+	(void)size;
+	return 0;
+}
+
+static void gpu_gl_warm_begin(void)
+{
+}
+
+static void gpu_gl_pipeline_warm(const struct gpu_pipeline_description *description)
+{
+	(void)description;
+}
+
+static void gpu_gl_warm_end(void)
+{
+}
+
+static uint32_t gpu_gl_pipeline_built_take(struct gpu_pipeline_description *description)
+{
+	(void)description;
+	return 0;
+}
+
 /* ---------- the backend */
 
 #define GPU_GL_FUNCTION(type, name, parameters, arguments) .name = gpu_gl_##name,

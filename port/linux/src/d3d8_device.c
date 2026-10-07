@@ -265,7 +265,29 @@ struct vertex_shader_object
 	unsigned long packed_mask;
 	/* [0] streams per the declaration, [1] immediate mode (all floats) */
 	gpu_shader shader[2];
+	/* the packed-attribute mask each was translated with */
+	unsigned long shader_packed_mask[2];
+	/* debug.gpu_dump_shaders, for each compiled at map load: its source,
+	dumped at its first draw (shader_dump_pending) */
+	char *dump_source[2];
+	/* every object, newest first, and its instructions' hash: its name in
+	the shader lists (shader_list_warm) */
+	struct vertex_shader_object *next_object;
+	uint64_t program_hash;
 };
+
+static struct vertex_shader_object *vertex_shader_objects;
+
+/* FNV-1a, 64 bits: the shader lists' names for programs and pixel shader keys */
+static uint64_t hash64(const void *data, unsigned long size)
+{
+	const unsigned char *bytes = data;
+	uint64_t hash = 14695981039346656037ULL;
+
+	while (size--)
+		hash = (hash ^ *bytes++) * 1099511628211ULL;
+	return hash;
+}
 
 /* ---------- programs */
 
@@ -275,6 +297,9 @@ struct fragment_entry
 	unsigned long hash;
 	struct nv2a_pixel_shader_key key;
 	gpu_shader shader;
+	/* debug.gpu_dump_shaders, for a shader compiled at map load: its source,
+	dumped at its first draw (shader_dump_pending) */
+	char *dump_source;
 };
 
 #define FRAGMENT_BUCKETS 1024
@@ -807,7 +832,9 @@ static void gl_initialize(void)
 		(config_boolean("display.compressed_textures") ? GPU_INITIALIZE_COMPRESSED_TEXTURES : 0) |
 		(!strcmp(config_string("display.upscaler"), "metalfx") ? GPU_INITIALIZE_METALFX : 0) |
 		(config_boolean("display.immersive") ? GPU_INITIALIZE_IMMERSIVE : 0) |
-		(config_boolean("debug.metal_state_cache") ? 0 : GPU_INITIALIZE_NO_STATE_CACHE), &device_capabilities);
+		(config_boolean("debug.metal_state_cache") ? 0 : GPU_INITIALIZE_NO_STATE_CACHE) |
+		(config_boolean("debug.metal_specialize") ? 0 : GPU_INITIALIZE_NO_SPECIALIZE) |
+		(config_boolean("debug.metal_pipeline_archive") ? 0 : GPU_INITIALIZE_NO_PIPELINE_ARCHIVE), &device_capabilities);
 	screen_maximum_texture_size = (int32_t)device_capabilities.max_texture_size;
 #ifdef HALO_ILP32
 	/* Select the real Retina drawable before allocating any screen targets. */
@@ -1502,8 +1529,11 @@ HRESULT WINAPI D3DDevice_CreateVertexShader(CONST DWORD *declaration, CONST DWOR
 		object->instruction_count = function[0] >> 16;
 		object->instructions = malloc(object->instruction_count * 4 * sizeof(DWORD));
 		memcpy(object->instructions, function + 1, object->instruction_count * 4 * sizeof(DWORD));
+		object->program_hash = hash64(object->instructions, object->instruction_count * 4 * sizeof(DWORD));
 	}
 	parse_declaration(object, declaration);
+	object->next_object = vertex_shader_objects;
+	vertex_shader_objects = object;
 	/* odd values are FVF codes; programmable shader handles are even */
 	*handle = (DWORD)object;
 	return S_OK;
@@ -1609,38 +1639,103 @@ static void dump_file(const char *directory, const char *name, const void *data,
 	fclose(file);
 }
 
+static void shader_list_vertex_made(struct vertex_shader_object *program, int variant);
+static void shader_list_pixel_made(const struct nv2a_pixel_shader_key *key, gpu_shader shader);
+
+/* compiling a map's shader list (halo_shader_list_warm) */
+static BOOL shader_list_warming;
+
+/* debug.gpu_dump_shaders: a vertex shader's source and inputs */
+static void vertex_shader_dump(const struct vertex_shader_object *program, int variant, const char *source)
+{
+	char path[512];
+	FILE *file;
+	DWORD header[2];
+
+	snprintf(path, sizeof(path), "%s/vs%03lu_%d.%s", debug_settings.dump_shaders, program->id, variant,
+		shader_extension(&shader_dialect));
+	if ((file = fopen(path, "w")) != NULL)
+	{
+		fputs(source, file);
+		fclose(file);
+	}
+	header[0] = (DWORD)program->instruction_count;
+	header[1] = (DWORD)program->shader_packed_mask[variant];
+	snprintf(path, sizeof(path), "vs%03lu_%d.vsh", program->id, variant);
+	dump_file(debug_settings.dump_shaders, path, header, sizeof(header),
+		program->instructions, program->instruction_count * 4 * sizeof(DWORD));
+}
+
+/* debug.gpu_dump_shaders: a pixel shader's source and key */
+static void fragment_shader_dump(const struct fragment_entry *entry, const char *source)
+{
+	char path[512];
+	FILE *file;
+
+	snprintf(path, sizeof(path), "%s/ps_%08lx.%s", debug_settings.dump_shaders, entry->hash, shader_extension(&shader_dialect));
+	if ((file = fopen(path, "w")) != NULL)
+	{
+		fputs(source, file);
+		fclose(file);
+	}
+	snprintf(path, sizeof(path), "ps_%08lx.key", entry->hash);
+	dump_file(debug_settings.dump_shaders, path, &entry->key, sizeof(entry->key), NULL, 0);
+}
+
+/* debug.gpu_dump_shaders dumps a shader when it is compiled, except at map
+load, which compiles shaders no draw may use: the dump then waits for the
+shader's first draw, so the dumps name the shaders the run drew, with or
+without the lists. Returns the copy to keep for that, or NULL to dump now
+(or not at all). */
+static char *shader_dump_pending(const char *source)
+{
+	return source && debug_settings.dump_shaders && shader_list_warming ? strdup(source) : NULL;
+}
+
+/* a program's shader for a variant, translated and compiled with
+packed_mask the first time */
+static gpu_shader vertex_shader_compile(struct vertex_shader_object *program, int variant, unsigned long packed_mask)
+{
+	if (!program->shader[variant])
+	{
+		char *source = nv2a_vertex_shader_translate(&shader_dialect, program->instructions, program->instruction_count, packed_mask);
+
+		program->shader[variant] = source ? gpu_shader_create(GPU_SHADER_VERTEX, source) : 0;
+		program->shader_packed_mask[variant] = packed_mask;
+		program->dump_source[variant] = shader_dump_pending(source);
+		if (source && debug_settings.dump_shaders && !program->dump_source[variant])
+			vertex_shader_dump(program, variant, source);
+		free(source);
+		shader_list_vertex_made(program, variant);
+	}
+	return program->shader[variant];
+}
+
 static gpu_shader vertex_shader_get(struct vertex_shader_object *program, BOOL immediate)
 {
 	int variant = immediate ? 1 : 0;
 
-	if (!program->shader[variant])
+	if (program->shader[variant])
 	{
-		unsigned long packed_mask = immediate ? 0 : device.vertex_shader->packed_mask;
-		char *source = nv2a_vertex_shader_translate(&shader_dialect, program->instructions, program->instruction_count, packed_mask);
-
-		program->shader[variant] = source ? gpu_shader_create(GPU_SHADER_VERTEX, source) : 0;
-		if (source && debug_settings.dump_shaders)
+		/* (compiled at map load: dumped now, at its first draw) */
+		if (program->dump_source[variant])
 		{
-			char path[512];
-			FILE *file;
-			DWORD header[2];
-
-			snprintf(path, sizeof(path), "%s/vs%03lu_%d.%s", debug_settings.dump_shaders, program->id, variant,
-				shader_extension(&shader_dialect));
-			if ((file = fopen(path, "w")) != NULL)
-			{
-				fputs(source, file);
-				fclose(file);
-			}
-			header[0] = (DWORD)program->instruction_count;
-			header[1] = (DWORD)packed_mask;
-			snprintf(path, sizeof(path), "vs%03lu_%d.vsh", program->id, variant);
-			dump_file(debug_settings.dump_shaders, path, header, sizeof(header),
-				program->instructions, program->instruction_count * 4 * sizeof(DWORD));
+			vertex_shader_dump(program, variant, program->dump_source[variant]);
+			free(program->dump_source[variant]);
+			program->dump_source[variant] = NULL;
 		}
-		free(source);
+		return program->shader[variant];
 	}
-	return program->shader[variant];
+	return vertex_shader_compile(program, variant, immediate ? 0 : device.vertex_shader->packed_mask);
+}
+
+/* a pixel shader compiled at map load, at its first draw: dumped */
+static gpu_shader fragment_shader_first_draw(struct fragment_entry *entry)
+{
+	fragment_shader_dump(entry, entry->dump_source);
+	free(entry->dump_source);
+	entry->dump_source = NULL;
+	return entry->shader;
 }
 
 typedef char pixel_shader_key_size_assert[sizeof(struct nv2a_pixel_shader_key) % 4 == 0 ? 1 : -1];
@@ -1660,7 +1755,7 @@ static gpu_shader fragment_shader_get(const struct nv2a_pixel_shader_key *key)
 	for (index = 0; index < RECENT_FRAGMENT_COUNT; index++)
 	{
 		if (recent[index] && !memcmp(&recent[index]->key, key, sizeof(*key)))
-			return recent[index]->shader;
+			return recent[index]->dump_source ? fragment_shader_first_draw(recent[index]) : recent[index]->shader;
 	}
 	hash = hash_words(key, sizeof(*key));
 	bucket = &fragment_buckets[hash % FRAGMENT_BUCKETS];
@@ -1669,7 +1764,7 @@ static gpu_shader fragment_shader_get(const struct nv2a_pixel_shader_key *key)
 		if (entry->hash == hash && !memcmp(&entry->key, key, sizeof(*key)))
 		{
 			recent[recent_next++ % RECENT_FRAGMENT_COUNT] = entry;
-			return entry->shader;
+			return entry->dump_source ? fragment_shader_first_draw(entry) : entry->shader;
 		}
 	}
 	entry = calloc(1, sizeof(*entry));
@@ -1677,27 +1772,420 @@ static gpu_shader fragment_shader_get(const struct nv2a_pixel_shader_key *key)
 	entry->key = *key;
 	source = nv2a_pixel_shader_translate(&shader_dialect, key);
 	entry->shader = source ? gpu_shader_create(GPU_SHADER_PIXEL, source) : 0;
-	if (source && debug_settings.dump_shaders)
-	{
-		char path[512];
-		FILE *file;
-
-		snprintf(path, sizeof(path), "%s/ps_%08lx.%s", debug_settings.dump_shaders, hash, shader_extension(&shader_dialect));
-		if ((file = fopen(path, "w")) != NULL)
-		{
-			fputs(source, file);
-			fclose(file);
-		}
-		snprintf(path, sizeof(path), "ps_%08lx.key", hash);
-		dump_file(debug_settings.dump_shaders, path, key, sizeof(*key), NULL, 0);
-	}
+	entry->dump_source = shader_dump_pending(source);
+	if (source && debug_settings.dump_shaders && !entry->dump_source)
+		fragment_shader_dump(entry, source);
 	free(source);
 	entry->next = *bucket;
 	*bucket = entry;
 	recent[recent_next++ % RECENT_FRAGMENT_COUNT] = entry;
+	shader_list_pixel_made(key, entry->shader);
 	return entry->shader;
 }
 
+
+/* ---------- shader lists: compiling at map load
+
+The Metal backend compiles a shader when the front end first asks for it and
+a pipeline when a draw first needs it, and a frame waits for both: tens of
+milliseconds each on a cold start, seconds at a map's first frames. So each
+map carries a list (port/shader-lists/MAP.txt, in the app as
+shader-lists/MAP.txt) of the vertex shaders, pixel shaders and pipelines its
+draws made in earlier runs, and halo_shader_list_warm compiles all of them
+after the map loads, before its first frame, under the loading screen.
+Lines, one each:
+
+  vs PROGRAM VARIANT MASK      a vertex program (the 64-bit FNV-1a of its
+                               instructions, hex), 0 for streams or 1 for
+                               immediate mode, and the packed-attribute mask
+                               it was translated with (hex)
+  ps KEY HEX                   a pixel shader: its key's 64-bit hash and the
+                               key's bytes (struct nv2a_pixel_shader_key)
+  pipeline VS PS BLEND SOURCE DESTINATION OPERATION MASK EXACT DEPTH KINDS
+                               a pipeline (gpu_pipeline_description): VS is
+                               PROGRAM.VARIANT.MASK, PS a KEY, the rest
+                               decimal, KINDS the 16 attribute kinds in hex
+
+Anything still made while drawing, by the Metal backend, is logged once,
+with its line, and appended to FOLDER/MAP.txt, FOLDER being
+debug.shader_list_record (shader-lists-missed in the data folder unless set;
+"" for none), each line once however many sessions make it: the record of
+what the lists missed, gathered from devices and runners for
+tools/shader_lists.py to merge into the repository's lists. */
+
+/* each shader handle's name in the lists, by handle */
+struct shader_list_name
+{
+	unsigned char kind;      /* 0 none, 1 vertex, 2 pixel */
+	unsigned char variant;
+	unsigned long packed_mask;
+	uint64_t hash;
+};
+
+static struct
+{
+	char map[64];
+	struct shader_list_name *names;
+	unsigned long name_count;
+	const char *record_directory;
+	int record_checked;
+	/* the hashes of the lines in record_map's file, so none goes in twice */
+	char record_map[64];
+	uint64_t *recorded;
+	unsigned long recorded_count, recorded_capacity;
+} shader_list;
+
+static struct shader_list_name *shader_list_name(gpu_shader shader)
+{
+	if (!shader)
+		return NULL;
+	if (shader >= shader_list.name_count)
+	{
+		unsigned long count = shader_list.name_count ? shader_list.name_count : 1024;
+
+		while (count <= shader)
+			count *= 2;
+		shader_list.names = realloc(shader_list.names, count * sizeof(*shader_list.names));
+		memset(shader_list.names + shader_list.name_count, 0, (count - shader_list.name_count) * sizeof(*shader_list.names));
+		shader_list.name_count = count;
+	}
+	return &shader_list.names[shader];
+}
+
+static BOOL shader_list_recorded(uint64_t hash)
+{
+	unsigned long index;
+
+	for (index = 0; index < shader_list.recorded_count; index++)
+	{
+		if (shader_list.recorded[index] == hash)
+			return TRUE;
+	}
+	return FALSE;
+}
+
+static void shader_list_recorded_add(uint64_t hash)
+{
+	if (shader_list.recorded_count == shader_list.recorded_capacity)
+	{
+		unsigned long capacity = shader_list.recorded_capacity ? 2 * shader_list.recorded_capacity : 256;
+		uint64_t *grown = realloc(shader_list.recorded, capacity * sizeof(*grown));
+
+		if (!grown)
+			return;
+		shader_list.recorded = grown;
+		shader_list.recorded_capacity = capacity;
+	}
+	shader_list.recorded[shader_list.recorded_count++] = hash;
+}
+
+/* the record file's lines for the map in hand, read the first time one of
+its lines is recorded */
+static void shader_list_recorded_load(const char *path)
+{
+	char line[1024];
+	FILE *file;
+
+	if (!strcmp(shader_list.record_map, shader_list.map))
+		return;
+	snprintf(shader_list.record_map, sizeof(shader_list.record_map), "%s", shader_list.map);
+	shader_list.recorded_count = 0;
+	if ((file = fopen(path, "r")) == NULL)
+		return;
+	while (fgets(line, sizeof(line), file))
+	{
+		line[strcspn(line, "\r\n")] = 0;
+		if (line[0])
+			shader_list_recorded_add(hash64(line, strlen(line)));
+	}
+	fclose(file);
+}
+
+/* a line for the map's list, made while drawing: logged, and recorded
+under debug.shader_list_record (MSL backends only: the lists are Metal's) */
+static void shader_list_made(const char *line)
+{
+	char path[512];
+	uint64_t hash;
+	FILE *file;
+
+	if (shader_list_warming || !shader_list.map[0] || !shader_dialect.msl)
+		return;
+	platform_log("shader list %s: made while drawing: %s", shader_list.map, line);
+	if (!shader_list.record_checked)
+	{
+		shader_list.record_directory = *config_string("debug.shader_list_record") ?
+			config_string("debug.shader_list_record") : NULL;
+		shader_list.record_checked = 1;
+		if (shader_list.record_directory)
+			posix_make_directory(shader_list.record_directory);
+	}
+	if (!shader_list.record_directory)
+		return;
+	snprintf(path, sizeof(path), "%s/%s.txt", shader_list.record_directory, shader_list.map);
+	shader_list_recorded_load(path);
+	hash = hash64(line, strlen(line));
+	if (shader_list_recorded(hash))
+		return;
+	if ((file = fopen(path, "a")) != NULL)
+	{
+		fprintf(file, "%s\n", line);
+		fclose(file);
+		shader_list_recorded_add(hash);
+	}
+}
+
+static void shader_list_vertex_made(struct vertex_shader_object *program, int variant)
+{
+	struct shader_list_name *name = shader_list_name(program->shader[variant]);
+	char line[96];
+
+	if (!name)
+		return;
+	name->kind = 1;
+	name->variant = (unsigned char)variant;
+	name->packed_mask = program->shader_packed_mask[variant];
+	name->hash = program->program_hash;
+	snprintf(line, sizeof(line), "vs %016llx %d %lx", (unsigned long long)name->hash, variant, name->packed_mask);
+	shader_list_made(line);
+}
+
+static void shader_list_pixel_made(const struct nv2a_pixel_shader_key *key, gpu_shader shader)
+{
+	struct shader_list_name *name = shader_list_name(shader);
+	char line[64 + 2 * sizeof(*key)];
+	const unsigned char *bytes = (const unsigned char *)key;
+	unsigned long index, length;
+
+	if (!name)
+		return;
+	name->kind = 2;
+	name->hash = hash64(key, sizeof(*key));
+	length = (unsigned long)snprintf(line, sizeof(line), "ps %016llx ", (unsigned long long)name->hash);
+	for (index = 0; index < sizeof(*key); index++)
+		length += (unsigned long)snprintf(line + length, sizeof(line) - length, "%02x", bytes[index]);
+	shader_list_made(line);
+}
+
+/* the pipelines draws made since the last frame, as list lines (called at
+Present) */
+static void shader_list_take_pipelines(void)
+{
+	struct gpu_pipeline_description built;
+
+	while (gpu_pipeline_built_take(&built))
+	{
+		struct shader_list_name *vertex = shader_list_name(built.vertex_shader);
+		struct shader_list_name *pixel = shader_list_name(built.pixel_shader);
+		char line[192], kinds[2 * GPU_ATTRIBUTE_COUNT + 1];
+		int index;
+
+		if (!vertex || !pixel || vertex->kind != 1 || pixel->kind != 2)
+			continue;
+		for (index = 0; index < GPU_ATTRIBUTE_COUNT; index++)
+			snprintf(kinds + 2 * index, 3, "%02x", built.attribute_kinds[index]);
+		snprintf(line, sizeof(line), "pipeline %016llx.%u.%lx %016llx %u %u %u %u %u %u %u %s",
+			(unsigned long long)vertex->hash, vertex->variant, vertex->packed_mask, (unsigned long long)pixel->hash,
+			built.blend, built.source, built.destination, built.operation, built.write_mask, built.exact_borders,
+			built.depth, kinds);
+		shader_list_made(line);
+	}
+}
+
+static int hex_digit(char c)
+{
+	return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+}
+
+/* count bytes from 2 * count hex digits; FALSE, with bytes undefined, if
+any isn't one (a damaged line, which is skipped) */
+static BOOL hex_bytes(const char *hex, unsigned char *bytes, unsigned long count)
+{
+	unsigned long index;
+
+	for (index = 0; index < count; index++, hex += 2)
+	{
+		int high = hex_digit(hex[0]), low = high < 0 ? -1 : hex_digit(hex[1]);
+
+		if (low < 0)
+			return FALSE;
+		bytes[index] = (unsigned char)(high * 16 + low);
+	}
+	return TRUE;
+}
+
+/* the pixel shader a list's KEY names, among those made so far */
+static gpu_shader shader_list_pixel(uint64_t hash)
+{
+	unsigned long index;
+
+	for (index = 1; index < shader_list.name_count; index++)
+	{
+		if (shader_list.names[index].kind == 2 && shader_list.names[index].hash == hash)
+			return (gpu_shader)index;
+	}
+	return 0;
+}
+
+/* the vertex program objects a list's line names, the next one following
+`after` (NULL for the first): those whose instructions hash to hash and, for a vs line
+(compiled FALSE), whose draws would translate that variant with mask (the
+object's own declaration's mask for streams, 0 for immediate mode), or, for
+a pipeline line, whose variant was compiled with mask. The game can create a
+program more than once with the same instructions (one object for each
+declaration), and a line stands for all of them; an object whose shader
+would be translated with another mask is never warmed with this one. */
+static struct vertex_shader_object *shader_list_program(struct vertex_shader_object *after, uint64_t hash, int variant,
+	unsigned long mask, BOOL compiled)
+{
+	struct vertex_shader_object *object;
+
+	for (object = after ? after->next_object : vertex_shader_objects; object; object = object->next_object)
+	{
+		if (!object->instructions || object->program_hash != hash)
+			continue;
+		if (compiled ? object->shader[variant] && object->shader_packed_mask[variant] == mask :
+			(variant ? mask == 0 : object->packed_mask == mask))
+			return object;
+	}
+	return NULL;
+}
+
+void halo_shader_list_warm(char const *map_name)
+{
+	const char *base = map_name;
+	const char *cursor;
+	char *text, *line, *next;
+	uint32_t size;
+	unsigned long vertex_count = 0, pixel_count = 0, pipeline_count = 0, missing = 0;
+	double started;
+	int pass;
+
+	for (cursor = map_name; *cursor; cursor++)
+	{
+		if (*cursor == '\\' || *cursor == '/')
+			base = cursor + 1;
+	}
+	snprintf(shader_list.map, sizeof(shader_list.map), "%s", base);
+	if (!device.gl_ready || !config_boolean("debug.shader_list_warm") ||
+		!(size = gpu_warm_list_read(shader_list.map, NULL, 0)))
+		return;
+	text = malloc(size + 1);
+	if (!text || gpu_warm_list_read(shader_list.map, text, size) != size)
+	{
+		free(text);
+		return;
+	}
+	text[size] = 0;
+	started = halo_frame_trace_milliseconds();
+	shader_list_warming = TRUE;
+	gpu_warm_begin();
+	/* the shaders, then the pipelines, which name them */
+	for (pass = 0; pass < 2; pass++)
+	{
+		for (line = text; line && *line; line = next)
+		{
+			char kind[16], first[600], second[64];
+			unsigned int values[7];
+
+			next = strchr(line, '\n');
+			if (next)
+				*next++ = 0;
+			if (sscanf(line, "%15s", kind) != 1 || kind[0] == '#')
+				continue;
+			if (pass == 0 && !strcmp(kind, "vs"))
+			{
+				unsigned long long hash;
+				int variant;
+				unsigned long mask;
+				struct vertex_shader_object *program = NULL;
+				BOOL used = FALSE;
+
+				if (sscanf(line, "vs %llx %d %lx", &hash, &variant, &mask) != 3 || variant < 0 || variant > 1)
+				{
+					missing++;
+					continue;
+				}
+				while ((program = shader_list_program(program, (uint64_t)hash, variant, mask, FALSE)))
+				{
+					if (!program->shader[variant])
+					{
+						vertex_shader_compile(program, variant, mask);
+						vertex_count++;
+					}
+					used = TRUE;
+				}
+				missing += !used;
+			}
+			else if (pass == 0 && !strcmp(kind, "ps"))
+			{
+				struct nv2a_pixel_shader_key key;
+				unsigned char *bytes = (unsigned char *)&key;
+
+				if (sscanf(line, "ps %63s %599s", second, first) != 2 || strlen(first) != 2 * sizeof(key) ||
+					!hex_bytes(first, bytes, sizeof(key)))
+				{
+					missing++;
+					continue;
+				}
+				fragment_shader_get(&key);
+				pixel_count++;
+			}
+			else if (pass == 1 && !strcmp(kind, "pipeline"))
+			{
+				struct gpu_pipeline_description description;
+				unsigned long long vertex_hash, pixel_hash;
+				unsigned int variant;
+				unsigned long mask;
+				char kinds[64];
+				struct vertex_shader_object *program = NULL;
+				BOOL used = FALSE;
+
+				memset(&description, 0, sizeof(description));
+				if (sscanf(line, "pipeline %llx.%u.%lx %llx %u %u %u %u %u %u %u %63s", &vertex_hash, &variant, &mask,
+					&pixel_hash, &values[0], &values[1], &values[2], &values[3], &values[4], &values[5], &values[6],
+					kinds) != 12 || variant > 1 || strlen(kinds) != 2 * GPU_ATTRIBUTE_COUNT ||
+					!hex_bytes(kinds, description.attribute_kinds, GPU_ATTRIBUTE_COUNT) ||
+					!(description.pixel_shader = shader_list_pixel((uint64_t)pixel_hash)))
+				{
+					missing++;
+					continue;
+				}
+				description.blend = (uint8_t)values[0];
+				description.source = (uint8_t)values[1];
+				description.destination = (uint8_t)values[2];
+				description.operation = (uint8_t)values[3];
+				description.write_mask = (uint8_t)values[4];
+				description.exact_borders = (uint8_t)values[5];
+				description.depth = (uint8_t)values[6];
+				/* (one for each object compiled with the line's variant and mask) */
+				while ((program = shader_list_program(program, (uint64_t)vertex_hash, (int)variant, mask, TRUE)))
+				{
+					description.vertex_shader = program->shader[variant];
+					gpu_pipeline_warm(&description);
+					pipeline_count++;
+					used = TRUE;
+				}
+				missing += !used;
+			}
+		}
+		/* (the first pass cut the text into lines; the second reads them) */
+		if (pass == 0)
+		{
+			for (line = text; line < text + size; line++)
+			{
+				if (!*line)
+					*line = '\n';
+			}
+		}
+	}
+	gpu_warm_end();
+	shader_list_warming = FALSE;
+	free(text);
+	platform_log("shader list %s: %lu vertex shaders, %lu pixel shaders and %lu pipelines compiled at load in %.0f ms; "
+		"%lu lines not used", shader_list.map, vertex_count, pixel_count, pipeline_count,
+		halo_frame_trace_milliseconds() - started, missing);
+}
 
 /* ---------- per-draw state */
 
@@ -3123,6 +3611,7 @@ void WINAPI D3DDevice_Present(CONST RECT *source_rectangle, CONST RECT *destinat
 			write_screenshot(back_buffer);
 		render_interpolation_next_frame_due(gpu_present(back_buffer->target.texture));
 		xgpu_texture_cache_begin_frame();
+		shader_list_take_pipelines();
 	}
 	device.frame++;
 	input_replay_frame(lroundf(screen_width * screen_scale[0]), lroundf(SCREEN_HEIGHT * screen_scale[1]));

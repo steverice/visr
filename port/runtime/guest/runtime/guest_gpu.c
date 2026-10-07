@@ -105,6 +105,31 @@ uint32_t gpu_call_count_take(void)
 	return host_gpu_call_count_take();
 }
 
+uint32_t gpu_warm_list_read(const char *name, char *text, uint32_t size)
+{
+	return host_gpu_warm_list_read(name, text, size);
+}
+
+void gpu_warm_begin(void)
+{
+	host_gpu_warm_begin();
+}
+
+void gpu_pipeline_warm(const struct gpu_pipeline_description *description)
+{
+	host_gpu_pipeline_warm(description);
+}
+
+void gpu_warm_end(void)
+{
+	host_gpu_warm_end();
+}
+
+uint32_t gpu_pipeline_built_take(struct gpu_pipeline_description *description)
+{
+	return host_gpu_pipeline_built_take(description);
+}
+
 void gpu_initialize(uint32_t flags, struct gpu_capabilities *capabilities)
 {
 	host_gpu_initialize(flags, capabilities);

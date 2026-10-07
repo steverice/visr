@@ -331,6 +331,21 @@ enum
 	GPU_PRIMITIVE_TRIANGLES, GPU_PRIMITIVE_TRIANGLE_STRIP, GPU_PRIMITIVE_TRIANGLE_FAN,
 };
 
+/* a pipeline as the Metal backend builds it for a draw, in terms the front
+end can name across runs (shader_list.c): its shaders, blending (factors
+only while it is on), the color write mask (0 without a color target), the
+stages that rebuild their border colors, whether it has a depth-stencil
+target, and each attribute's kind (0 for a constant, else its
+GPU_ATTRIBUTE_* format). Fixed-width fields only: it crosses from the guest
+to the host as it is. */
+struct gpu_pipeline_description
+{
+	gpu_shader vertex_shader, pixel_shader;
+	uint8_t blend, source, destination, operation;
+	uint8_t write_mask, exact_borders, depth, pad;
+	uint8_t attribute_kinds[GPU_ATTRIBUTE_COUNT];
+};
+
 /* one draw, complete: the backend applies the whole packet without reference
 to any draw before it */
 struct gpu_draw
@@ -408,6 +423,27 @@ uint32_t gpu_present(gpu_texture back_buffer);
 debug.gpu_stats */
 uint32_t gpu_call_count_take(void);
 
+/* ---------- compiling at map load (shader_list.c)
+
+A map's list names the shaders and pipelines its draws use, recorded from
+earlier runs, so that they are compiled while it loads rather than when a
+frame first draws with them. */
+
+/* the list for name (a map's file name, "a10"), as the app carries it: its
+length, 0 for none; the text, without a terminator, is copied while it fits
+size */
+uint32_t gpu_warm_list_read(const char *name, char *text, uint32_t size);
+/* from warm_begin to warm_end, gpu_shader_create returns at once and the
+shader compiles alongside the others, and gpu_pipeline_warm builds a
+pipeline as a draw with that description would; warm_end returns when all of
+it is done */
+void gpu_warm_begin(void);
+void gpu_pipeline_warm(const struct gpu_pipeline_description *description);
+void gpu_warm_end(void);
+/* a pipeline a draw built outside warming, since the last call: 1 and its
+description, or 0 when there are no more */
+uint32_t gpu_pipeline_built_take(struct gpu_pipeline_description *description);
+
 /* gpu_initialize flags */
 enum
 {
@@ -437,6 +473,13 @@ enum
 	call a draw has, without skipping the ones that set what the encoder
 	already holds (metal_state_cache.h) */
 	GPU_INITIALIZE_NO_STATE_CACHE = 512,
+	/* debug.metal_specialize = false: the Metal backend draws with each
+	vertex shader's unspecialized function (vertex_function), its fallback
+	when specializing fails */
+	GPU_INITIALIZE_NO_SPECIALIZE = 1024,
+	/* debug.metal_pipeline_archive = false: the Metal backend neither loads
+	nor saves its pipeline archive (archive_open) */
+	GPU_INITIALIZE_NO_PIPELINE_ARCHIVE = 2048,
 };
 /* probe the context, which must be current, and set it up */
 void gpu_initialize(uint32_t flags, struct gpu_capabilities *capabilities);
@@ -485,7 +528,19 @@ its own functions. */
 	F(uint32_t, visibility_result, (uint32_t slot, uint32_t *samples), (slot, samples)) \
 	P(flush, (void), ()) \
 	F(uint32_t, present, (gpu_texture back_buffer), (back_buffer)) \
-	F(uint32_t, call_count_take, (void), ())
+	F(uint32_t, call_count_take, (void), ()) \
+	/* compiling at map load (shader_list.c): the map's list as the app \
+	carries it (its length; the text is copied while it fits size), and \
+	between warm_begin and warm_end, shaders compile in parallel and \
+	pipeline_warm builds a pipeline as a draw would, all finished by \
+	warm_end; a backend without pipelines (GL) has no list and builds none */ \
+	F(uint32_t, warm_list_read, (const char *name, char *text, uint32_t size), (name, text, size)) \
+	P(warm_begin, (void), ()) \
+	P(pipeline_warm, (const struct gpu_pipeline_description *description), (description)) \
+	P(warm_end, (void), ()) \
+	/* a pipeline built for a draw, outside warming, since the last call: 1 \
+	and its description, or 0 when there are no more */ \
+	F(uint32_t, pipeline_built_take, (struct gpu_pipeline_description *description), (description))
 
 #define GPU_FUNCTIONS(F, P) \
 	GPU_OPERATIONS(F, P) \

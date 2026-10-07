@@ -49,6 +49,10 @@ before interface_draw_screen): where a post-process pass over the view goes
 union rectangle2d;
 void halo_render_before_hud(short local_player_index, short rasterizer_target,
 	union rectangle2d const *viewport_bounds);
+/* a map has loaded and its first frame is next (main_new_map): the shaders
+and pipelines its list names are compiled now, under the loading screen
+(port/linux/src/d3d8_device.c) */
+void halo_shader_list_warm(char const *map_name);
 /* the mouse in the menus (source/interface/ui_widget.c) */
 #include "halo_ui_pointer.h"
 
