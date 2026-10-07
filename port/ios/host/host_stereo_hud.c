@@ -110,10 +110,10 @@ static void source_of(const float rectangle[4], float layout_width, float source
 	source[3] = rectangle[3] / HOST_STEREO_HUD_LINES;
 }
 
-/* the plane HOST_STEREO_HUD_DISTANCE out along the direction at yaw (right
-positive) and pitch (up positive), facing the eyes, upright: its center on
-the sphere, and its right (level) and up, unit length */
-static void plane_at(float yaw, float pitch, float center[3], float right[3], float up[3])
+/* the plane distance out along the direction at yaw (right positive) and
+pitch (up positive), facing the eyes, upright: its center on the sphere,
+and its right (level) and up, unit length */
+static void plane_at(float distance, float yaw, float pitch, float center[3], float right[3], float up[3])
 {
 	right[0] = cosf(yaw);
 	right[1] = 0.0f;
@@ -122,28 +122,29 @@ static void plane_at(float yaw, float pitch, float center[3], float right[3], fl
 	up[0] = -sinf(yaw) * sinf(pitch);
 	up[1] = cosf(pitch);
 	up[2] = cosf(yaw) * sinf(pitch);
-	center[0] = HOST_STEREO_HUD_DISTANCE * sinf(yaw) * cosf(pitch);
-	center[1] = HOST_STEREO_HUD_DISTANCE * sinf(pitch);
-	center[2] = -HOST_STEREO_HUD_DISTANCE * cosf(yaw) * cosf(pitch);
+	center[0] = distance * sinf(yaw) * cosf(pitch);
+	center[1] = distance * sinf(pitch);
+	center[2] = -distance * cosf(yaw) * cosf(pitch);
 }
 
 /* The plane of a rectangle half_width by half_height meters whose corner on
 side x, y (as struct slot's) lies along the direction across, up (radians)
-in the level frame: the plane facing the eyes from the HUD's sphere, its
-center found by stepping the center's angles by the corner's miss until
-the corner is there (each step's miss is a small fraction of the last). */
-static void corner_plane(float across, float up, int x, int y, float half_width, float half_height, float center[3],
-	float right[3], float upward[3])
+in the level frame: the plane facing the eyes from the sphere distance
+out, its center found by stepping the center's angles by the corner's miss
+until the corner is there (each step's miss is a small fraction of the
+last). */
+static void corner_plane(float distance, float across, float up, int x, int y, float half_width, float half_height,
+	float center[3], float right[3], float upward[3])
 {
-	float yaw = across - (float)x * atanf(half_width / HOST_STEREO_HUD_DISTANCE);
-	float pitch = up - (float)y * atanf(half_height / HOST_STEREO_HUD_DISTANCE);
+	float yaw = across - (float)x * atanf(half_width / distance);
+	float pitch = up - (float)y * atanf(half_height / distance);
 	int step, axis;
 
 	for (step = 0; step < 32; step++)
 	{
 		float corner[3], miss_across, miss_up;
 
-		plane_at(yaw, pitch, center, right, upward);
+		plane_at(distance, yaw, pitch, center, right, upward);
 		for (axis = 0; axis < 3; axis++)
 			corner[axis] = center[axis] + (float)x * half_width * right[axis] + (float)y * half_height * upward[axis];
 		miss_across = across - atan2f(corner[0], -corner[2]);
@@ -153,7 +154,7 @@ static void corner_plane(float across, float up, int x, int y, float half_width,
 		yaw += miss_across;
 		pitch += miss_up;
 	}
-	plane_at(yaw, pitch, center, right, upward);
+	plane_at(distance, yaw, pitch, center, right, upward);
 }
 
 static int clamp_setting(float *value, float minimum, float maximum, float fallback)
@@ -178,6 +179,8 @@ int host_stereo_hud_placement_clamp(struct host_stereo_hud_placement *placement)
 		default_placement.messages_up);
 	changed |= clamp_setting(&placement->scale, HOST_STEREO_HUD_SCALE_MIN, HOST_STEREO_HUD_SCALE_MAX,
 		default_placement.scale);
+	changed |= clamp_setting(&placement->distance, HOST_STEREO_HUD_DISTANCE_MIN, HOST_STEREO_HUD_DISTANCE_MAX,
+		default_placement.distance);
 	return changed;
 }
 
@@ -226,39 +229,41 @@ static int facing_rectangle(float layout_width, const float rectangle[4], float 
 	return 1;
 }
 
-int host_stereo_hud_reticle(float layout_width, const float position[3], const float direction[3],
+int host_stereo_hud_reticle(float layout_width, const float position[3], const float direction[3], float distance,
 	struct host_stereo_hud_quad *quad)
 {
 	float whole[4] = { 0.0f, 0.0f, layout_width, HOST_STEREO_HUD_LINES };
+	/* a line's meters at the distance (exactly 1 at HOST_STEREO_HUD_LINE_DISTANCE) */
+	float line_scale = distance / HOST_STEREO_HUD_LINE_DISTANCE;
 
 	if (!(layout_width > 0.0f))
 		return 0;
-	if (!facing_rectangle(layout_width, whole, layout_width / 2.0f * HOST_STEREO_HUD_METERS_PER_LINE,
-		HOST_STEREO_HUD_LINES / 2.0f * HOST_STEREO_HUD_METERS_PER_LINE, HOST_STEREO_HUD_DISTANCE, position, direction,
+	if (!facing_rectangle(layout_width, whole, layout_width / 2.0f * HOST_STEREO_HUD_METERS_PER_LINE * line_scale,
+		HOST_STEREO_HUD_LINES / 2.0f * HOST_STEREO_HUD_METERS_PER_LINE * line_scale, distance, position, direction,
 		quad))
 		return 0;
 	quad->layer = HOST_STEREO_HUD_LAYER_RETICLE;
 	return 1;
 }
 
-int host_stereo_hud_zoom(const float tangents[2], struct host_stereo_hud_quad *quad)
+int host_stereo_hud_zoom(const float tangents[2], float distance, struct host_stereo_hud_quad *quad)
 {
 	if (!(tangents[0] > 0.0f) || !(tangents[1] > 0.0f))
 		return 0;
 	memset(quad, 0, sizeof(*quad));
 	quad->source[2] = quad->source[3] = 1.0f;
-	quad->center[2] = -HOST_STEREO_HUD_DISTANCE;
-	quad->x_axis[0] = tangents[0] * HOST_STEREO_HUD_DISTANCE;
-	quad->y_axis[1] = tangents[1] * HOST_STEREO_HUD_DISTANCE;
+	quad->center[2] = -distance;
+	quad->x_axis[0] = tangents[0] * distance;
+	quad->y_axis[1] = tangents[1] * distance;
 	quad->frame = HOST_STEREO_HUD_HEAD;
 	/* its picture covers what it's over */
 	quad->opaque = 1;
 	return 1;
 }
 
-void host_stereo_hud_ui(float aspect, struct host_stereo_hud_quad *quad)
+void host_stereo_hud_ui(float aspect, float distance, struct host_stereo_hud_quad *quad)
 {
-	float half = HOST_STEREO_HUD_DISTANCE * tanf(HUD_SHARP_RADIUS_DEGREES * DEGREES);
+	float half = distance * tanf(HUD_SHARP_RADIUS_DEGREES * DEGREES);
 	float half_width = half, half_height = half;
 
 	if (!(aspect > 0.0f))
@@ -270,7 +275,7 @@ void host_stereo_hud_ui(float aspect, struct host_stereo_hud_quad *quad)
 	memset(quad, 0, sizeof(*quad));
 	quad->source[2] = 1.0f;
 	quad->source[3] = 1.0f;
-	quad->center[2] = -HOST_STEREO_HUD_DISTANCE;
+	quad->center[2] = -distance;
 	quad->x_axis[0] = half_width;
 	quad->y_axis[1] = half_height;
 	quad->frame = HOST_STEREO_HUD_LEVEL;
@@ -288,10 +293,11 @@ int host_stereo_hud_layout(float layout_width, int ui, const float reticle[3], c
 		layout_width = 640.0f;
 	if (!placement)
 		placement = &default_placement;
-	if (host_stereo_hud_reticle(layout_width, NULL, reticle, &quads[count]))
+	if (host_stereo_hud_reticle(layout_width, NULL, reticle, placement->distance, &quads[count]))
 		count++;
-	/* meters a line on the HUD's sphere */
-	scale = HOST_STEREO_HUD_METERS_PER_LINE * placement->scale;
+	/* meters a line on the HUD's sphere (the line scale exactly 1 at
+	HOST_STEREO_HUD_LINE_DISTANCE) */
+	scale = HOST_STEREO_HUD_METERS_PER_LINE * placement->scale * (placement->distance / HOST_STEREO_HUD_LINE_DISTANCE);
 	for (index = 0; index < SLOT_COUNT; index++)
 	{
 		const struct slot *slot = &slots[index];
@@ -304,7 +310,7 @@ int host_stereo_hud_layout(float layout_width, int ui, const float reticle[3], c
 		up = slot->height == HEIGHT_CORNER_UP ? placement->up : slot->height == HEIGHT_MESSAGES_UP ?
 			placement->messages_up : -placement->tracker_down;
 		/* the slot's drawn rectangle with its outer corner at the angles */
-		corner_plane(across * DEGREES, up * DEGREES, slot->x, slot->y, (content[2] - content[0]) / 2.0f * scale,
+		corner_plane(placement->distance, across * DEGREES, up * DEGREES, slot->x, slot->y, (content[2] - content[0]) / 2.0f * scale,
 			(content[3] - content[1]) / 2.0f * scale, center, right, upward);
 		/* each group, with its margin, where it is in the slot's rectangle,
 		on the slot's plane */
@@ -334,7 +340,7 @@ int host_stereo_hud_layout(float layout_width, int ui, const float reticle[3], c
 		}
 	}
 	/* the HUD layer, which holds what no group drew: whole, head-locked, at
-	the HUD pass's own projection 2 m ahead, so a nav point or the
+	the HUD pass's own projection the distance ahead, so a nav point or the
 	multiplayer score shows where the game projected it */
 	if (hud_tangents && hud_tangents[0] > 0.0f && hud_tangents[1] > 0.0f && count < HOST_STEREO_HUD_MAXIMUM_QUADS)
 	{
@@ -343,9 +349,9 @@ int host_stereo_hud_layout(float layout_width, int ui, const float reticle[3], c
 		memset(quad, 0, sizeof(*quad));
 		quad->source[2] = 1.0f;
 		quad->source[3] = 1.0f;
-		quad->center[2] = -HOST_STEREO_HUD_DISTANCE;
-		quad->x_axis[0] = HOST_STEREO_HUD_DISTANCE * hud_tangents[0];
-		quad->y_axis[1] = HOST_STEREO_HUD_DISTANCE * hud_tangents[1];
+		quad->center[2] = -placement->distance;
+		quad->x_axis[0] = placement->distance * hud_tangents[0];
+		quad->y_axis[1] = placement->distance * hud_tangents[1];
 		quad->frame = HOST_STEREO_HUD_HEAD;
 		quad->layer = HOST_STEREO_HUD_LAYER_HUD;
 		quad->catch_all = 1;
@@ -356,7 +362,7 @@ int host_stereo_hud_layout(float layout_width, int ui, const float reticle[3], c
 	the HUD */
 	if (ui && count < HOST_STEREO_HUD_MAXIMUM_QUADS)
 	{
-		host_stereo_hud_ui(layout_width / HOST_STEREO_HUD_LINES, &quads[count]);
+		host_stereo_hud_ui(layout_width / HOST_STEREO_HUD_LINES, placement->distance, &quads[count]);
 		quads[count++].layer = HOST_STEREO_HUD_LAYER_UI;
 	}
 	return count;

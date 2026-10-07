@@ -126,8 +126,8 @@ static void catch_all_checks(float width)
 	all = &quads[count - 1];
 	x = all->center[0] + (2.0f * u - 1.0f) * all->x_axis[0];
 	y = all->center[1] + (1.0f - 2.0f * v) * all->y_axis[1];
-	across = atanf(x / HOST_STEREO_HUD_DISTANCE);
-	up = atanf(y / HOST_STEREO_HUD_DISTANCE);
+	across = atanf(x / HOST_STEREO_HUD_DISTANCE_DEFAULT);
+	up = atanf(y / HOST_STEREO_HUD_DISTANCE_DEFAULT);
 	game_across = atanf((2.0f * u - 1.0f) * hud_tangents[0]);
 	game_up = atanf((1.0f - 2.0f * v) * hud_tangents[1]);
 	snprintf(what, sizeof(what), "a nav point in the HUD layer shows at %.2f, %.2f degrees, where the HUD pass "
@@ -249,7 +249,7 @@ static int corner_at(const struct host_stereo_hud_quad *quad, float scale, int x
 }
 
 /* whether a group's quad faces the eyes' midpoint from a plane
-HOST_STEREO_HUD_DISTANCE away, upright (its width level), turning with the
+HOST_STEREO_HUD_DISTANCE_DEFAULT away, upright (its width level), turning with the
 head's yaw only, at scale times the natural size, showing its rectangle */
 static int on_the_sphere(const struct host_stereo_hud_quad *quad, float width, float scale)
 {
@@ -268,7 +268,7 @@ static int on_the_sphere(const struct host_stereo_hud_quad *quad, float width, f
 	natural_width = (quad->source[2] - quad->source[0]) * width * HOST_STEREO_HUD_METERS_PER_LINE * scale;
 	natural_height = (quad->source[3] - quad->source[1]) * HOST_STEREO_HUD_LINES * HOST_STEREO_HUD_METERS_PER_LINE *
 		scale;
-	return quad->frame == HOST_STEREO_HUD_LEVEL && fabsf(plane - HOST_STEREO_HUD_DISTANCE) < 1e-4f && facing < 0.0f &&
+	return quad->frame == HOST_STEREO_HUD_LEVEL && fabsf(plane - HOST_STEREO_HUD_DISTANCE_DEFAULT) < 1e-4f && facing < 0.0f &&
 		fabsf(quad->x_axis[1]) < 1e-6f && fabsf(2.0f * length3(quad->x_axis) - natural_width) < 1e-5f &&
 		fabsf(2.0f * length3(quad->y_axis) - natural_height) < 1e-5f;
 }
@@ -295,7 +295,7 @@ static void layout_checks(float width)
 	check(quads[0].frame == HOST_STEREO_HUD_HEAD && quads[0].layer == HOST_STEREO_HUD_LAYER_RETICLE,
 		"the reticle's layer comes first, head-locked");
 	check(fabsf(quads[0].center[0]) < 1e-6f && fabsf(quads[0].center[1]) < 1e-6f &&
-		fabsf(quads[0].center[2] + HOST_STEREO_HUD_DISTANCE) < 1e-6f, "the reticle is centered, 2 m ahead");
+		fabsf(quads[0].center[2] + HOST_STEREO_HUD_DISTANCE_DEFAULT) < 1e-6f, "the reticle is centered, 2 m ahead");
 	check(quads[0].source[0] == 0.0f && quads[0].source[1] == 0.0f && quads[0].source[2] == 1.0f &&
 		quads[0].source[3] == 1.0f, "the reticle's quad shows its layer whole, no square cut from anything");
 	check(fabsf(quads[0].x_axis[0] * 2.0f - width * HOST_STEREO_HUD_METERS_PER_LINE) < 1e-6f &&
@@ -493,7 +493,7 @@ static void placement_checks(void)
 	sample_extents(width, extents);
 	/* a bracket from the headset's checklist */
 	{
-		struct host_stereo_hud_placement placement = { 20.0f, 25.0f, 18.0f, 10.0f, 1.0f };
+		struct host_stereo_hud_placement placement = { 20.0f, 25.0f, 18.0f, 10.0f, 1.0f, 2.0f };
 
 		count = host_stereo_hud_layout(width, 0, ahead, hud_tangents, (const float (*)[4])extents, &placement, quads);
 		check(corner_at(quad_of(quads, count, HOST_STEREO_HUD_LAYER_GROUP + HALO_HUD_GROUP_WEAPON), 1.0f, -1, 1, -20.0f,
@@ -527,9 +527,9 @@ static void placement_checks(void)
 	/* the clamp: each angle 0 to 40 degrees, the edge included; the scale
 	0.5 to 2; not a number takes the default */
 	{
-		struct host_stereo_hud_placement placement = { 90.0f, -5.0f, 41.0f, 40.0f, 0.0f };
+		struct host_stereo_hud_placement placement = { 90.0f, -5.0f, 41.0f, 40.0f, 0.0f, 2.0f };
 		struct host_stereo_hud_placement unchanged = HOST_STEREO_HUD_PLACEMENT_DEFAULT;
-		struct host_stereo_hud_placement odd = { NAN, 20.0f, 22.0f, 12.0f, NAN };
+		struct host_stereo_hud_placement odd = { NAN, 20.0f, 22.0f, 12.0f, NAN, 2.0f };
 		float reach = 0.0f;
 
 		check(host_stereo_hud_placement_clamp(&placement) && placement.across == 40.0f && placement.up == 0.0f &&
@@ -540,7 +540,7 @@ static void placement_checks(void)
 		check(host_stereo_hud_placement_clamp(&odd) && odd.across == defaults.across && odd.scale == defaults.scale,
 			"a setting that isn't a number takes its default");
 		/* at the edge, every corner of every group stays inside 40 degrees */
-		placement = (struct host_stereo_hud_placement){ 40.0f, 40.0f, 40.0f, 40.0f, 2.0f };
+		placement = (struct host_stereo_hud_placement){ 40.0f, 40.0f, 40.0f, 40.0f, 2.0f, 2.0f };
 		count = host_stereo_hud_layout(width, 0, ahead, hud_tangents, (const float (*)[4])extents, &placement, quads);
 		for (index = 1; index < count - 1; index++)
 		{
@@ -618,6 +618,103 @@ static void placement_checks(void)
 	}
 }
 
+/* a quad's four corners' angles, across and up in degrees (angles_of),
+in the order bottom left, bottom right, top left, top right */
+static void corner_angles(const struct host_stereo_hud_quad *quad, float angles[4][2])
+{
+	int corner, axis;
+
+	for (corner = 0; corner < 4; corner++)
+	{
+		float x = corner & 1 ? 1.0f : -1.0f, y = corner & 2 ? 1.0f : -1.0f, point[3];
+
+		for (axis = 0; axis < 3; axis++)
+			point[axis] = quad->center[axis] + x * quad->x_axis[axis] + y * quad->y_axis[axis];
+		angles_of(point, angles[corner]);
+	}
+}
+
+/* the worst difference, in degrees, between two quads' corners' angles */
+static float corner_miss(const struct host_stereo_hud_quad *a, const struct host_stereo_hud_quad *b)
+{
+	float angles_a[4][2], angles_b[4][2], worst = 0.0f;
+	int corner;
+
+	corner_angles(a, angles_a);
+	corner_angles(b, angles_b);
+	for (corner = 0; corner < 4; corner++)
+		worst = fmaxf(worst, fmaxf(fabsf(angles_a[corner][0] - angles_b[corner][0]),
+			fabsf(angles_a[corner][1] - angles_b[corner][1])));
+	return worst;
+}
+
+/* display.hud_distance (the placement's distance): the whole layout (the
+reticle, the groups, the catch-all, the UI's quad) and the zoom's quad at
+1.5, 1.75 and 2 m keep every quad's angular extents, and each quad sits
+that distance out (a quad centered on its plane at it; one offset on a
+shared plane, the prompt's and the messages', its 2 m center scaled); the
+clamp takes 1 to 4 m, and a value that isn't a number the default */
+static void distance_checks(void)
+{
+	const float ahead[3] = { 0.0f, 0.0f, -1.0f };
+	const float zoom_tangents[2] = { 1.776f, 1.05f };
+	const float distances[] = { 1.5f, 1.75f, 2.0f };
+	const float width = 854.0f;
+	struct host_stereo_hud_quad natural[HOST_STEREO_HUD_MAXIMUM_QUADS], quads[HOST_STEREO_HUD_MAXIMUM_QUADS];
+	struct host_stereo_hud_quad natural_zoom, zoom;
+	float extents[HALO_HUD_GROUP_COUNT][4];
+	int natural_count, count, index;
+	size_t d;
+	char what[240];
+
+	sample_extents(width, extents);
+	natural_count = host_stereo_hud_layout(width, 1, ahead, hud_tangents, (const float (*)[4])extents, NULL, natural);
+	host_stereo_hud_zoom(zoom_tangents, HOST_STEREO_HUD_DISTANCE_DEFAULT, &natural_zoom);
+	for (d = 0; d < sizeof(distances) / sizeof(distances[0]); d++)
+	{
+		struct host_stereo_hud_placement placement = HOST_STEREO_HUD_PLACEMENT_DEFAULT;
+		float distance = distances[d], worst_angle = 0.0f, worst_length = 0.0f;
+
+		placement.distance = distance;
+		count = host_stereo_hud_layout(width, 1, ahead, hud_tangents, (const float (*)[4])extents, &placement, quads);
+		host_stereo_hud_zoom(zoom_tangents, distance, &zoom);
+		for (index = 0; index < count && count == natural_count; index++)
+		{
+			float wanted = length3(natural[index].center) * distance / HOST_STEREO_HUD_DISTANCE_DEFAULT;
+			int layer = quads[index].layer;
+
+			/* a quad centered on its plane: its center is the distance out */
+			if (layer == HOST_STEREO_HUD_LAYER_RETICLE || layer == HOST_STEREO_HUD_LAYER_HUD ||
+				layer == HOST_STEREO_HUD_LAYER_UI || layer == HOST_STEREO_HUD_LAYER_GROUP + HALO_HUD_GROUP_WEAPON ||
+				layer == HOST_STEREO_HUD_LAYER_GROUP + HALO_HUD_GROUP_UNIT ||
+				layer == HOST_STEREO_HUD_LAYER_GROUP + HALO_HUD_GROUP_TRACKER)
+				wanted = distance;
+			worst_angle = fmaxf(worst_angle, corner_miss(&quads[index], &natural[index]));
+			worst_length = fmaxf(worst_length, fabsf(length3(quads[index].center) - wanted));
+		}
+		worst_angle = fmaxf(worst_angle, corner_miss(&zoom, &natural_zoom));
+		worst_length = fmaxf(worst_length, fabsf(length3(zoom.center) - distance));
+		snprintf(what, sizeof(what), "display.hud_distance %.2f m: every quad (the reticle, %d groups, the catch-all, "
+			"the UI, the zoom) keeps its angular extents (worst %.5f degrees) and sits %.2f m out (worst %.6f m)",
+			distance, count - 3, worst_angle, distance, worst_length);
+		check(count == natural_count && worst_angle < 0.01f && worst_length < 1e-4f, what);
+		if (distance == HOST_STEREO_HUD_DISTANCE_DEFAULT)
+			check(!memcmp(quads, natural, (size_t)count * sizeof(quads[0])) &&
+				!memcmp(&zoom, &natural_zoom, sizeof(zoom)), "at 2 m the layout is byte for byte the default's");
+	}
+	{
+		struct host_stereo_hud_placement near = HOST_STEREO_HUD_PLACEMENT_DEFAULT, far = near, odd = near;
+
+		near.distance = 0.5f;
+		far.distance = 9.0f;
+		odd.distance = NAN;
+		check(host_stereo_hud_placement_clamp(&near) && near.distance == 1.0f &&
+			host_stereo_hud_placement_clamp(&far) && far.distance == 4.0f &&
+			host_stereo_hud_placement_clamp(&odd) && odd.distance == HOST_STEREO_HUD_DISTANCE_DEFAULT,
+			"display.hud_distance clamps 0.5 m to 1, 9 m to 4, and a value that isn't a number to 2");
+	}
+}
+
 static void ui_checks(float aspect)
 {
 	struct host_stereo_hud_quad quad;
@@ -626,7 +723,7 @@ static void ui_checks(float aspect)
 	const float ahead[3] = { 0.0f, 0.0f, -1.0f };
 	struct host_stereo_hud_quad quads[HOST_STEREO_HUD_MAXIMUM_QUADS];
 
-	host_stereo_hud_ui(aspect, &quad);
+	host_stereo_hud_ui(aspect, HOST_STEREO_HUD_DISTANCE_DEFAULT, &quad);
 	level_extent(&quad, degrees);
 	snprintf(what, sizeof(what), "the UI at %.3f:1 is %.1f by %.1f degrees, inside the sharp region, with its shape",
 		aspect, degrees[2] - degrees[0], degrees[3] - degrees[1]);
@@ -663,21 +760,21 @@ static void reticle_checks(void)
 	float behind[3] = { 0.3f, 0.0f, 1.0f };
 	float facing;
 
-	check(host_stereo_hud_reticle(640.0f, NULL, aim, &quad) == 1, "a seat's reticle shows while its aim is ahead");
+	check(host_stereo_hud_reticle(640.0f, NULL, aim, HOST_STEREO_HUD_DISTANCE_DEFAULT, &quad) == 1, "a seat's reticle shows while its aim is ahead");
 	check(fabsf(atan2f(quad.center[0], -quad.center[2]) - 30.0f * DEGREES) < 1e-4f &&
-		fabsf(asinf(quad.center[1] / HOST_STEREO_HUD_DISTANCE) - 10.0f * DEGREES) < 1e-4f,
+		fabsf(asinf(quad.center[1] / HOST_STEREO_HUD_DISTANCE_DEFAULT) - 10.0f * DEGREES) < 1e-4f,
 		"a seat's reticle sits along the game camera's aim, 30 degrees right and 10 up");
 	facing = (quad.x_axis[1] * quad.y_axis[2] - quad.x_axis[2] * quad.y_axis[1]) * quad.center[0] +
 		(quad.x_axis[2] * quad.y_axis[0] - quad.x_axis[0] * quad.y_axis[2]) * quad.center[1] +
 		(quad.x_axis[0] * quad.y_axis[1] - quad.x_axis[1] * quad.y_axis[0]) * quad.center[2];
 	check(facing < 0.0f && fabsf(quad.x_axis[1]) < 1e-6f, "it faces the eyes, upright");
-	check(host_stereo_hud_reticle(640.0f, NULL, behind, &quad) == 0, "it leaves the view when the head turns far from the aim");
+	check(host_stereo_hud_reticle(640.0f, NULL, behind, HOST_STEREO_HUD_DISTANCE_DEFAULT, &quad) == 0, "it leaves the view when the head turns far from the aim");
 	/* Task 11: at a point (where a controller's aim hits), facing back
 	along the aim */
 	{
 		float point[3] = { 0.3f, -0.2f, -4.0f };
 
-		check(host_stereo_hud_reticle(640.0f, point, aim, &quad) == 1 && quad.center[0] == 0.3f &&
+		check(host_stereo_hud_reticle(640.0f, point, aim, HOST_STEREO_HUD_DISTANCE_DEFAULT, &quad) == 1 && quad.center[0] == 0.3f &&
 			quad.center[1] == -0.2f && quad.center[2] == -4.0f && fabsf(quad.x_axis[1]) < 1e-6f,
 			"given a point, the reticle is centered there, upright, facing back along the aim");
 	}
@@ -693,20 +790,20 @@ static void zoom_checks(void)
 	const float none[2] = { 0.0f, 1.0f };
 	char what[200];
 
-	check(host_stereo_hud_zoom(tangents, &quad) == 1 && quad.opaque && quad.frame == HOST_STEREO_HUD_HEAD &&
+	check(host_stereo_hud_zoom(tangents, HOST_STEREO_HUD_DISTANCE_DEFAULT, &quad) == 1 && quad.opaque && quad.frame == HOST_STEREO_HUD_HEAD &&
 		!quad.catch_all, "the zoomed picture is an opaque, head-locked quad");
 	check(fabsf(quad.center[0]) < 1e-6f && fabsf(quad.center[1]) < 1e-6f &&
-		fabsf(quad.center[2] + HOST_STEREO_HUD_DISTANCE) < 1e-6f && HOST_STEREO_HUD_DISTANCE ==
+		fabsf(quad.center[2] + HOST_STEREO_HUD_DISTANCE_DEFAULT) < 1e-6f && HOST_STEREO_HUD_DISTANCE_DEFAULT ==
 		HALO_STEREO_ZOOM_DISTANCE_METERS, "straight ahead on the HUD's plane, 2 m away: its depth is the HUD's");
 	snprintf(what, sizeof(what), "it spans the view: %.3f by %.3f m there (%.1f by %.1f degrees)",
 		2.0f * quad.x_axis[0], 2.0f * quad.y_axis[1], 2.0f * atanf(tangents[0]) / DEGREES,
 		2.0f * atanf(tangents[1]) / DEGREES);
-	check(fabsf(quad.x_axis[0] - tangents[0] * HOST_STEREO_HUD_DISTANCE) < 1e-5f &&
-		fabsf(quad.y_axis[1] - tangents[1] * HOST_STEREO_HUD_DISTANCE) < 1e-5f && quad.x_axis[1] == 0.0f &&
+	check(fabsf(quad.x_axis[0] - tangents[0] * HOST_STEREO_HUD_DISTANCE_DEFAULT) < 1e-5f &&
+		fabsf(quad.y_axis[1] - tangents[1] * HOST_STEREO_HUD_DISTANCE_DEFAULT) < 1e-5f && quad.x_axis[1] == 0.0f &&
 		quad.x_axis[2] == 0.0f && quad.y_axis[0] == 0.0f && quad.y_axis[2] == 0.0f, what);
 	check(quad.source[0] == 0.0f && quad.source[1] == 0.0f && quad.source[2] == 1.0f && quad.source[3] == 1.0f,
 		"and shows the zoomed picture whole: its frustum is the view's");
-	check(host_stereo_hud_zoom(none, &quad) == 0, "without a view's tangents there's none");
+	check(host_stereo_hud_zoom(none, HOST_STEREO_HUD_DISTANCE_DEFAULT, &quad) == 0, "without a view's tangents there's none");
 }
 
 static void level_checks(void)
@@ -855,6 +952,7 @@ int main(int argc, char **argv)
 	reticle_checks();
 	placement_checks();
 	zoom_checks();
+	distance_checks();
 	level_checks();
 	cut_checks();
 	printf("%s\n", failures ? "stereo_hud_probe: FAILED" : "stereo_hud_probe: PASS");

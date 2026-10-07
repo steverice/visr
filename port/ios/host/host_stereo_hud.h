@@ -36,8 +36,12 @@ presenter puts:
 
 #include "halo_stereo.h"
 
-/* how far ahead the HUD and the UI sit, in meters */
-#define HOST_STEREO_HUD_DISTANCE 2.0f
+/* how far ahead the HUD and the UI rest, in meters: display.hud_distance
+(struct host_stereo_hud_placement's distance), its default and its range.
+Every piece keeps its angular size at any distance */
+#define HOST_STEREO_HUD_DISTANCE_DEFAULT 2.0f
+#define HOST_STEREO_HUD_DISTANCE_MIN 1.0f
+#define HOST_STEREO_HUD_DISTANCE_MAX 4.0f
 
 /* The radius, in degrees from the view's center with the head level, that
 the UI stays inside, horizontally and vertically: foveation's sharp region
@@ -50,12 +54,14 @@ Task 10 replaces it with the radius it measures from the rate map. */
 /* the HUD layer's height in the game's layout lines */
 #define HOST_STEREO_HUD_LINES 480.0f
 
-/* the HUD's scale in meters per layout line at HOST_STEREO_HUD_DISTANCE: the
+/* the HUD's scale in meters per layout line at HOST_STEREO_HUD_LINE_DISTANCE: the
 first headset build's head-locked quad (1.6 m wide for a 4:3 layout, 640
 lines across, so 480 lines are 1.2 m, about 33 degrees, at 2 m), about 0.072
 degrees a line. The reticle keeps it; the groups take it times
-display.hud_scale */
+display.hud_scale. At another distance a line's meters scale by that
+distance over this one, so its angle stays */
 #define HOST_STEREO_HUD_METERS_PER_LINE (1.6f / 640.0f)
+#define HOST_STEREO_HUD_LINE_DISTANCE 2.0f
 
 /* the margin, in layout lines, a group's quad shows around its rectangle,
 so linear filtering at the quad's edge never cuts a drawn texel (the target
@@ -112,13 +118,15 @@ The weapon's (and a driver's seat labels') top left corner is at -across,
 at -across, -tracker_down; the prompt's and the messages' top left at
 -across, +messages_up, growing down. The settings display.hud_corner_across,
 display.hud_corner_up, display.hud_tracker_down, display.hud_messages_up and
-display.hud_scale, read at start (host_stereo.m) */
+display.hud_scale, read at start (host_stereo.m); and distance, how far out
+the HUD and the UI rest (display.hud_distance, meters) */
 struct host_stereo_hud_placement
 {
 	float across, up, tracker_down, messages_up;
 	float scale;
+	float distance;
 };
-#define HOST_STEREO_HUD_PLACEMENT_DEFAULT { 28.0f, 20.0f, 22.0f, 12.0f, 1.0f }
+#define HOST_STEREO_HUD_PLACEMENT_DEFAULT { 28.0f, 20.0f, 22.0f, 12.0f, 1.0f, HOST_STEREO_HUD_DISTANCE_DEFAULT }
 /* the eyes' shared view, either way across and up from its center, in
 degrees: a corner at most this far out keeps its group inside both eyes'
 views, since the group grows from it toward the center */
@@ -126,8 +134,9 @@ views, since the group grows from it toward the center */
 #define HOST_STEREO_HUD_SCALE_MIN 0.5f
 #define HOST_STEREO_HUD_SCALE_MAX 2.0f
 /* clamps each angle to 0 to HOST_STEREO_HUD_SHARED_DEGREES (the edge
-included) and the scale to HOST_STEREO_HUD_SCALE_MIN to _MAX; a value that
-isn't a number takes its default. Returns 1 if anything changed */
+included), the scale to HOST_STEREO_HUD_SCALE_MIN to _MAX and the distance
+to HOST_STEREO_HUD_DISTANCE_MIN to _MAX; a value that isn't a number takes
+its default. Returns 1 if anything changed */
 int host_stereo_hud_placement_clamp(struct host_stereo_hud_placement *placement);
 
 /* most quads a layout makes: the reticle, the groups, the catch-all and
@@ -138,24 +147,25 @@ the UI */
 480) at its natural size (HOST_STEREO_HUD_METERS_PER_LINE), its center on
 the crosshair, in the eyes' frame (x right, y up, z back), facing back along
 direction, upright. Without a position it sits
-HOST_STEREO_HUD_DISTANCE along direction (the guest's halo_stereo_reticle):
+distance along direction (the guest's halo_stereo_reticle), its size scaled
+by distance over HOST_STEREO_HUD_LINE_DISTANCE so its angle stays:
 straight ahead, head-locked, on foot; where the game's camera aims in a
 head-tracked third-person seat; and returns 0 (no quad) when that's not
 ahead of the eyes. With one (meters; Task 11's point where the controller's
 aim hits) it's centered there. This is the one place the reticle is
 placed: tracked-controller aiming (Task 11) replaces its caller's
 arguments. */
-int host_stereo_hud_reticle(float layout_width, const float position[3], const float direction[3],
+int host_stereo_hud_reticle(float layout_width, const float position[3], const float direction[3], float distance,
 	struct host_stereo_hud_quad *quad);
 
 /* The zoom (halo_stereo.h, "Zoom fills the view"): the zoomed picture
 whole on an opaque head-locked quad straight ahead on the HUD's plane,
-HOST_STEREO_HUD_DISTANCE away, tangents (the guest's halo_stereo_zoom_view:
+distance away (the placement's), tangents (the guest's halo_stereo_zoom_view:
 half tangents across and up) wide and tall there, so it covers both eyes'
 views and its depth is the HUD's. Drawn in place of the eyes' pictures and
 before the HUD's pieces and the reticle, which stay over it; 0 (no quad)
 without positive tangents */
-int host_stereo_hud_zoom(const float tangents[2], struct host_stereo_hud_quad *quad);
+int host_stereo_hud_zoom(const float tangents[2], float distance, struct host_stereo_hud_quad *quad);
 
 /* the quads for a HEAD-mode frame's HUD laid out layout_width lines across,
 given each HUD group's rectangle (group_extent: x0, y0, x1, y1 in layout
@@ -166,15 +176,17 @@ a rectangle, where placement puts it (NULL: the defaults; clamped already,
 host_stereo_hud_placement_clamp), then, given the HUD pass's half tangents across
 and up (the guest's halo_stereo_hud_tangents; NULL or 0: none), the
 catch-all: the HUD layer whole, head-locked at that projection; and last,
-with ui, the UI layer whole on the UI's quad, over them. Returns the count;
+with ui, the UI layer whole on the UI's quad, over them. Every quad rests at
+the placement's distance. Returns the count;
 quads holds HOST_STEREO_HUD_MAXIMUM_QUADS */
 int host_stereo_hud_layout(float layout_width, int ui, const float reticle[3], const float hud_tangents[2],
 	const float (*group_extent)[4], const struct host_stereo_hud_placement *placement,
 	struct host_stereo_hud_quad *quads);
 
 /* the UI's quad for a picture of the given aspect (width over height): the
-whole picture, centered ahead, as large as fits inside the sharp region */
-void host_stereo_hud_ui(float aspect, struct host_stereo_hud_quad *quad);
+whole picture, centered ahead distance away (the placement's), as large as
+fits inside the sharp region */
+void host_stereo_hud_ui(float aspect, float distance, struct host_stereo_hud_quad *quad);
 
 /* The level frame's yaw from the device's axes in the room (ARKit's: x
 right, y up, z back), radians, left positive: its forward's, or past 85

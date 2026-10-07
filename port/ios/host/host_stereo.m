@@ -1357,8 +1357,9 @@ static void hud_draw(id<MTLRenderCommandEncoder> encoder, __unsafe_unretained id
 
 #if TARGET_OS_VISION
 /* where the HUD's groups go: display.hud_corner_across, _corner_up,
-_tracker_down, _messages_up and _scale, read once, at the first present,
-clamped to the eyes' shared view (host_stereo_hud_placement_clamp) */
+_tracker_down, _messages_up and _scale, and how far out the HUD and the UI
+rest, display.hud_distance; read once, at the first present, clamped to the
+eyes' shared view and the distance's range (host_stereo_hud_placement_clamp) */
 static const struct host_stereo_hud_placement *hud_placement(void)
 {
 	static struct host_stereo_hud_placement placement = HOST_STEREO_HUD_PLACEMENT_DEFAULT;
@@ -1371,12 +1372,15 @@ static const struct host_stereo_hud_placement *hud_placement(void)
 		placement.tracker_down = (float)host_config_real("display.hud_tracker_down", placement.tracker_down);
 		placement.messages_up = (float)host_config_real("display.hud_messages_up", placement.messages_up);
 		placement.scale = (float)host_config_real("display.hud_scale", placement.scale);
+		placement.distance = (float)host_config_real("display.hud_distance", placement.distance);
 		if (host_stereo_hud_placement_clamp(&placement))
-			host_logf(HOST_LOG_INFO, "stereo: a display.hud_* angle is outside 0 to %.0f degrees or the scale outside "
-				"%.1f to %.1f; clamped", HOST_STEREO_HUD_SHARED_DEGREES, HOST_STEREO_HUD_SCALE_MIN,
-				HOST_STEREO_HUD_SCALE_MAX);
-		host_logf(HOST_LOG_INFO, "stereo: HUD at across %.1f up %.1f tracker %.1f messages %.1f scale %.2f",
-			placement.across, placement.up, placement.tracker_down, placement.messages_up, placement.scale);
+			host_logf(HOST_LOG_INFO, "stereo: a display.hud_* angle is outside 0 to %.0f degrees, the scale outside "
+				"%.1f to %.1f or the distance outside %.1f to %.1f m; clamped", HOST_STEREO_HUD_SHARED_DEGREES,
+				HOST_STEREO_HUD_SCALE_MIN, HOST_STEREO_HUD_SCALE_MAX, HOST_STEREO_HUD_DISTANCE_MIN,
+				HOST_STEREO_HUD_DISTANCE_MAX);
+		host_logf(HOST_LOG_INFO, "stereo: HUD at across %.1f up %.1f tracker %.1f messages %.1f scale %.2f, "
+			"%.2f m out", placement.across, placement.up, placement.tracker_down, placement.messages_up, placement.scale,
+			placement.distance);
 		read = 1;
 	}
 	return &placement;
@@ -1395,8 +1399,8 @@ static void rotation_rows(simd_float4x4 matrix, float rows[3][3])
 }
 
 /* the immersive cutscene's HUD quad (Task 12k): the HUD layer whole over
-the director's frame, in the device's frame, HOST_STEREO_HUD_DISTANCE away */
-static int cutscene_hud_quad(const float forward[3], const float up[3], const float tangents[2],
+the director's frame, in the device's frame, distance away (the placement's) */
+static int cutscene_hud_quad(const float forward[3], const float up[3], const float tangents[2], float distance,
 	struct host_stereo_hud_quad *quads)
 {
 	struct host_stereo_hud_quad *quad = &quads[0];
@@ -1407,9 +1411,9 @@ static int cutscene_hud_quad(const float forward[3], const float up[3], const fl
 	quad->source[2] = quad->source[3] = 1.0f;
 	for (int i = 0; i < 3; i++)
 	{
-		quad->center[i] = forward[i] * HOST_STEREO_HUD_DISTANCE;
-		quad->x_axis[i] = right[i] * HOST_STEREO_HUD_DISTANCE * tangents[0];
-		quad->y_axis[i] = up[i] * HOST_STEREO_HUD_DISTANCE * tangents[1];
+		quad->center[i] = forward[i] * distance;
+		quad->x_axis[i] = right[i] * distance * tangents[0];
+		quad->y_axis[i] = up[i] * distance * tangents[1];
 	}
 	quad->frame = HOST_STEREO_HUD_HEAD;
 	quad->layer = HOST_STEREO_HUD_LAYER_HUD;
@@ -1577,7 +1581,8 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 		bars) whole on the director's frame, as on the film's screen, at the
 		HUD's distance; a menu keeps the usual layout */
 		if (cutscene && hud && !hud_ui)
-			quad_count = cutscene_hud_quad(cutscene_forward, cutscene_up, cutscene_tangents, quads);
+			quad_count = cutscene_hud_quad(cutscene_forward, cutscene_up, cutscene_tangents, hud_placement()->distance,
+				quads);
 		/* and its blur, once a frame for both eyes, before the views */
 		int cutscene_blurred = cutscene && cutscene_blur(queue, left, right);
 		/* while the cutscene window expands, the HUD's pieces and the
@@ -1602,20 +1607,23 @@ void host_stereo_present(id<MTLCommandQueue> queue, id<MTLTexture> left, id<MTLT
 		the HUD; the guest passes it only when its pass ran, which waits
 		while a menu holds the HUD layer */
 		struct host_stereo_hud_quad zoom_quad;
-		int zoom_shown = zoom && !expanding && host_stereo_hud_zoom(zoom_tangents, &zoom_quad);
+		int zoom_shown = zoom && !expanding && host_stereo_hud_zoom(zoom_tangents, hud_placement()->distance,
+			&zoom_quad);
 		/* outside the expanding window the theater's surroundings show: the
 		dark, or the room */
 		double clear_alpha = expanding && !host_theater_dark() ? 0.0 : 1.0;
 
 		if (stereo_presents++ == 0)
 			host_logf(HOST_LOG_INFO, "stereo: first present: eyes %lux%lu%s, %s (laid out at %.3f:1; its groups at "
-				"%.2f mm a line in the periphery, the reticle at %.2f, %.1f m ahead; the rest head-locked at the "
+				"%.2f mm a line in the periphery, the reticle at %.2f, %.2f m ahead; the rest head-locked at the "
 				"HUD pass's half tangents %.3f by %.3f), depth range %.3f to %.1f m, %zu drawable%s",
 				(unsigned long)left.width, (unsigned long)left.height,
 				eye_rate_maps[0] && left.width == (NSUInteger)foveated_allocated_width ? " (foveated: allocated)" : "",
 				hud ? "a HUD" : "no HUD", hud_aspect,
-				1000.0f * HOST_STEREO_HUD_METERS_PER_LINE * hud_placement()->scale,
-				1000.0f * HOST_STEREO_HUD_METERS_PER_LINE, HOST_STEREO_HUD_DISTANCE, hud_tangents ? hud_tangents[0] : 0.0f,
+				1000.0f * HOST_STEREO_HUD_METERS_PER_LINE * hud_placement()->scale * hud_placement()->distance /
+				HOST_STEREO_HUD_LINE_DISTANCE,
+				1000.0f * HOST_STEREO_HUD_METERS_PER_LINE * hud_placement()->distance / HOST_STEREO_HUD_LINE_DISTANCE,
+				hud_placement()->distance, hud_tangents ? hud_tangents[0] : 0.0f,
 				hud_tangents ? hud_tangents[1] : 0.0f, near_meters, far_meters, count, count == 1 ? "" : "s");
 		/* the zoomed picture as it comes and goes */
 		if ((zoom_shown != 0) != zoom_logged)
@@ -1894,12 +1902,12 @@ void host_stereo_present_ui(id<MTLCommandQueue> queue, id<MTLTexture> picture, i
 		struct host_stereo_hud_quad quad;
 		BOOL dark = host_theater_dark();
 
-		host_stereo_hud_ui((float)picture.width / (float)picture.height, &quad);
+		host_stereo_hud_ui((float)picture.width / (float)picture.height, hud_placement()->distance, &quad);
 		if (ui_presents++ == 0)
 			host_logf(HOST_LOG_INFO, "stereo: a menu or a load: its %lux%lu picture%s on the UI's quad, %.2f by "
 				"%.2f m %.1f m ahead, level, turning with the head", (unsigned long)picture.width,
 				(unsigned long)picture.height, hud ? " and the HUD layer" : "", 2.0f * quad.x_axis[0],
-				2.0f * quad.y_axis[1], HOST_STEREO_HUD_DISTANCE);
+				2.0f * quad.y_axis[1], -quad.center[2]);
 		for (size_t index = 0; index < count; index++)
 		{
 			simd_float4x4 origin_from_device;

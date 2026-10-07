@@ -136,6 +136,7 @@ DEFAULTS = {
     "display.hud_tracker_down": "22.0",
     "display.hud_messages_up": "12.0",
     "display.hud_scale": "1.0",
+    "display.hud_distance": "2.0",
     "display.hud_resolution": "1.0",
     "display.foveation": "true",
     "display.render_quality": "0.6",

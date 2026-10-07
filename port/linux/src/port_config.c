@@ -254,6 +254,10 @@ static const struct config_setting config_settings[] =
 		"With display.stereo = \"head\": the size of the HUD's pieces (not the\n"
 		"crosshair) against their natural 0.072 degrees a line, 0.5 to 2. Read at\n"
 		"start." },
+	{ "display.hud_distance", _config_real, "2.0", "HALO_HUD_DISTANCE", _environment_value, _platform_ios,
+		"With display.stereo = \"head\": how far ahead the HUD, the crosshair and the\n"
+		"menus rest, in meters, 1 to 4. Every piece keeps its size in your view at\n"
+		"any distance; only how near it looks changes. Read at start." },
 	{ "display.hud_resolution", _config_real, "1.0", "HALO_HUD_RESOLUTION", _environment_value, _platform_ios,
 		"HEAD mode and the side-by-side view: the pixels the HUD, the crosshair and\n"
 		"the menus are drawn with, as a fraction of the view's along each axis, 0.5\n"
