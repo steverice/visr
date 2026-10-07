@@ -5,7 +5,7 @@ project(VISR LANGUAGES C CXX OBJC ASM)
 if(CMAKE_SYSTEM_NAME STREQUAL "visionOS")
     enable_language(Swift)
 endif()
-set(HALO_BUNDLE_IDENTIFIER "org.haloce.ios" CACHE STRING "App bundle identifier")
+set(HALO_BUNDLE_IDENTIFIER "org.steverice.visr" CACHE STRING "App bundle identifier")
 # Mac Catalyst (tools/ios_build.py --mac): configured as iOS, built with -sdk macosx SUPPORTS_MACCATALYST=YES
 option(HALO_MAC "Mac Catalyst build of the iOS host" OFF)
 set(HALO_GLES_FRAMEWORKS "" CACHE PATH "Catalyst: folder with OpenGLES.framework (headers and a macCatalyst link stub)")

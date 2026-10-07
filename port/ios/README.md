@@ -52,7 +52,7 @@ Outputs:
 - `build/ios/app-unsigned/Release-iphoneos/VISR.app`
 - `dist/VISR-iOS-unsigned.ipa` and its `.sha256` checksum when requested
 
-The default bundle identifier is `org.haloce.ios`. Set `--bundle-id` to one
+The default bundle identifier is `org.steverice.visr`. Set `--bundle-id` to one
 covered by your signing profile. `--ipa PATH` can also package a signed build;
 only unsigned builds are suitable for this project's public release workflow.
 Code signing and provisioning must succeed
@@ -271,9 +271,9 @@ in Xcode. With exactly one simulator booted:
 
 ```sh
 xcrun simctl install booted build/ios/app-simulator/Release-iphonesimulator/VISR.app
-HALO_SIM_DATA=$(xcrun simctl get_app_container booted org.haloce.ios data)
+HALO_SIM_DATA=$(xcrun simctl get_app_container booted org.steverice.visr data)
 cp -R assets/maps "$HALO_SIM_DATA/Documents/maps"
-xcrun simctl launch booted org.haloce.ios
+xcrun simctl launch booted org.steverice.visr
 ```
 
 Use an explicit simulator ID instead of `booted` when more than one is running.

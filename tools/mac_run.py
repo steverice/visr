@@ -359,7 +359,7 @@ DESTINATION = "platform=macOS,arch=arm64,variant=Designed for iPad"
 # --metal-validation turns validation on through the environment instead.
 PROJECT = """name: {target}
 options:
-  bundleIdPrefix: org.haloce
+  bundleIdPrefix: org.steverice.visr
 targets:
   {target}:
     type: application
@@ -1022,7 +1022,7 @@ def run(args):
             sys.exit("--runner native needs no --team, and seeds its data folder from --maps, not --xiso")
         run_native(args)
         return
-    args.bundle_id = args.bundle_id or "org.haloce.macrunner"
+    args.bundle_id = args.bundle_id or "org.steverice.visr.macrunner"
     if not args.team:
         sys.exit("--runner ipad needs --team")
     args.app = args.app or ROOT / "build/ios/app-device/Release-iphoneos/VISR.app"
@@ -1052,7 +1052,7 @@ def main():
                             help="native: the Mac Catalyst app (tools/ios_build.py --mac), started with open (the default); "
                                  'ipad: the "Designed for iPad" app, installed and started by Xcode, which needs --team')
     run_parser.add_argument("--bundle-id",
-                            help="ipad: the runner's bundle ID (default org.haloce.macrunner); "
+                            help="ipad: the runner's bundle ID (default org.steverice.visr.macrunner); "
                                  "native: checked against the app's own")
     run_parser.add_argument("--app", type=Path,
                             help="the CMake-built device app (tools/ios_build.py --team ...; the default), or "
