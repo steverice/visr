@@ -11,10 +11,12 @@ static const char *const names[] = { "decal", "decals", "display", "monitor", "m
 static const char *const groups[] = { "smet" };
 static const char *const prefixes[] = { "effects\\decals\\" };
 
+/* every damage test turned off (-1, as tools/embed_texture_policy.py writes a null), so a test that reuses this table
+does not inherit a zero share, which would call every graphic damaged */
 static struct texture_policy_table table(const struct texture_policy_override *overrides, size_t count)
 {
 	struct texture_policy_table t = { 1, 1, TEXTURE_POLICY_S4G, TEXTURE_POLICY_BPF, TEXTURE_POLICY_BPF,
-		TEXTURE_POLICY_BPF, 12, 30, 1, 3, names, 8, groups, 1, prefixes, 1, overrides, count };
+		TEXTURE_POLICY_BPF, 12, 30, 1, 3, names, 8, groups, 1, prefixes, 1, overrides, count, -1, -1, -1, 1 };
 	return t;
 }
 
@@ -173,9 +175,18 @@ static void embedded_damage_block(void)
 	assert(t->low == 12 && t->high == 30 && t->sigma == 1 && t->iterations == 3);
 }
 
+static void hand_built_table_turns_damage_off(void)
+{
+	struct texture_policy_table t = table(NULL, 0);
+
+	assert(t.damage_share < 0 && t.damage_structure_loss < 0 && t.damage_bpf_structure_loss < 0);
+	assert(t.damage_measure_version == 1);
+}
+
 int main(void)
 {
 	embedded_damage_block();
+	hand_built_table_turns_damage_off();
 	surfaces_companions_bumps_and_signals();
 	pins();
 	ascii_case_and_pin_logs();
