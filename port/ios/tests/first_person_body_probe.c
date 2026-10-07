@@ -1,12 +1,14 @@
 /* The first-person body's render-only node matrices
 (port/linux/game/first_person_body.c, included, not linked): on a synthetic
 node list in the cyborg's shape, the neck's subtree (the neck and head, not
-the clavicles hung from it) collapses to spine1's position while the spine,
-spine1 and the clavicles stay; with collapse_arms each arm from the upper
-arm down collapses to the upper arm; every node is set back along the
-facing made horizontal; the spine's bend is clamped so every kept node is
-at least BODY_CAMERA_CLEARANCE from the camera, rotating the upper body
-rigidly back about the spine node; the shadow's copy is the whole
+the clavicles hung from it) collapses to a cap BODY_NECK_RAISE above the
+neck along spine1-to-neck while the spine, spine1 and the clavicles stay;
+with collapse_arms each arm from the upper arm down collapses to the upper
+arm; every node is set back along the facing made horizontal; a forward
+lean past BODY_UPRIGHT_LEAN_DEGREES is turned back, and then the spine's
+bend is clamped so every kept node is at least BODY_CAMERA_CLEARANCE from
+the camera, both rotating the upper body rigidly back about the spine node,
+the clamp's turn ramped by the shortfall; the shadow's copy is the whole
 silhouette set back the same way in its own array; the input is never
 written; nothing past node_count is read or written (the matrices are
 allocated exactly, under the address sanitizer); a model with no neck
@@ -211,6 +213,28 @@ static real distance_to(const real_matrix4x3 *node, const float point[3])
 /* a camera no node comes near */
 static const float far_camera[3] = { 100.0f, 100.0f, 100.0f };
 
+/* make_matrices' line of nodes with the upper body (the spine and
+everything after it in the cyborg's order) stood straight up over the
+spine node, so no upright turn applies */
+static void stand_up(real_matrix4x3 *matrices, short count)
+{
+	short node;
+
+	for (node = SPINE; node < count; node++) {
+		matrices[node].position.x = matrices[SPINE].position.x;
+		matrices[node].position.y = matrices[SPINE].position.y;
+	}
+}
+
+/* the neck's cap for upright matrices: BODY_NECK_RAISE above the neck */
+static real_matrix4x3 neck_cap(const real_matrix4x3 *matrices)
+{
+	real_matrix4x3 cap = matrices[NECK];
+
+	cap.position.z += BODY_NECK_RAISE;
+	return cap;
+}
+
 static void check_cyborg(void)
 {
 	/* a facing with a vertical part: the set-back is horizontal, 0.08 long */
@@ -219,9 +243,12 @@ static void check_cyborg(void)
 	long model = add_model(0xC1B0u, cyborg_names, cyborg_parents, CYBORG_NODES);
 	real_matrix4x3 *input = make_matrices(CYBORG_NODES);
 	real_matrix4x3 saved[CYBORG_NODES];
+	real_matrix4x3 cap;
 	const real_matrix4x3 *body, *shadow;
 	int node;
 
+	stand_up(input, CYBORG_NODES);
+	cap = neck_cap(input);
 	memcpy(saved, input, sizeof(saved));
 	logs = 0;
 	body = halo_first_person_body_matrices(model, input, CYBORG_NODES, facing, far_camera, 0, 0);
@@ -232,7 +259,7 @@ static void check_cyborg(void)
 
 		snprintf(what, sizeof(what), "the body: node %s", cyborg_names[node]);
 		if (node == NECK || node == HEAD)
-			check(placed(&body[node], &input[node], &input[SPINE1], back, 0.0f), what);
+			check(placed(&body[node], &input[node], &cap, back, 0.0f), what);
 		else
 			check(placed(&body[node], &input[node], &input[node], back, 1.0f), what);
 	}
@@ -245,7 +272,7 @@ static void check_cyborg(void)
 
 		snprintf(what, sizeof(what), "collapse_arms: node %s", cyborg_names[node]);
 		if (node == NECK || node == HEAD)
-			check(placed(&body[node], &input[node], &input[SPINE1], back, 0.0f), what);
+			check(placed(&body[node], &input[node], &cap, back, 0.0f), what);
 		else if (node >= L_UPPERARM && node <= L_FINGER1)
 			check(placed(&body[node], &input[node], &input[L_UPPERARM], back, 0.0f), what);
 		else if (node >= R_UPPERARM && node <= R_FINGER1)
@@ -262,7 +289,7 @@ static void check_cyborg(void)
 		snprintf(what, sizeof(what), "the shadow: node %s, whole, set back", cyborg_names[node]);
 		check(placed(&shadow[node], &input[node], &input[node], back, 1.0f), what);
 	}
-	check(placed(&body[HEAD], &input[HEAD], &input[SPINE1], back, 0.0f), "the shadow's call leaves the body's copy");
+	check(placed(&body[HEAD], &input[HEAD], &cap, back, 0.0f), "the shadow's call leaves the body's copy");
 	check(!memcmp(saved, input, sizeof(saved)), "the input is never written");
 
 	/* a second call doesn't log the node names again */
@@ -283,11 +310,14 @@ static void check_cyborg(void)
 	read or written (the allocation is exact, under the address sanitizer) */
 	{
 		real_matrix4x3 *fewer = make_matrices(R_CLAVICLE);
+		real_matrix4x3 fewer_cap;
 
+		stand_up(fewer, R_CLAVICLE);
+		fewer_cap = neck_cap(fewer);
 		body = halo_first_person_body_matrices(model, fewer, R_CLAVICLE, facing, far_camera, 1, 0);
 		check(placed(&body[L_HAND], &fewer[L_HAND], &fewer[L_UPPERARM], back, 0.0f),
 			"fewer nodes: the left hand collapses");
-		check(placed(&body[HEAD], &fewer[HEAD], &fewer[SPINE1], back, 0.0f), "fewer nodes: the head collapses");
+		check(placed(&body[HEAD], &fewer[HEAD], &fewer_cap, back, 0.0f), "fewer nodes: the head collapses");
 		check(placed(&body[R_FOOT], &fewer[R_FOOT], &fewer[R_FOOT], back, 1.0f), "fewer nodes: the right foot stays");
 		shadow = halo_first_person_body_matrices(model, fewer, R_CLAVICLE, facing, far_camera, 1, 1);
 		check(placed(&shadow[L_HAND], &fewer[L_HAND], &fewer[L_HAND], back, 1.0f), "fewer nodes: the shadow's hand");
@@ -312,9 +342,16 @@ static void check_cyborg(void)
 	free(input);
 }
 
-/* the spine's bend clamp, on a cyborg leaning forward under the camera as
-the aiming pose bends it when the look pitches down: facing +x, the pelvis
-at the origin, the chest ahead of and above the spine node */
+/* the forward lean of the line from a to b, degrees, for a facing of +x */
+static real lean_of(const real_matrix4x3 *a, const real_matrix4x3 *b)
+{
+	return atan2f(b->position.x - a->position.x, b->position.z - a->position.z) * 57.29578f;
+}
+
+/* the upright turn and the bend clamp, on a cyborg leaning forward as the
+aiming pose bends it when the look pitches down: facing +x, the pelvis at
+the origin, the chest 40.6 degrees ahead of straight up over the spine
+node */
 static void check_bend_clamp(void)
 {
 	static const float facing[3] = { 1.0f, 0.0f, 0.0f };
@@ -331,11 +368,12 @@ static void check_bend_clamp(void)
 		[R_FOREARM] = { 0.16f, -0.08f, 0.08f }, [R_HAND] = { 0.2f, -0.08f, 0.02f },
 		[R_FINGER0] = { 0.21f, -0.08f, 0.01f }, [R_FINGER1] = { 0.21f, -0.09f, 0.01f },
 	};
+	const float back[2] = { -PROBE_OFFSET, 0.0f };
 	long model = add_model(0xBE4Du, cyborg_names, cyborg_parents, CYBORG_NODES);
 	real_matrix4x3 *input = make_matrices(CYBORG_NODES);
+	real_matrix4x3 upright[CYBORG_NODES];
 	const real_matrix4x3 *body;
-	/* the camera just above the set-back clavicles: 0.03 from each */
-	const float camera[3] = { 0.12f - PROBE_OFFSET, 0.0f, 0.2f };
+	float camera[3];
 	int collapse_arms;
 	int node;
 
@@ -344,11 +382,47 @@ static void check_bend_clamp(void)
 		input[node].position.y = positions[node][1];
 		input[node].position.z = positions[node][2];
 	}
+
+	/* no camera near: the upright turn alone, to BODY_UPRIGHT_LEAN_DEGREES */
+	body = halo_first_person_body_matrices(model, input, CYBORG_NODES, facing, far_camera, 0, 0);
+	memcpy(upright, body, sizeof(upright));
+	check(lean_of(&input[SPINE], &input[SPINE1]) > 40.0f, "the leaning cyborg leans");
+	check(fabsf(lean_of(&upright[SPINE], &upright[SPINE1]) - BODY_UPRIGHT_LEAN_DEGREES) < 0.05f,
+		"the upright turn: the spine leans BODY_UPRIGHT_LEAN_DEGREES");
+	check(body_clamp_degrees == 0.0f, "the upright turn: no clamp with no camera near");
+	/* the neck's cap: BODY_NECK_RAISE past the (turned) neck, along spine1 to neck */
+	{
+		real dx = upright[NECK].position.x - upright[SPINE1].position.x;
+		real dz = upright[NECK].position.z - upright[SPINE1].position.z;
+
+		check(upright[NECK].scale == 0.0f && upright[HEAD].scale == 0.0f &&
+			near(upright[HEAD].position.x, upright[NECK].position.x) &&
+			near(upright[HEAD].position.z, upright[NECK].position.z) &&
+			lean_of(&upright[SPINE1], &upright[NECK]) > BODY_UPRIGHT_LEAN_DEGREES - 0.05f &&
+			lean_of(&upright[SPINE1], &upright[NECK]) < BODY_UPRIGHT_LEAN_DEGREES + 0.05f &&
+			sqrtf(dx * dx + dz * dz) > 0.0f, "the neck's cap: the neck and head together, on spine1's line");
+	}
+	/* the legs and the pivot stay; the upper body turns rigidly */
+	for (node = PELVIS; node <= SPINE; node++)
+		check(near(upright[node].position.x, input[node].position.x + back[0]) &&
+			near(upright[node].position.z, input[node].position.z), "the upright turn: the legs and the pivot stay");
+	{
+		const float pivot[3] = { upright[SPINE].position.x, upright[SPINE].position.y, upright[SPINE].position.z };
+		const real_vector3d *f = &upright[SPINE1].forward;
+		real from_pivot = sqrtf(0.06f * 0.06f + 0.07f * 0.07f);
+
+		check(near(distance_to(&upright[SPINE1], pivot), from_pivot), "the upright turn: rigid");
+		check(near(f->i * f->i + f->j * f->j + f->k * f->k, 1.0f), "the upright turn: the axes turn with it");
+	}
+
+	/* a camera 0.03 above the uprighted clavicles: the clamp turns further
+	back, the full clearing turn (the shortfall is past the ramp) */
+	camera[0] = 0.5f * (upright[L_CLAVICLE].position.x + upright[R_CLAVICLE].position.x);
+	camera[1] = 0.0f;
+	camera[2] = upright[L_CLAVICLE].position.z + 0.03f;
 	for (collapse_arms = 0; collapse_arms < 2; collapse_arms++) {
-		const float back[2] = { -PROBE_OFFSET, 0.0f };
 		real nearest = 1e9f;
-		real pivot_to_spine1;
-		char what[160];
+		char what[200];
 
 		body = halo_first_person_body_matrices(model, input, CYBORG_NODES, facing, camera, collapse_arms, 0);
 		for (node = 0; node < CYBORG_NODES; node++) {
@@ -356,35 +430,29 @@ static void check_bend_clamp(void)
 				nearest = distance_to(&body[node], camera);
 		}
 		snprintf(what, sizeof(what), "the bend clamp (collapse_arms %d): every kept node at least %.2f from the "
-			"camera (nearest %.3f)", collapse_arms, BODY_CAMERA_CLEARANCE, nearest);
-		check(nearest >= BODY_CAMERA_CLEARANCE - 1e-4f, what);
-		/* the legs and pelvis don't move, nor the spine node (the pivot) */
+			"camera and no more than a step past it (nearest %.3f)", collapse_arms, BODY_CAMERA_CLEARANCE, nearest);
+		check(nearest >= BODY_CAMERA_CLEARANCE - 1e-4f && nearest < BODY_CAMERA_CLEARANCE + 0.01f, what);
 		for (node = PELVIS; node <= SPINE; node++)
 			check(near(body[node].position.x, input[node].position.x + back[0]) &&
 				near(body[node].position.y, input[node].position.y) &&
 				near(body[node].position.z, input[node].position.z), "the bend clamp: the legs and the pivot stay");
-		/* the upper body turns rigidly: spine1 keeps its distance from the
-		pivot, and its axes stay unit length */
-		pivot_to_spine1 = sqrtf((positions[SPINE1][0] - positions[SPINE][0]) * (positions[SPINE1][0] - positions[SPINE][0]) +
-			(positions[SPINE1][2] - positions[SPINE][2]) * (positions[SPINE1][2] - positions[SPINE][2]));
-		{
-			const float pivot[3] = { body[SPINE].position.x, body[SPINE].position.y, body[SPINE].position.z };
-			const real_vector3d *f = &body[SPINE1].forward;
-
-			check(near(distance_to(&body[SPINE1], pivot), pivot_to_spine1), "the bend clamp: rigid");
-			check(near(f->i * f->i + f->j * f->j + f->k * f->k, 1.0f), "the bend clamp: the axes turn with it");
-			check(body[SPINE1].position.x < input[SPINE1].position.x + back[0] - 1e-3f,
-				"the bend clamp: the chest turns back");
-		}
+		check(body[SPINE1].position.x < upright[SPINE1].position.x - 1e-3f, "the bend clamp: the chest turns back");
+		check(body_clamp_degrees >= 1.0f && body_clamp_degrees == floorf(body_clamp_degrees),
+			"the bend clamp: a shortfall past the ramp takes the whole clearing turn");
 	}
-	/* a camera nowhere near: no clamp, every kept node where it was */
-	body = halo_first_person_body_matrices(model, input, CYBORG_NODES, facing, far_camera, 0, 0);
-	{
-		const float back[2] = { -PROBE_OFFSET, 0.0f };
 
-		check(placed(&body[L_CLAVICLE], &input[L_CLAVICLE], &input[L_CLAVICLE], back, 1.0f) &&
-			placed(&body[SPINE1], &input[SPINE1], &input[SPINE1], back, 1.0f), "no camera near: no clamp");
-	}
+	/* a shortfall of half the ramp: half the clearing turn */
+	camera[2] = upright[L_CLAVICLE].position.z +
+		sqrtf((BODY_CAMERA_CLEARANCE - 0.5f * BODY_CLAMP_RAMP) * (BODY_CAMERA_CLEARANCE - 0.5f * BODY_CLAMP_RAMP) -
+			0.03f * 0.03f);
+	body = halo_first_person_body_matrices(model, input, CYBORG_NODES, facing, camera, 0, 0);
+	check(fabsf(body_nearest_before - (BODY_CAMERA_CLEARANCE - 0.5f * BODY_CLAMP_RAMP)) < 1e-4f,
+		"the ramp: the clavicles start half the ramp inside the clearance");
+	check(body_clamp_degrees > 0.0f && fabsf(body_clamp_degrees * 2.0f - roundf(body_clamp_degrees * 2.0f)) < 0.02f,
+		"the ramp: half a whole-degree turn");
+	check(body_clamp_ramp(0.0f) == 0.0f && body_clamp_ramp(-0.01f) == 0.0f &&
+		near(body_clamp_ramp(0.5f * BODY_CLAMP_RAMP), 0.5f) && body_clamp_ramp(BODY_CLAMP_RAMP) == 1.0f &&
+		body_clamp_ramp(0.05f) == 1.0f, "the ramp: 0 to 1 over BODY_CLAMP_RAMP");
 	free(input);
 }
 

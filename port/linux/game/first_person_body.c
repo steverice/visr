@@ -11,23 +11,32 @@ after the first-person weapon and under its stencil (render_objects.c),
 with a render-only copy of its node matrices:
 
 - the head and neck are gone: the subtree of the node named neck, less the
-  clavicles hung from it, collapsed to spine1's position, scale 0, so
-  looking down shows the chest and the feet. A model with no neck node
-  collapses only its head, to its parent's position;
+  clavicles hung from it, collapsed at scale 0 to a cap BODY_NECK_RAISE
+  above the neck node, along spine1-to-neck, so the collar's outside faces
+  close over the opening (Task 7f's lesson at the waist: collapsed to the
+  ring itself, or below it into the chest, the shell showed its inside). A
+  model with no neck node collapses only its head, to its parent's
+  position;
 - while the first-person weapon shows, each arm from the upper arm down
   collapses to the upper arm too, or the third-person arms would double
   the first-person ones;
 - the aiming pose bends the spine forward under the camera as the look
-  pitches down, which once put the eyes inside the chest (Task 7f's Mac
-  captures): if a kept node comes within BODY_CAMERA_CLEARANCE of the
-  camera, the upper body (the spine's subtree) turns back rigidly about the
-  spine node, about the facing's left, by the least whole degree that
-  clears it;
+  pitches down, which put the chest under the eyes and in front of the feet
+  (Task 12j's Mac captures): the upper body (the spine's subtree) turns
+  back rigidly about the spine node, about the facing's left, until the
+  spine-to-neck line leans no more than BODY_UPRIGHT_LEAN_DEGREES forward;
+- then, if a kept node is still within BODY_CAMERA_CLEARANCE of the camera,
+  the upper body turns back further by the least whole degree that clears
+  it, scaled down for a shortfall under BODY_CLAMP_RAMP so the turn grows
+  smoothly from nothing (the shoulders rest about that far from the eyes,
+  and a full turn for a millimeter popped);
 - the whole copy set back along the unit's horizontal facing by
   display.first_person_body_offset (world units): the game's camera sits
   on the body's axis, where the pelvis hides the feet straight down; set
-  back, the feet show past the front of the hips, as a person's do past
-  their belly.
+  back, the feet show past the front of the chest, as a person's do past
+  their belly, and the collar stays behind the eye passes' near plane
+  (0.0625 units): at 0.08 looking straight down showed the shell's inside
+  through it, at 0.12 it doesn't.
 
 The shadow takes a second copy, the full silhouette (head and arms
 included) set back the same way, so the feet's shadow lies under the drawn
@@ -90,7 +99,7 @@ void platform_log(const char *format, ...);
 after a map with another (the Elite's or a marine's in a scripted swap) */
 #define BODY_CACHE_SIZE 8
 /* display.first_person_body_offset's default and range, world units */
-#define BODY_OFFSET_DEFAULT 0.08f
+#define BODY_OFFSET_DEFAULT 0.12f
 #define BODY_OFFSET_MAXIMUM 0.2f
 /* the farthest the pelvis may sit from the camera horizontally, world
 units: walking it stays within about 0.05; in the cryo pod it's 0.175 */
@@ -101,6 +110,19 @@ bend clamp turns the upper body back until every kept node is this far */
 /* the bend clamp's steps and its farthest turn back, degrees */
 #define BODY_CLAMP_STEP_DEGREES 1
 #define BODY_CLAMP_MAXIMUM_DEGREES 90
+/* the shortfall under the clearance, world units, at which the clamp's
+turn reaches the full clearing angle; less takes that share of it */
+#define BODY_CLAMP_RAMP 0.01f
+/* how far above the neck node the collapsed neck and head sit, along
+spine1-to-neck, world units: Task 7f's raise at the waist, applied at the
+neck */
+#define BODY_NECK_RAISE 0.03f
+/* the most the spine-to-neck line may lean forward from the world's up,
+degrees: the cyborg stands leaning about 19 and the aiming pose bends it to
+about 31 looking straight down (Task 12j's Mac log); upright, its chest
+stays behind the feet and its shoulders clear of the near plane (at 10,
+the collar still crossed it) */
+#define BODY_UPRIGHT_LEAN_DEGREES 0.0f
 
 enum body_skip
 {
@@ -129,6 +151,8 @@ struct body_model
 	int recognized;               /* a spine, or failing that a head */
 	short spine;                  /* NONE if not found */
 	short pelvis;                 /* the spine's parent, or the root */
+	short neck;                   /* NONE if not found */
+	short neck_base;              /* spine1, or the neck's parent; NONE if neither */
 	short feet[2];                /* NONE if not found */
 	/* per node: the node whose position it collapses to (the neck's
 	subtree, or with no neck the head's), or NONE */
@@ -150,7 +174,9 @@ static real_matrix4x3 body_shadow_matrices[MAXIMUM_NODES_PER_MODEL];
 /* the last body copy's nearest kept upper-body node to the camera, before
 and after the bend clamp, and the clamp's turn in degrees, for the log */
 static float body_nearest_before = -1.0f, body_nearest_after = -1.0f;
-static int body_clamp_degrees;
+static float body_clamp_degrees;
+/* the spine-to-neck line's forward lean before the upright turn, degrees */
+static float body_lean_degrees;
 /* render_objects.c's inside-faces pass (halo_first_person_body_set_fill) */
 static int body_fill;
 
@@ -292,15 +318,10 @@ static const struct body_model *body_model_get(long model_index)
 		body->arm_target[node_index] = (signed char)body_ancestor_named(model, node_index, "upperarm");
 		body->upper_body[node_index] = spine != NONE && body_ancestor_named(model, node_index, "spine") == spine;
 		if (neck != NONE) {
-			/* the neck and head, to spine1's position (the neck's parent's, if
-			there's no spine1) */
-			if (body_in_neck(model, node_index, neck)) {
-				const struct model_node *node = TAG_BLOCK_GET_ELEMENT(&model->nodes, neck, struct model_node);
-				short parent = node->parent_node_index;
-
-				body->target[node_index] = (signed char)(spine1 != NONE ? spine1 :
-					parent >= 0 && parent < count ? parent : neck);
-			}
+			/* the neck and head, to the cap above the neck node (the
+			collapse places it) */
+			if (body_in_neck(model, node_index, neck))
+				body->target[node_index] = (signed char)neck;
 		} else if ((ancestor = body_ancestor_named(model, node_index, "head")) != NONE) {
 			/* no neck: the head, to its parent's position (where it is, if it
 			has none) */
@@ -311,6 +332,14 @@ static const struct body_model *body_model_get(long model_index)
 		}
 	}
 	body->spine = spine;
+	body->neck = neck;
+	body->neck_base = NONE;
+	if (neck != NONE) {
+		const struct model_node *node = TAG_BLOCK_GET_ELEMENT(&model->nodes, neck, struct model_node);
+		short parent = node->parent_node_index;
+
+		body->neck_base = spine1 != NONE ? spine1 : parent >= 0 && parent < count ? parent : NONE;
+	}
 	if (spine != NONE) {
 		const struct model_node *node = TAG_BLOCK_GET_ELEMENT(&model->nodes, spine, struct model_node);
 
@@ -398,23 +427,49 @@ static float body_nearest(const struct body_model *body, const real_matrix4x3 *c
 	return nearest;
 }
 
-/* the spine's bend clamp: the upper body (the set-back copy, before the
-collapse) turned back about the spine node, about the facing's left, by the
-least whole degree that keeps every kept node BODY_CAMERA_CLEARANCE from
-the camera, or the turn up to BODY_CLAMP_MAXIMUM_DEGREES that keeps them
-farthest */
+/* the upper body (the spine's subtree) turned rigidly by angle about axis
+through pivot */
+static void body_turn_upper(const struct body_model *body, real_matrix4x3 *copy, short node_count,
+	const real_point3d *pivot, const real_vector3d *axis, float angle)
+{
+	short node_index;
+
+	for (node_index = 0; node_index < node_count; node_index++) {
+		if (!body->upper_body[node_index])
+			continue;
+		body_turn_point(&copy[node_index].position, pivot, axis, angle);
+		body_turn_vector(&copy[node_index].forward, axis, angle);
+		body_turn_vector(&copy[node_index].left, axis, angle);
+		body_turn_vector(&copy[node_index].up, axis, angle);
+	}
+}
+
+/* the share of the clearing turn the clamp applies for a shortfall under
+BODY_CAMERA_CLEARANCE: growing from 0 to 1 over BODY_CLAMP_RAMP */
+static float body_clamp_ramp(float shortfall)
+{
+	return shortfall <= 0.0f ? 0.0f : shortfall >= BODY_CLAMP_RAMP ? 1.0f : shortfall / BODY_CLAMP_RAMP;
+}
+
+/* the upright turn and the bend clamp on the set-back copy, before the
+collapse: the upper body turned back about the spine node, about the
+facing's left, first until the spine-to-neck line leans no more than
+BODY_UPRIGHT_LEAN_DEGREES forward, then by the least whole degree that
+keeps every kept node BODY_CAMERA_CLEARANCE from the camera (or the turn up
+to BODY_CLAMP_MAXIMUM_DEGREES that keeps them farthest), times
+body_clamp_ramp of the shortfall */
 static void body_clamp_bend(const struct body_model *body, real_matrix4x3 *copy, short node_count, int collapse_arms,
 	const float facing[3], const float camera[3])
 {
 	float length = sqrtf(facing[0] * facing[0] + facing[1] * facing[1]);
 	real_point3d pivot;
 	real_vector3d left;
-	float best = 0.0f, best_nearest;
-	int degrees;
-	short node_index;
+	float best = 0.0f, best_nearest, applied;
+	int degrees, best_degrees = 0;
 
 	body_nearest_before = body_nearest_after = -1.0f;
-	body_clamp_degrees = 0;
+	body_clamp_degrees = 0.0f;
+	body_lean_degrees = 0.0f;
 	if (body->spine == NONE || body->spine >= node_count || length <= 1e-4f)
 		return;
 	pivot = copy[body->spine].position;
@@ -423,6 +478,17 @@ static void body_clamp_bend(const struct body_model *body, real_matrix4x3 *copy,
 	left.i = -facing[1] / length;
 	left.j = facing[0] / length;
 	left.k = 0.0f;
+	if (body->neck != NONE && body->neck < node_count) {
+		float dx = copy[body->neck].position.x - pivot.x;
+		float dy = copy[body->neck].position.y - pivot.y;
+		float dz = copy[body->neck].position.z - pivot.z;
+		float ahead = (dx * facing[0] + dy * facing[1]) / length;
+
+		body_lean_degrees = atan2f(ahead, dz) * 57.29578f;
+		if (body_lean_degrees > BODY_UPRIGHT_LEAN_DEGREES)
+			body_turn_upper(body, copy, node_count, &pivot, &left,
+				-(body_lean_degrees - BODY_UPRIGHT_LEAN_DEGREES) * 0.017453293f);
+	}
 	best_nearest = body_nearest_before = body_nearest(body, copy, node_count, collapse_arms, camera, &pivot, &left, 0.0f);
 	for (degrees = BODY_CLAMP_STEP_DEGREES; best_nearest < BODY_CAMERA_CLEARANCE &&
 		degrees <= BODY_CLAMP_MAXIMUM_DEGREES; degrees += BODY_CLAMP_STEP_DEGREES) {
@@ -432,22 +498,17 @@ static void body_clamp_bend(const struct body_model *body, real_matrix4x3 *copy,
 		if (nearest > best_nearest) {
 			best_nearest = nearest;
 			best = angle;
-			body_clamp_degrees = degrees;
+			best_degrees = degrees;
 		}
 		if (nearest >= BODY_CAMERA_CLEARANCE)
 			break;
 	}
-	body_nearest_after = best_nearest;
-	if (best == 0.0f)
-		return;
-	for (node_index = 0; node_index < node_count; node_index++) {
-		if (!body->upper_body[node_index])
-			continue;
-		body_turn_point(&copy[node_index].position, &pivot, &left, best);
-		body_turn_vector(&copy[node_index].forward, &left, best);
-		body_turn_vector(&copy[node_index].left, &left, best);
-		body_turn_vector(&copy[node_index].up, &left, best);
-	}
+	applied = best * body_clamp_ramp(BODY_CAMERA_CLEARANCE - body_nearest_before);
+	body_clamp_degrees = (float)best_degrees * body_clamp_ramp(BODY_CAMERA_CLEARANCE - body_nearest_before);
+	if (applied != 0.0f)
+		body_turn_upper(body, copy, node_count, &pivot, &left, applied);
+	body_nearest_after = applied == best ? best_nearest :
+		body_nearest(body, copy, node_count, collapse_arms, camera, &pivot, &left, 0.0f);
 }
 
 const real_matrix4x3 *halo_first_person_body_matrices(long model_index, const real_matrix4x3 *matrices,
@@ -457,6 +518,7 @@ const real_matrix4x3 *halo_first_person_body_matrices(long model_index, const re
 	real_matrix4x3 *copy = shadow ? body_shadow_matrices : body_matrices;
 	float length = sqrtf(facing[0] * facing[0] + facing[1] * facing[1]);
 	float back[2] = { 0.0f, 0.0f };
+	real_point3d cap = { 0.0f, 0.0f, 0.0f };
 	short node_index;
 
 	if (model_index == NONE || !matrices || node_count <= 0)
@@ -481,16 +543,32 @@ const real_matrix4x3 *halo_first_person_body_matrices(long model_index, const re
 	if (shadow)
 		return copy;
 	body_clamp_bend(body, copy, node_count, collapse_arms, facing, camera);
-	/* the collapse, to the (turned) targets' positions: a target is kept
-	(spine1, a head's parent) or collapses to itself (an upper arm), so the
-	order doesn't matter */
+	/* the neck's cap, from the (turned) neck and its base */
+	if (body->neck != NONE && body->neck < node_count) {
+		cap = copy[body->neck].position;
+		if (body->neck_base != NONE && body->neck_base < node_count) {
+			float dx = cap.x - copy[body->neck_base].position.x;
+			float dy = cap.y - copy[body->neck_base].position.y;
+			float dz = cap.z - copy[body->neck_base].position.z;
+			float distance = sqrtf(dx * dx + dy * dy + dz * dz);
+
+			if (distance > 1e-5f) {
+				cap.x += BODY_NECK_RAISE * dx / distance;
+				cap.y += BODY_NECK_RAISE * dy / distance;
+				cap.z += BODY_NECK_RAISE * dz / distance;
+			}
+		}
+	}
+	/* the collapse, to the cap or the (turned) targets' positions: any
+	other target is kept (a head's parent) or collapses to itself (an upper
+	arm), so the order doesn't matter */
 	for (node_index = 0; node_index < node_count; node_index++) {
 		short target = collapse_arms && body->arm_target[node_index] != NONE ?
 			body->arm_target[node_index] : body->target[node_index];
 
 		if (target != NONE && target < node_count) {
 			copy[node_index].scale = 0.0f;
-			copy[node_index].position = copy[target].position;
+			copy[node_index].position = target == body->neck ? cap : copy[target].position;
 		}
 	}
 	return copy;
@@ -618,8 +696,9 @@ void halo_first_person_body_log(long object_index, const struct real_matrix4x3 *
 	}
 	if (body_nearest_before >= 0.0f && length < sizeof(line))
 		length += (size_t)snprintf(line + length, sizeof(line) - length,
-			"; the chest's nearest kept node %.3f from the camera (%.3f before a bend clamp of %d degrees)",
-			body_nearest_after, body_nearest_before, body_clamp_degrees);
+			"; the spine leaned %.1f degrees forward; the chest's nearest kept node %.3f from the camera "
+			"(%.3f before a bend clamp of %.1f degrees, ramped)",
+			body_lean_degrees, body_nearest_after, body_nearest_before, body_clamp_degrees);
 	if (body->pelvis < node_count && length < sizeof(line)) {
 		const real_vector3d *pelvis_forward = &drawn[body->pelvis].forward;
 		float facing_length = sqrtf(object->object.forward.i * object->object.forward.i +

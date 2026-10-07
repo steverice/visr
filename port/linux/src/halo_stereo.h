@@ -325,11 +325,11 @@ int halo_first_person_body(long object_index);
 /* the render-only node matrices for that body, set back along the facing
 (facing: the unit's forward; only its horizontal part counts) by
 display.first_person_body_offset: the body's with the neck and head
-collapsed to spine1 (a model with no neck node: the head to its parent),
-with collapse_arms (while the first-person weapon shows) the arms from the
-upper arms down collapsed too, and the spine's bend clamped so no kept node
-comes within 0.1 units of camera; or with shadow, the whole silhouette for
-its shadow. Each in its own static array, valid until the next call of the
+collapsed to a cap above the collar (a model with no neck node: the head to
+its parent), with collapse_arms (while the first-person weapon shows) the
+arms from the upper arms down collapsed too, the aiming pose's forward bend
+undone, and the spine's bend clamped so no kept node comes within 0.1 units
+of camera; or with shadow, the whole silhouette for its shadow. Each in its own static array, valid until the next call of the
 same kind; node_count is the smaller of the model's nodes and the object's
 node matrices; returns matrices unchanged if the model's nodes aren't
 recognized */

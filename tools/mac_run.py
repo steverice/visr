@@ -140,7 +140,7 @@ DEFAULTS = {
     "display.foveation": "true",
     "display.render_quality": "0.6",
     "display.first_person_body": "true",
-    "display.first_person_body_offset": "0.08",
+    "display.first_person_body_offset": "0.12",
     "display.weapon_offset_down": "0.0",
     "display.weapon_offset_back": "0.0",
     "display.eye_height_offset": "0.0",

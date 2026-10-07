@@ -314,6 +314,9 @@ static void render_model_parts(
 {
 	boolean immediate = TEST_FLAG(flags, _render_model_immediate_bit);
 	short last_pass = TEST_FLAG(flags, _render_model_shadow_bit) ? _render_model_pass_solid : _render_model_pass_transparent;
+	/* port: the first-person body's inside faces draw only its solid parts
+	(halo_first_person_body_fill) */
+	boolean first_person_body_fill = (boolean)halo_first_person_body_fill();
 	struct render_sort_filth sort_filth[MAXIMUM_PARTS_PER_MODEL_GEOMETRY];
 	real_point3d centroid;
 	short pass;
@@ -398,9 +401,8 @@ static void render_model_parts(
 						{
 							if (shader_type_is_transparent(shader->base.type))
 							{
-								/* port: the first-person body's inside faces draw
-								only its solid parts (halo_first_person_body_fill) */
-								if (pass==_render_model_pass_transparent && !halo_first_person_body_fill())
+								/* port: not in the first-person body's fill pass */
+								if (pass==_render_model_pass_transparent && !first_person_body_fill)
 								{
 									/* port: the root's matrix for a node the model
 									doesn't have (a map's index) */
@@ -449,7 +451,8 @@ static void render_model_parts(
 							else if (shader->base.type==_shader_type_model &&
 								TEST_FLAG(((struct shader_model_definition *)shader_get_and_verify_type(shader, _shader_type_model))->flags, _shader_model_alpha_blended_decal_bit))
 							{
-								if (pass==_render_model_pass_decal && !halo_first_person_body_fill())
+								/* port: not in the first-person body's fill pass */
+								if (pass==_render_model_pass_decal && !first_person_body_fill)
 								{
 									match_assert("c:\\halo\\SOURCE\\models\\models.c", 491, !TEST_FLAG(flags, _render_model_shadow_bit));
 
