@@ -232,7 +232,8 @@ void halo_stereo_reticle_drew(void);
 /* the zoomed camera, from the game's camera before the head turned it
 (render.c): on foot it turns with the head as the eyes' cameras do
 (halo_stereo_head_orient), since the look is the head's; in a
-head-tracked third-person seat it stays the game's camera, where the gun
+head-tracked third-person seat, and in a first-person seat whose yaw limit
+holds the aim back from the head, it stays the game's camera, where the gun
 aims */
 void halo_stereo_zoom_orient(float forward[3], float up[3]);
 

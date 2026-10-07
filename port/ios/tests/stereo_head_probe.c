@@ -1527,11 +1527,12 @@ static void seat_yaw_limit(void)
 /* the leftover kept where the game takes no head yaw: a second turn in the
 frame (a damage effect's camera impulse, after the look's), frames with the
 director holding the facing (a seat's exit animation) and the first frame on
-foot after them */
+foot after them; and the zoom, which looks along the gun while the leftover
+holds the aim back */
 static void seat_leftover_kept(void)
 {
 	struct seat_run run;
-	float head = 0.0f, body0, facing0, worst = 0.0f;
+	float head = 0.0f, body0, facing0, worst = 0.0f, aim_yaw, zoom_yaw, forward[3], up[3];
 	int frame, kept = 1;
 
 	printf("a seat's leftover kept through other turns and held facing:\n");
@@ -1552,6 +1553,15 @@ static void seat_leftover_kept(void)
 		"before\n", head_seat_leftover / DEGREES, run.facing_yaw / DEGREES, worst);
 	check(kept && worst < 0.01f && degrees_apart(run.facing_yaw / DEGREES, facing0 / DEGREES) < 0.01f,
 		"a camera impulse after the look's turn keeps the leftover: the eyes and the aim stay");
+	/* the zoom: along the aim while the leftover holds it back */
+	aim_yaw = 45.0f * DEGREES;
+	forward[0] = cosf(aim_yaw); forward[1] = sinf(aim_yaw); forward[2] = 0.0f;
+	up[0] = 0.0f; up[1] = 0.0f; up[2] = 1.0f;
+	halo_stereo_zoom_orient(forward, up);
+	zoom_yaw = atan2f(forward[1], forward[0]) / DEGREES;
+	printf("  zoomed with 20 deg of leftover: the zoom's yaw %.4f deg (the aim 45, the eyes %.4f)\n", zoom_yaw,
+		run.view);
+	check(degrees_apart(zoom_yaw, 45.0f) < 0.01f, "with a leftover the zoom looks along the gun's aim");
 	/* the director holding the facing for 30 frames, then on foot */
 	worst = 0.0f;
 	kept = 1;
@@ -1574,6 +1584,11 @@ static void seat_leftover_kept(void)
 		remainderf(run.facing_yaw / DEGREES, 360.0f), head_seat_leftover / DEGREES, worst);
 	check(degrees_apart(run.facing_yaw / DEGREES, 65.0f) < 0.01f && head_seat_leftover == 0.0f && worst < 0.01f,
 		"the first look the game takes folds the leftover in: the aim at the eyes, the world still");
+	forward[0] = cosf(run.facing_yaw); forward[1] = sinf(run.facing_yaw); forward[2] = 0.0f;
+	up[0] = 0.0f; up[1] = 0.0f; up[2] = 1.0f;
+	halo_stereo_zoom_orient(forward, up);
+	zoom_yaw = atan2f(forward[1], forward[0]) / DEGREES;
+	check(degrees_apart(zoom_yaw, run.view) < 0.01f, "without one the zoom follows the eyes, as on foot");
 	seated = 0;
 }
 

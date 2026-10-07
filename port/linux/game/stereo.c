@@ -2030,7 +2030,9 @@ void halo_stereo_head_orient(float forward[3], float up[3])
 
 void halo_stereo_zoom_orient(float forward[3], float up[3])
 {
-	if (!third_person_head)
+	/* (the zoom looks along the gun: in a seat whose limit holds the aim
+	back from the head, the game camera's forward, as in third person) */
+	if (!third_person_head && head_seat_leftover == 0.0f)
 		halo_stereo_head_orient(forward, up);
 }
 
