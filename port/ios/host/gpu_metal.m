@@ -2138,6 +2138,8 @@ static void pipeline_describe(const struct pipeline_key *key, struct gpu_pipelin
 	description->source = key->source;
 	description->destination = key->destination;
 	description->operation = key->operation;
+	description->alpha_source = key->alpha_source;
+	description->alpha_destination = key->alpha_destination;
 	description->write_mask = key->write_mask;
 	description->exact_borders = key->exact_borders;
 	description->depth = key->depth_format != MTLPixelFormatInvalid;
@@ -2155,11 +2157,11 @@ static void pipeline_key_from_description(const struct gpu_pipeline_description 
 		key->source = description->source;
 		key->destination = description->destination;
 		key->operation = description->operation;
-		/* a list's pipelines blend alpha as color: only the stereo HUD layer
-		blends alpha on its own (gpu_blend_state.alpha_separate), and its
-		pipelines compile at their first draw */
-		key->alpha_source = key->source;
-		key->alpha_destination = key->destination;
+		/* alpha's factors are color's but in the stereo HUD layer's draws
+		(gpu_blend_state.alpha_separate); a list's line from before it
+		carried them reads as color's (halo_shader_list_warm) */
+		key->alpha_source = description->alpha_source;
+		key->alpha_destination = description->alpha_destination;
 	}
 	key->write_mask = description->write_mask & 0xf;
 	key->exact_borders = description->exact_borders & 0xf;

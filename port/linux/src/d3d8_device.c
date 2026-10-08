@@ -2265,10 +2265,13 @@ Lines, one each:
                                it was translated with (hex)
   ps KEY HEX                   a pixel shader: its key's 64-bit hash and the
                                key's bytes (struct nv2a_pixel_shader_key)
-  pipeline VS PS BLEND SOURCE DESTINATION OPERATION MASK EXACT DEPTH KINDS
+  pipeline VS PS BLEND SOURCE DESTINATION OPERATION MASK EXACT DEPTH KINDS ALPHA_SOURCE ALPHA_DESTINATION
                                a pipeline (gpu_pipeline_description): VS is
                                PROGRAM.VARIANT.MASK, PS a KEY, the rest
-                               decimal, KINDS the 16 attribute kinds in hex
+                               decimal, KINDS the 16 attribute kinds in hex;
+                               a line without the alpha factors (from
+                               before they were listed) blends alpha as
+                               color
 
 Anything still made while drawing, by the Metal backend, is logged once,
 with its line, and appended to FOLDER/MAP.txt, FOLDER being
@@ -2448,10 +2451,10 @@ static void shader_list_take_pipelines(void)
 			continue;
 		for (index = 0; index < GPU_ATTRIBUTE_COUNT; index++)
 			snprintf(kinds + 2 * index, 3, "%02x", built.attribute_kinds[index]);
-		snprintf(line, sizeof(line), "pipeline %016llx.%u.%lx %016llx %u %u %u %u %u %u %u %s",
+		snprintf(line, sizeof(line), "pipeline %016llx.%u.%lx %016llx %u %u %u %u %u %u %u %s %u %u",
 			(unsigned long long)vertex->hash, vertex->variant, vertex->packed_mask, (unsigned long long)pixel->hash,
 			built.blend, built.source, built.destination, built.operation, built.write_mask, built.exact_borders,
-			built.depth, kinds);
+			built.depth, kinds, built.alpha_source, built.alpha_destination);
 		shader_list_made(line);
 	}
 }
@@ -2550,7 +2553,7 @@ void halo_shader_list_warm(char const *map_name)
 		for (line = text; line && *line; line = next)
 		{
 			char kind[16], first[600], second[64];
-			unsigned int values[7];
+			unsigned int values[9];
 
 			next = strchr(line, '\n');
 			if (next)
@@ -2604,11 +2607,20 @@ void halo_shader_list_warm(char const *map_name)
 				char kinds[64];
 				struct vertex_shader_object *program = NULL;
 				BOOL used = FALSE;
+				int fields;
 
 				memset(&description, 0, sizeof(description));
-				if (sscanf(line, "pipeline %llx.%u.%lx %llx %u %u %u %u %u %u %u %63s", &vertex_hash, &variant, &mask,
-					&pixel_hash, &values[0], &values[1], &values[2], &values[3], &values[4], &values[5], &values[6],
-					kinds) != 12 || variant > 1 || strlen(kinds) != 2 * GPU_ATTRIBUTE_COUNT ||
+				fields = sscanf(line, "pipeline %llx.%u.%lx %llx %u %u %u %u %u %u %u %63s %u %u", &vertex_hash, &variant,
+					&mask, &pixel_hash, &values[0], &values[1], &values[2], &values[3], &values[4], &values[5], &values[6],
+					kinds, &values[7], &values[8]);
+				/* (a line from before the alpha factors were listed blends
+				alpha as color) */
+				if (fields == 12)
+				{
+					values[7] = values[1];
+					values[8] = values[2];
+				}
+				if ((fields != 12 && fields != 14) || variant > 1 || strlen(kinds) != 2 * GPU_ATTRIBUTE_COUNT ||
 					!hex_bytes(kinds, description.attribute_kinds, GPU_ATTRIBUTE_COUNT) ||
 					!(description.pixel_shader = shader_list_pixel((uint64_t)pixel_hash)))
 				{
@@ -2622,6 +2634,8 @@ void halo_shader_list_warm(char const *map_name)
 				description.write_mask = (uint8_t)values[4];
 				description.exact_borders = (uint8_t)values[5];
 				description.depth = (uint8_t)values[6];
+				description.alpha_source = (uint8_t)values[7];
+				description.alpha_destination = (uint8_t)values[8];
 				/* (one for each object compiled with the line's variant and mask) */
 				while ((program = shader_list_program(program, (uint64_t)vertex_hash, (int)variant, mask, TRUE)))
 				{

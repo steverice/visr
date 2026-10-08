@@ -22,11 +22,24 @@ HEADER = ("# {map}: the shaders and pipelines this map's draws make, compiled wh
           "# (d3d8_device.c, halo_shader_list_warm); merged by tools/shader_lists.py from recorded runs\n")
 
 
+# a pipeline line from before it carried the separate alpha factors: `pipeline VS PS BLEND SOURCE DESTINATION
+# OPERATION MASK EXACT DEPTH KINDS`, to which the app now adds ALPHA_SOURCE ALPHA_DESTINATION
+OLD_PIPELINE_FIELDS = 11
+
+
+def normalized(line):
+    """a line in its current form: an old pipeline line blends alpha as color, as the app reads it"""
+    fields = line.split()
+    if fields[0] == "pipeline" and len(fields) == OLD_PIPELINE_FIELDS:
+        fields += [fields[4], fields[5]]
+    return " ".join(fields)
+
+
 def read_lines(path):
-    """the list's entries (no comments or blanks)"""
+    """the list's entries (no comments or blanks), each in its current form"""
     if not path.is_file():
         return set()
-    return {line.strip() for line in path.read_text().splitlines()
+    return {normalized(line) for line in path.read_text().splitlines()
             if line.strip() and not line.startswith("#") and line.split()[0] in ORDER}
 
 

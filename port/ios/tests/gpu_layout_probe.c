@@ -53,6 +53,12 @@ int main(void)
 	FIELD(gpu_draw, constant_values);
 	FIELD(gpu_draw, index_buffer);
 	FIELD(gpu_draw, base_vertex);
+	SIZE(gpu_pipeline_description);
+	FIELD(gpu_pipeline_description, blend);
+	FIELD(gpu_pipeline_description, write_mask);
+	FIELD(gpu_pipeline_description, alpha_source);
+	FIELD(gpu_pipeline_description, alpha_destination);
+	FIELD(gpu_pipeline_description, attribute_kinds);
 	SIZE(gpu_clear);
 	FIELD(gpu_clear, depth);
 	FIELD(gpu_clear, stencil);

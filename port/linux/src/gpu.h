@@ -353,16 +353,18 @@ enum
 
 /* a pipeline as the Metal backend builds it for a draw, in terms the front
 end can name across runs (shader_list.c): its shaders, blending (factors
-only while it is on), the color write mask (0 without a color target), the
-stages that rebuild their border colors, whether it has a depth-stencil
-target, and each attribute's kind (0 for a constant, else its
+only while it is on; alpha's are color's unless the draw blends alpha on its
+own, gpu_blend_state.alpha_separate), the color write mask (0 without a
+color target), the stages that rebuild their border colors, whether it has a
+depth-stencil target, and each attribute's kind (0 for a constant, else its
 GPU_ATTRIBUTE_* format). Fixed-width fields only: it crosses from the guest
 to the host as it is. */
 struct gpu_pipeline_description
 {
 	gpu_shader vertex_shader, pixel_shader;
 	uint8_t blend, source, destination, operation;
-	uint8_t write_mask, exact_borders, depth, pad;
+	uint8_t write_mask, exact_borders, depth, alpha_source;
+	uint8_t alpha_destination, pad[3];
 	uint8_t attribute_kinds[GPU_ATTRIBUTE_COUNT];
 };
 

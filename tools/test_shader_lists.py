@@ -3,7 +3,14 @@ from tools import shader_lists
 
 VS = "vs 00000000000000aa 0 0"
 PS = "ps 00000000000000bb " + "00" * 8
-PIPELINE = "pipeline 00000000000000aa.0.0 00000000000000bb 0 0 0 0 15 0 1 " + "00" * 16
+PIPELINE = "pipeline 00000000000000aa.0.0 00000000000000bb 0 0 0 0 15 0 1 " + "00" * 16 + " 0 0"
+# the same pipeline before lines carried the separate alpha factors
+OLD_PIPELINE = "pipeline 00000000000000aa.0.0 00000000000000bb 0 0 0 0 15 0 1 " + "00" * 16
+# a blended pipeline's line without alpha factors, and the same one with them (alpha as color)
+OLD_BLENDED = "pipeline 00000000000000aa.0.0 00000000000000bb 1 4 5 0 15 0 1 " + "00" * 16
+BLENDED = OLD_BLENDED + " 4 5"
+# the stereo HUD layer's twin of it: color as before, alpha by ZERO and the destination's factor
+HUD_LAYER = OLD_BLENDED + " 0 5"
 
 
 def entries(path):
@@ -59,3 +66,25 @@ def test_a_folder_with_no_lists_is_an_error(tmp_path):
         assert "no recorded lists" in str(error)
     else:
         raise AssertionError("merge accepted a folder with no lists")
+
+
+def test_an_old_pipeline_line_reads_as_blending_alpha_as_color(tmp_path):
+    """lines from before the alpha factors stay valid and merge with their new form"""
+    lists = tmp_path / "lists"
+    lists.mkdir()
+    (lists / "a10.txt").write_text(f"# header\n{OLD_PIPELINE}\n{OLD_BLENDED}\n")
+    recorded = tmp_path / "missed"
+    recorded.mkdir()
+    (recorded / "a10.txt").write_text(f"{PIPELINE}\n{BLENDED}\n{HUD_LAYER}\n")
+    added = shader_lists.merge([recorded], lists)
+    assert added == {"a10": 1}
+    assert sorted(entries(lists / "a10.txt")) == sorted([PIPELINE, BLENDED, HUD_LAYER])
+
+
+def test_the_hud_layer_pipeline_is_not_its_mono_twin(tmp_path):
+    lists = tmp_path / "lists"
+    missed = tmp_path / "missed"
+    missed.mkdir()
+    (missed / "b30.txt").write_text(f"{BLENDED}\n{HUD_LAYER}\n")
+    shader_lists.merge([missed], lists)
+    assert len(entries(lists / "b30.txt")) == 2
