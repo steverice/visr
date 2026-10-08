@@ -1698,6 +1698,13 @@ void main_crash(
    Keep it on Xbox; native builds name the binary that is actually running. */
 static void main_native_build_label(char *label, size_t capacity)
 {
+	#ifdef HALO_IOS
+	/* port: the Apple platforms' guest (VISR), one build for all of them, built
+	with __linux__ but no build number of its own: named by the game's
+	network version instead */
+	_snprintf(label, capacity - 1, "VISR | network version %d", HALO_PORT_NETWORK_VERSION);
+	label[capacity - 1] = 0;
+	#else
 	char const *platform;
 
 	#ifdef HALO_ANDROID
@@ -1714,6 +1721,7 @@ static void main_native_build_label(char *label, size_t capacity)
 		_snprintf(label, capacity - 1, "OpenCE %s | local build (%s)",
 			platform, HALO_BUILD_FLAVOR);
 	label[capacity - 1] = 0;
+	#endif
 }
 
 /* The 2 KB error buffer keeps recent lines at its end. Put the newest first
