@@ -179,7 +179,12 @@ times (a client waits for a player's blow before its body dies without one),
 and switches co-op's BSP on the host's crossing alone; version 22 names a
 Halo Custom Edition map's level `custom_maps\<name>`
 (`port/linux/game/custom_edition_cache.h`), which a client of an older
-version can neither load nor explain, so it is told to update instead.
+version can neither load nor explain, so it is told to update instead;
+version 23 keeps a Custom Edition map's blocks past the Xbox tools' limits
+whole (scenario vehicles, animations, seats: `tag_schema.h`), so a host and a
+client of version 22 would place different objects on such a map, and sends
+the map file's header checksum as the game record's map version
+(`cache_files_map_version`), which a client checks its copy against.
 
 A client plays by its host's rules: in another's game (searching for it,
 in its lobby, or playing it) the developer console, the telnet console
