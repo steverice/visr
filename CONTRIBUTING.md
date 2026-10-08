@@ -73,18 +73,22 @@ release` still builds if you can.
 
 ## Commits
 
-We use [Conventional Commits](https://www.conventionalcommits.org/):
+We use [Conventional Commits](https://www.conventionalcommits.org/), each led by its [gitmoji](https://gitmoji.dev/):
 
 ```
-fix(ios): keep the import's progress bar on screen after rotation — `ImportView` ...
+🐛 fix(ios): keep the import's progress bar on screen after rotation — `ImportView` ...
 ```
 
+- A gitmoji for the type: ✨ `feat`, 🐛 `fix`, ⚡️ `perf`, ♻️ `refactor`, 📝 `docs`,
+  ✅ `test`, 📦️ `build`, 👷 `ci`, 🔧 `chore`, ⏪️ `revert`, 🔀 for merges
 - A type (`feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `build`, `ci`,
   `chore` or `revert`) and a scope such as `ios`, `metal`, `msl`, `visionos`,
   `tools` or `mac_run`
 - A subject line that says what changed and, after a dash, why
 - Code names in backticks
 - One commit per logical change
+- Commits taken from upstream keep their original messages; pull requests sent
+  upstream follow that project's own style
 
 ## Reporting bugs
 
