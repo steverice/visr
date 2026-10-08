@@ -1155,6 +1155,19 @@ void set_window_camera_values(
 				0.75f * render_camera_get_adjusted_field_of_view_tangent(
 					observer->field_of_view),
 				1.0f);
+		/* port: the stereo screen shows the game's horizontal view across
+		16:9, the middle 640x360 of 640x480: the letterbox's inside for a
+		cutscene (through the film's hold after the letterbox drops), and
+		everything in SCREEN mode with display.screen_framing = "band", so the
+		picture's angle matches the screen's and the framing doesn't jump when
+		a cutscene hands back to the player */
+		if (halo_stereo_screen_framing())
+		{
+			window->rasterizer_camera.vertical_field_of_view =
+				2.0f * arctangent(
+					0.75f * tangent(window->rasterizer_camera.vertical_field_of_view * 0.5f),
+					1.0f);
+		}
 
 		if (window->local_player_index != NONE &&
 			!console_is_active() &&
@@ -1463,6 +1476,8 @@ static void main_new_map(
 		error(_error_immediate, "main_new_map() failed.");
 	}
 	game_initial_pulse();
+	/* port: compile the map's shaders and pipelines before its first frame */
+	halo_shader_list_warm(options->map_name);
 
 	main_globals.reset_map = FALSE;
 	main_globals.defer_map_change = FALSE;
@@ -1926,6 +1941,7 @@ void main_pregame_render(
 	static struct render_window window;
 
 	collision_log_continue_period(TRUE);
+	halo_render_random_begin(); /* port: render_random.c */
 	sound_render();
 	{
 		real_point3d position = { 0.0f, 0.0f, 0.0f };
@@ -1955,6 +1971,7 @@ void main_pregame_render(
 			&window,
 			main_globals.movie);
 	}
+	halo_render_random_end(); /* port: render_random.c */
 	collision_log_end_period();
 
 	return;
@@ -3234,6 +3251,7 @@ static void main_game_render(
 	short last_local_player_index;
 
 	lock_global_random_seed();
+	halo_render_random_begin(); /* port: render_random.c */
 	collision_log_continue_period(TRUE);
 	sound_render();
 	force_single_screen = game_engine_force_single_screen();
@@ -3315,6 +3333,7 @@ static void main_game_render(
 	}
 
 	collision_log_end_period();
+	halo_render_random_end(); /* port: render_random.c */
 	unlock_global_random_seed();
 	return;
 }
@@ -3531,6 +3550,14 @@ void main_loop(
 				if (render_frame && !debug_no_drawing)
 				{
 					profile_render_start();
+					/* port: stereo latches its frame once, for the frame it
+					draws (port/linux/game/stereo.c). Not in
+					render_interpolation_frame_begin, which game_time_update
+					calls as well, around game_frame: a second latch a frame
+					opened and dropped a Compositor frame, cleared what the
+					drawn frame left for the next (its fade, its film, the
+					stick's turn for the vignette) and halved the film's hold */
+					halo_stereo_frame_begin();
 					render_interpolation_frame_begin();
 					main_game_render((double)main_globals.seconds_elapsed);
 					render_interpolation_frame_end();

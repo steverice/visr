@@ -71,6 +71,12 @@ void player_effect_port_screen_fade_set(
 (network co-op keeps a client's in step with the host's) */
 boolean player_effect_port_scripted_active(void);
 void player_effect_port_scripted_end(void);
+/* port: the script fade's state, read without changing it */
+boolean player_effect_get_screen_fade(
+	real_rgb_color *color,
+	long *start_time,
+	short *ticks,
+	boolean *fading_out);
 void player_effect_get_damage_indicators(
 	short local_player_index,
 	byte *damage_indicators);

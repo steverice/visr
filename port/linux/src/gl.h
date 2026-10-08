@@ -57,6 +57,7 @@ Windows it is __stdcall too, and SDL would include windows.h without it) */
 	X(glStencilOp) \
 	X(glStencilMask) \
 	X(glBlendFunc) \
+	X(glBlendFuncSeparate) \
 	X(glBlendEquation) \
 	X(glBlendColor) \
 	X(glCullFace) \
@@ -164,6 +165,7 @@ Windows it is __stdcall too, and SDL would include windows.h without it) */
 	X(glStencilOp) \
 	X(glStencilMask) \
 	X(glBlendFunc) \
+	X(glBlendFuncSeparate) \
 	X(glBlendEquation) \
 	X(glBlendColor) \
 	X(glCullFace) \
@@ -285,6 +287,7 @@ pointers, sees the declarations without these aliases */
 #define glStencilOp HALO_GL_COUNTED(halo_glStencilOp)
 #define glStencilMask HALO_GL_COUNTED(halo_glStencilMask)
 #define glBlendFunc HALO_GL_COUNTED(halo_glBlendFunc)
+#define glBlendFuncSeparate HALO_GL_COUNTED(halo_glBlendFuncSeparate)
 #define glBlendEquation HALO_GL_COUNTED(halo_glBlendEquation)
 #define glBlendColor HALO_GL_COUNTED(halo_glBlendColor)
 #define glCullFace HALO_GL_COUNTED(halo_glCullFace)
@@ -391,6 +394,7 @@ pointers, sees the declarations without these aliases */
 #define glStencilOp HALO_GL_COUNTED(halo_glStencilOp)
 #define glStencilMask HALO_GL_COUNTED(halo_glStencilMask)
 #define glBlendFunc HALO_GL_COUNTED(halo_glBlendFunc)
+#define glBlendFuncSeparate HALO_GL_COUNTED(halo_glBlendFuncSeparate)
 #define glBlendEquation HALO_GL_COUNTED(halo_glBlendEquation)
 #define glBlendColor HALO_GL_COUNTED(halo_glBlendColor)
 #define glCullFace HALO_GL_COUNTED(halo_glCullFace)

@@ -80,7 +80,19 @@ def test_xdk_headers_use_the_sdk_spellings():
         assert not re.findall(r"\bhalo_\w+", text), header.name
 
 
-@pytest.mark.skipif(shutil.which("clang") is None, reason="clang is needed to compile the headers")
+def has_linux_i686_headers() -> bool:
+    """Whether clang finds a 32-bit Linux C library's headers (none on macOS)."""
+    if shutil.which("clang") is None:
+        return False
+    probe = subprocess.run(
+        ["clang", "--target=i686-linux-gnu", "-m32", "-fsyntax-only", "-x", "c", "-"],
+        input=b"#include <time.h>\n", capture_output=True,
+    )
+    return probe.returncode == 0
+
+
+@pytest.mark.skipif(not has_linux_i686_headers(),
+                    reason="clang and a 32-bit Linux C library's headers are needed to compile the headers")
 def test_xdk_headers_compile_for_the_game(tmp_path):
     root = XDK_INCLUDE.parent.parent.parent
     source = write(tmp_path / "unit.c", "".join(
@@ -125,8 +137,9 @@ def test_xdk_headers_regroups_anonymous_members():
 # ---------- weak reference link check
 
 
-@pytest.mark.skipif(shutil.which("clang") is None or shutil.which("nm") is None,
-                    reason="clang and nm are needed to build test objects")
+@pytest.mark.skipif(shutil.which("clang") is None or shutil.which("nm") is None
+                    or not sys.platform.startswith("linux"),
+                    reason="clang and nm are needed to build ELF test objects, which the link check reads")
 def test_link_check_rejects_undefined_weak_references(tmp_path):
     def compile_object(name: str, text: str) -> Path:
         source = write(tmp_path / f"{name}.c", text)

@@ -451,6 +451,16 @@ static boolean player_control_camera_control_is_active(
 		!game_time_get_paused());
 }
 
+/* port: whether the script has taken the camera from the player
+(player_camera_control false), for stereo's cutscene screen
+(port/linux/game/cinematic_screen.c) */
+boolean player_control_camera_control_disabled(
+	void)
+{
+	return player_control_globals &&
+		TEST_FLAG(player_control_globals->flags, _player_control_camera_control_disabled_bit);
+}
+
 boolean scripted_player_control_set_camera_control(
 	boolean camera_control)
 {
@@ -743,7 +753,11 @@ static void handle_one_player_input(
 
 		if (unit->object.parent_object_index == NONE)
 		{
+			/* port: not while the head drives the look: its pitch is the
+			head's (port/linux/game/stereo.c), and leveling it each tick would
+			only pull the aim off the view until the head put it back */
 			if (player_ui_autolevel_enabled(local_player_index) &&
+				!halo_stereo_head_drives_look(local_player_index) &&
 				fabs(player->throttle.i) > 0.5 &&
 				input.facing_delta.pitch < 0.0001f &&
 				player->magnetism_level < 0.0001f)
@@ -1137,6 +1151,18 @@ static void get_local_player_input_blob(
 				}
 				clamped_yaw = PIN(input_state->yaw * look_scale, -1.f, 1.f);
 				clamped_pitch = PIN(input_state->pitch * look_scale, -1.f, 1.f);
+				/* port: head-tracked stereo (port/linux/game/stereo.c): the head
+				pitches the view, the stick only turns it, in snaps, smoothly (at
+				its own speed, on the game's response curve at the stick's yaw
+				alone: the pitch it drops mustn't speed the turn) or not at all */
+				halo_stereo_stick_look(gamepad_index,
+					constants->look_function.count > 1 ?
+						evaluate_piecewise_linear_function(
+							constants->look_function.count,
+							constants->look_function.address,
+							PIN(input_state->yaw, -1.f, 1.f)) :
+						PIN(input_state->yaw, -1.f, 1.f),
+					time_delta_sec, &clamped_yaw, &clamped_pitch);
 
 				if (player_control_camera_control_is_active())
 				{
@@ -1300,6 +1326,20 @@ static void get_local_player_input_blob(
 							}
 							input->facing_delta.yaw += mouse_yaw;
 							input->facing_delta.pitch += mouse_pitch;
+						}
+					}
+					{
+						/* port: head-tracked stereo (port/linux/game/stereo.c): the
+						head's turn adds to the look as the mouse's does, but unscaled
+						by the zoom, so the world holds still as the head moves; its
+						pitch brings the look's to the head's own */
+						real head_yaw;
+						real head_pitch;
+
+						if (halo_stereo_head_look(gamepad_index, control->desired_angles.pitch, &head_yaw, &head_pitch))
+						{
+							input->facing_delta.yaw += head_yaw;
+							input->facing_delta.pitch += head_pitch;
 						}
 					}
 				}
@@ -1909,6 +1949,8 @@ static void player_control_modify_desired_angles(
 	struct player_control_unit_camera_info camera_info;
 	real pitch_minimum = -DEGREES_TO_RADIANS(85.5f);
 	real pitch_maximum = DEGREES_TO_RADIANS(85.5f);
+	/* port: the look before this turn, for head-tracked stereo's seat clamp */
+	real yaw_before;
 
 	match_assert(
 		"c:\\halo\\SOURCE\\game\\player_control.c",
@@ -1916,6 +1958,7 @@ static void player_control_modify_desired_angles(
 		valid_euler_angles2d(&player->desired_angles));
 	player_control_get_unit_camera_info(local_player_index, &camera_info);
 
+	yaw_before = player->desired_angles.yaw;
 	player->desired_angles.yaw += delta_yaw;
 	if (camera_info.seat_index != NONE)
 	{
@@ -1942,26 +1985,39 @@ static void player_control_modify_desired_angles(
 				&marker,
 				1);
 			euler_angles2d_from_vector3d(&marker_angles, &marker.matrix.forward);
-			yaw_minimum = marker_angles.yaw + seat->yaw_minimum;
-			yaw_maximum = marker_angles.yaw + seat->yaw_maximum;
-			arc = signed_angular_difference(yaw_minimum, yaw_maximum);
-			to_maximum = signed_angular_difference(player->desired_angles.yaw, yaw_maximum);
-			to_minimum = signed_angular_difference(yaw_minimum, player->desired_angles.yaw);
-			if (arc < 0.f)
+			/* port: head-tracked stereo (port/linux/game/stereo.c) clamps the
+			head's share of the turn itself, keeping what the bounds refuse
+			for the view; otherwise the game's clamp */
+			if (!halo_stereo_seat_yaw_clamp(
+				local_player_index,
+				&player->desired_angles.yaw,
+				yaw_before,
+				delta_yaw,
+				marker_angles.yaw,
+				seat->yaw_minimum,
+				seat->yaw_maximum))
 			{
-				arc += _pi * 2.f;
-			}
-
-			if (!(to_maximum >= 0.f && to_maximum < arc) &&
-				!(to_minimum >= 0.f && to_minimum < arc))
-			{
-				if (fabs(to_minimum) < fabs(to_maximum))
+				yaw_minimum = marker_angles.yaw + seat->yaw_minimum;
+				yaw_maximum = marker_angles.yaw + seat->yaw_maximum;
+				arc = signed_angular_difference(yaw_minimum, yaw_maximum);
+				to_maximum = signed_angular_difference(player->desired_angles.yaw, yaw_maximum);
+				to_minimum = signed_angular_difference(yaw_minimum, player->desired_angles.yaw);
+				if (arc < 0.f)
 				{
-					player->desired_angles.yaw = yaw_minimum;
+					arc += _pi * 2.f;
 				}
-				else
+
+				if (!(to_maximum >= 0.f && to_maximum < arc) &&
+					!(to_minimum >= 0.f && to_minimum < arc))
 				{
-					player->desired_angles.yaw = yaw_maximum;
+					if (fabs(to_minimum) < fabs(to_maximum))
+					{
+						player->desired_angles.yaw = yaw_minimum;
+					}
+					else
+					{
+						player->desired_angles.yaw = yaw_maximum;
+					}
 				}
 			}
 		}

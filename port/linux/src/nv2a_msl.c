@@ -13,10 +13,10 @@ Bindings, which the Metal backend (port/ios/host/gpu_metal.m) follows:
   buffer 2 struct AttributeTable, buffers 10-25 the vertex buffer each of the
   16 attributes reads (see fetch_attribute);
 - fragment: buffer 0 struct Uniforms, textures and samplers 0-3 the stages;
-  compiled with EXACT_BORDERS (exact border colors, nv2a_msl_fragment_main),
-  also buffer 3 the stages' border colors (buffers 1 and 2 are
-  phase3-stereo's rate map and foveation sizes) and samplers 4-7 opaque
-  white borders.
+  with a foveated stage (_xgpu_sampler_2d_foveated), buffer 1 the eye's rate
+  map's parameter data and buffer 2 each stage's sizes; compiled with
+  EXACT_BORDERS (exact border colors, nv2a_msl_fragment_main), also buffer 3
+  the stages' border colors and samplers 4-7 opaque white borders.
 */
 
 #include "xgpu.h"
@@ -58,7 +58,16 @@ backend describes each of the 16 in an AttributeTable entry, the C struct
 gpu_metal_attribute (gpu_metal.m), and binds the buffer it reads at offset 0,
 since the front end's offsets need not be aligned. The formats are gpu.h's
 GPU_ATTRIBUTE_*, converted as OpenGL ES converts them; missing components are
-(0, 0, 0, 1) */
+(0, 0, 0, 1).
+
+Each attribute's kind may also come as function constant n (attribute_kind_in
+n): 0 for a constant attribute, else its GPU_ATTRIBUTE_* format. The Metal
+backend specializes each pipeline's vertex function with the kinds of the
+draws that use it (pipeline_key), so the compiler folds the format switch
+away; without them (the shader replays, xcrun metal) the kind is read from
+the table per draw, as before. Both read the same bytes the same way.
+Function constant indices 0-15 are the attribute kinds; any other constant a
+vertex shader takes must start at 16. */
 static const char msl_vertex_fetch[] =
 	"struct AttributeEntry\n"
 	"{\n"
@@ -72,19 +81,27 @@ static const char msl_vertex_fetch[] =
 	"\tAttributeEntry entries[16];\n"
 	"\tfloat4 constants[16];\n"
 	"};\n"
+	"#define ATTRIBUTE_KIND(n) \\\n"
+	"\tconstant uint attribute_kind_in##n [[function_constant(n)]]; \\\n"
+	"\tconstant uint attribute_kind##n = is_function_constant_defined(attribute_kind_in##n) ? attribute_kind_in##n : 0xffffffffu;\n"
+	"ATTRIBUTE_KIND(0) ATTRIBUTE_KIND(1) ATTRIBUTE_KIND(2) ATTRIBUTE_KIND(3)\n"
+	"ATTRIBUTE_KIND(4) ATTRIBUTE_KIND(5) ATTRIBUTE_KIND(6) ATTRIBUTE_KIND(7)\n"
+	"ATTRIBUTE_KIND(8) ATTRIBUTE_KIND(9) ATTRIBUTE_KIND(10) ATTRIBUTE_KIND(11)\n"
+	"ATTRIBUTE_KIND(12) ATTRIBUTE_KIND(13) ATTRIBUTE_KIND(14) ATTRIBUTE_KIND(15)\n"
 	"static inline uint read_u16(device const uchar *p) { return uint(p[0]) | (uint(p[1]) << 8); }\n"
 	"static inline uint read_u32(device const uchar *p) { return read_u16(p) | (read_u16(p + 2) << 16); }\n"
 	"static inline float read_f32(device const uchar *p) { return as_type<float>(read_u32(p)); }\n"
 	"static inline float read_s16(device const uchar *p) { return float(short(ushort(read_u16(p)))); }\n"
 	"static inline float read_n16(device const uchar *p) { return max(read_s16(p) / 32767.0, -1.0); }\n"
-	"static inline float4 fetch_attribute(uint index, uint vid, constant AttributeTable &table, device const uchar *stream)\n"
+	"static inline float4 fetch_attribute(uint index, uint vid, constant AttributeTable &table, device const uchar *stream,\n"
+	"\tuint kind)\n"
 	"{\n"
 	"\tAttributeEntry e = table.entries[index];\n"
-	"\tif (e.stream >= 16)\n"
+	"\tif (kind == 0xffffffffu ? e.stream >= 16 : kind == 0u)\n"
 	"\t\treturn table.constants[index];\n"
 	"\tdevice const uchar *p = stream + e.offset + vid * e.stride;\n"
 	"\tfloat4 v = float4(0.0, 0.0, 0.0, 1.0);\n"
-	"\tswitch (e.format)\n"
+	"\tswitch (kind == 0xffffffffu ? e.format : kind)\n"
 	"\t{\n"
 	"\tcase 1: v.x = read_f32(p); break;\n"
 	"\tcase 2: v.xy = float2(read_f32(p), read_f32(p + 4)); break;\n"
@@ -111,10 +128,11 @@ static const char msl_vertex_fetch[] =
 	/* NORMPACKED3: the raw word unpack_normpacked3 expects; a constant
 	packed attribute is 0, which unpacks to (0, 0, 0, 1), as GL's
 	glVertexAttribI4ui(0, 0, 0, 0) (gpu_gl.c) */
-	"static inline uint fetch_packed(uint index, uint vid, constant AttributeTable &table, device const uchar *stream)\n"
+	"static inline uint fetch_packed(uint index, uint vid, constant AttributeTable &table, device const uchar *stream,\n"
+	"\tuint kind)\n"
 	"{\n"
 	"\tAttributeEntry e = table.entries[index];\n"
-	"\tif (e.stream >= 16)\n"
+	"\tif (kind == 0xffffffffu ? e.stream >= 16 : kind == 0u)\n"
 	"\t\treturn 0u;\n"
 	"\treturn read_u32(stream + e.offset + vid * e.stride);\n"
 	"}\n";
@@ -195,9 +213,11 @@ void nv2a_msl_vertex_main(struct xgpu_text *text, const struct nv2a_dialect *dia
 	for (index = 0; index < XGPU_VERTEX_ATTRIBUTE_COUNT; index++)
 	{
 		if (packed_attribute_mask & (1UL << index))
-			xgpu_text_append(text, "\tuint v%lu_packed = fetch_packed(%lu, vid, table, stream%lu);\n", index, index, index);
+			xgpu_text_append(text, "\tuint v%lu_packed = fetch_packed(%lu, vid, table, stream%lu, attribute_kind%lu);\n",
+				index, index, index, index);
 		else
-			xgpu_text_append(text, "\tvec4 v%lu_in = fetch_attribute(%lu, vid, table, stream%lu);\n", index, index, index);
+			xgpu_text_append(text, "\tvec4 v%lu_in = fetch_attribute(%lu, vid, table, stream%lu, attribute_kind%lu);\n",
+				index, index, index, index);
 	}
 	xgpu_text_append(text, "\tfloat4 gl_Position;\n\tfloat gl_PointSize;\n");
 	for (index = 0; index < VARYING_COUNT; index++)
@@ -229,8 +249,29 @@ void nv2a_msl_fragment_main(struct xgpu_text *text, const struct nv2a_dialect *d
 	const struct nv2a_pixel_shader_key *key)
 {
 	unsigned long index;
-	int stage;
+	int stage, foveated = 0;
 
+	for (stage = 0; stage < 4; stage++)
+		foveated |= key->sampler_type[stage] == _xgpu_sampler_2d_foveated;
+	/* a foveated eye's screen-sized target (_xgpu_sampler_2d_foveated): its
+	texels are where the eye's rate map put each screen pixel, at the top
+	left of a target allocated larger. The lookup's normalized coordinates
+	times the screen size, inside it, go through the map's decoder (the map's
+	parameter data in buffer 1), then stay half a texel inside the map's
+	physical region (past it the texels are stale) and are divided by the
+	allocated size. Buffer 2 holds two float4s a stage: the screen size and
+	the physical size, then the allocated size (gpu_metal.m's bind_stages) */
+	if (foveated)
+		xgpu_text_append(text,
+			"static float2 foveated_coordinates(float2 coordinates, constant rasterization_rate_map_data &map,\n"
+			"\tfloat4 screen_physical, float4 allocated)\n"
+			"{\n"
+			"\trasterization_rate_map_decoder decoder(map);\n"
+			"\tfloat2 screen = clamp(coordinates * screen_physical.xy, float2(0.0), screen_physical.xy - 1.0 / 256.0);\n"
+			"\tfloat2 physical = clamp(decoder.map_screen_to_physical_coordinates(screen), float2(0.5),\n"
+			"\t\tscreen_physical.zw - 0.5);\n"
+			"\treturn physical / allocated.xy;\n"
+			"}\n");
 	/* exact border colors: EXACT_BORDERS, which the Metal backend defines
 	only when it compiles a shader again for a draw that needs it, has bit n
 	set for each stage n whose BORDER addressing has a color Metal's samplers
@@ -261,6 +302,9 @@ void nv2a_msl_fragment_main(struct xgpu_text *text, const struct nv2a_dialect *d
 		xgpu_text_append(text, ",\n\t%s tex%d [[texture(%d)]], sampler tex%d_sampler [[sampler(%d)]]",
 			type, stage, stage, stage, stage);
 	}
+	if (foveated)
+		xgpu_text_append(text, ",\n\tconstant rasterization_rate_map_data &rate_map [[buffer(1)]],"
+			"\n\tconstant float4 *foveation [[buffer(2)]]");
 	xgpu_text_append(text, "\n#if EXACT_BORDERS\n\t, constant Borders &borders [[buffer(3)]]\n#endif\n");
 	for (stage = 0; stage < 4; stage++)
 		xgpu_text_append(text, "#if EXACT_BORDERS & %d\n\t, sampler tex%d_white [[sampler(%d)]]\n#endif\n",
@@ -282,6 +326,9 @@ void nv2a_msl_fragment_main(struct xgpu_text *text, const struct nv2a_dialect *d
 		"#else\n"
 		"#define texture(t, coordinates, b) (t).sample(t##_sampler, coordinates, bias(b))\n"
 		"#endif\n");
+	if (foveated)
+		xgpu_text_append(text, "#define texture_foveated(stage, t, coordinates, b) (t).sample(t##_sampler, "
+			"foveated_coordinates(coordinates, rate_map, foveation[(stage) * 2], foveation[(stage) * 2 + 1]), bias(b))\n");
 	for (index = 0; index < VARYING_COUNT; index++)
 		xgpu_text_append(text, "\tvec4 %s = in.%s;\n", varyings[index], varyings[index]);
 	xgpu_text_append(text, "\tfloat xFog = in.xFog;\n");

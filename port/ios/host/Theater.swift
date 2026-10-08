@@ -12,8 +12,40 @@ import UIKit
 struct TheaterLayerConfiguration: CompositorLayerConfiguration {
     func makeConfiguration(capabilities: LayerRenderer.Capabilities,
                            configuration: inout LayerRenderer.Configuration) {
-        // the picture is flat, so foveation would only blur its edges
+        // Foveation (display.foveation, HEAD mode only): the screen's picture
+        // in SCREEN and mono theater mode is flat, so foveation would only
+        // blur its edges
         configuration.isFoveationEnabled = false
+        if host_theater_foveation() != 0 {
+            let offered = capabilities.supportedLayouts(options: .foveationEnabled)
+            let names = offered.map { layout -> String in
+                switch layout {
+                case .dedicated: return "dedicated"
+                case .shared: return "shared"
+                case .layered: return "layered"
+                @unknown default: return "unknown"
+                }
+            }.joined(separator: ", ")
+            let quality = host_theater_render_quality()
+            // dedicated, one single-layer map per view, as this port renders
+            // one pass per view; not Apple's sample's layered (one amplified
+            // pass), whose map's layer is picked by
+            // [[render_target_layer_index]], 0 in every pass here. Layered
+            // only if dedicated isn't offered; neither leaves foveation off
+            let layout: LayerRenderer.Layout? = offered.contains(.dedicated) ? .dedicated :
+                offered.contains(.layered) ? .layered : nil
+            if capabilities.supportsFoveation, let layout {
+                configuration.isFoveationEnabled = true
+                configuration.maxRenderQuality = LayerRenderer.RenderQuality(rawValue: quality)
+                configuration.layout = layout
+            }
+            host_theater_set_foveation(configuration.isFoveationEnabled ? 1 : 0,
+                                       capabilities.supportsFoveation ? 1 : 0,
+                                       Int32(configuration.layout.rawValue), quality,
+                                       capabilities.defaultRenderQuality.rawValue, names.isEmpty ? "none" : names)
+        }
+        // head-tracked stereo's depth range can't start nearer than this (host_stereo.m)
+        host_theater_set_minimum_near(capabilities.supportedMinimumNearPlaneDistance)
     }
 }
 

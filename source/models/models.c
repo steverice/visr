@@ -229,6 +229,45 @@ typedef char verify_rasterizer_model_begin_parameters_size[sizeof(struct rasteri
 
 #include "rasterizer/rasterizer_models.h"
 
+/* port: under display.model_lod = "max", a level whose cutoff is over this is
+drawn only with the camera inside the model's bounding sphere (render_model).
+The largest cutoff in the game's maps is the sniper rifle's 500 but for a10's
+cryotube's 3000 */
+#define MODEL_LOD_INSIDE_CUTOFF_PIXELS 1000.0f
+
+/* port: port_config.c's */
+const char *config_string(const char *name);
+
+/* port: display.model_lod is "max" (the default) rather than "auto". It is read on
+first use and kept, since the config never reloads. */
+static boolean model_lod_is_max(void)
+{
+	static int is_max = -1;
+
+	if (is_max<0)
+	{
+		is_max = strcmp(config_string("display.model_lod"), "auto")!=0;
+	}
+	return is_max;
+}
+
+/* port: debug.gpu_stats' model counts (d3d8_device.c logs them every 60
+frames through halo_model_counts_take): models drawn other than as a shadow,
+by the detail level drawn, and models the size cull (render_model's
+detail_cutoff_pixels[0] test) dropped. Each eye of a stereo frame counts */
+static struct
+{
+	unsigned long drawn[NUMBER_OF_DETAIL_LEVELS_PER_MODEL];
+	unsigned long culled;
+} model_counts;
+
+void halo_model_counts_take(unsigned long drawn[NUMBER_OF_DETAIL_LEVELS_PER_MODEL], unsigned long *culled)
+{
+	csmemcpy(drawn, model_counts.drawn, sizeof(model_counts.drawn));
+	*culled = model_counts.culled;
+	csmemset(&model_counts, 0, sizeof(model_counts));
+}
+
 static void render_model_parts(
 	struct model const *model,
 	char const *region_permutation_indices,
@@ -275,6 +314,9 @@ static void render_model_parts(
 {
 	boolean immediate = TEST_FLAG(flags, _render_model_immediate_bit);
 	short last_pass = TEST_FLAG(flags, _render_model_shadow_bit) ? _render_model_pass_solid : _render_model_pass_transparent;
+	/* port: the first-person body's inside faces draw only its solid parts
+	(halo_first_person_body_fill) */
+	boolean first_person_body_fill = (boolean)halo_first_person_body_fill();
 	struct render_sort_filth sort_filth[MAXIMUM_PARTS_PER_MODEL_GEOMETRY];
 	real_point3d centroid;
 	short pass;
@@ -318,6 +360,18 @@ static void render_model_parts(
 					continue;
 				}
 
+				/* port: under "max" a permutation without the chosen level draws its own
+				highest level below it, rather than nothing */
+				if (geometry_index==NONE && model_lod_is_max())
+				{
+					short level_index = geometry_detail_level_index;
+
+					while (geometry_index==NONE && level_index>0)
+					{
+						geometry_index = permutation->geometry_indices[--level_index];
+					}
+				}
+
 				if (!render_model_no_geometry && geometry_index!=NONE)
 				{
 					struct model_geometry *geometry = TAG_BLOCK_GET_ELEMENT(&model->geometries, geometry_index, struct model_geometry);
@@ -347,7 +401,8 @@ static void render_model_parts(
 						{
 							if (shader_type_is_transparent(shader->base.type))
 							{
-								if (pass==_render_model_pass_transparent)
+								/* port: not in the first-person body's fill pass */
+								if (pass==_render_model_pass_transparent && !first_person_body_fill)
 								{
 									/* port: the root's matrix for a node the model
 									doesn't have (a map's index) */
@@ -396,7 +451,8 @@ static void render_model_parts(
 							else if (shader->base.type==_shader_type_model &&
 								TEST_FLAG(((struct shader_model_definition *)shader_get_and_verify_type(shader, _shader_type_model))->flags, _shader_model_alpha_blended_decal_bit))
 							{
-								if (pass==_render_model_pass_decal)
+								/* port: not in the first-person body's fill pass */
+								if (pass==_render_model_pass_decal && !first_person_body_fill)
 								{
 									match_assert("c:\\halo\\SOURCE\\models\\models.c", 491, !TEST_FLAG(flags, _render_model_shadow_bit));
 
@@ -899,7 +955,13 @@ void render_model(
 		rasterizer_model_cortana_hack = FALSE;
 	}
 
-	if (level_of_detail_pixels>=model->detail_cutoff_pixels[0] || TEST_FLAG(flags, _render_model_shadow_bit))
+	/* port: with display.model_lod = "max" a model smaller than the lowest cutoff
+	is drawn too, not dropped, so nothing pops out at a distance either */
+	if (level_of_detail_pixels<model->detail_cutoff_pixels[0] && !TEST_FLAG(flags, _render_model_shadow_bit) && !model_lod_is_max())
+	{
+		model_counts.culled++; /* port: debug.gpu_stats */
+	}
+	if (level_of_detail_pixels>=model->detail_cutoff_pixels[0] || TEST_FLAG(flags, _render_model_shadow_bit) || model_lod_is_max())
 	{
 		real_matrix4x3 relative_node_matrices[MAXIMUM_NODES_PER_MODEL];
 		struct rasterizer_model_begin_parameters model_parameters;
@@ -960,6 +1022,57 @@ void render_model(
 		{
 			geometry_detail_level_index--;
 		}
+		/* port: display.model_lod = "max" (the default) always draws the highest
+		detail level the chosen permutations have, so a model never pops between
+		levels as it moves; "auto" keeps the screen-size choice above. The
+		console's rasterizer_debug_model_lod still overrides either. A level
+		whose cutoff is over MODEL_LOD_INSIDE_CUTOFF_PIXELS is no screen-size
+		level: on the Xbox's 480 lines and 70 degree view a model reaches it
+		with the camera close to or inside it. a10's cryotube is the one such
+		model (3000 pixels): its top level adds a Chief's armor with no head,
+		probably for the player's view from inside the tube. "max" takes such a
+		level only with the camera inside the model's bounding sphere, so a
+		narrower view or display.lod_scale can't show the headless body from
+		outside */
+		{
+			if (model_lod_is_max())
+			{
+				short region_index;
+				short highest_level_index = 0;
+				short top_level_index = NUMBER_OF_DETAIL_LEVELS_PER_MODEL-1;
+				real dx = render.camera.position.x-centroid->x;
+				real dy = render.camera.position.y-centroid->y;
+				real dz = render.camera.position.z-centroid->z;
+				boolean camera_inside = dx*dx+dy*dy+dz*dz<radius*radius;
+
+				while (top_level_index>0 && !camera_inside &&
+					model->detail_cutoff_pixels[top_level_index]>MODEL_LOD_INSIDE_CUTOFF_PIXELS)
+				{
+					top_level_index--;
+				}
+				for (region_index = 0; region_index<model->regions.count; region_index++)
+				{
+					struct model_region *region = TAG_BLOCK_GET_ELEMENT(&model->regions, region_index, struct model_region);
+					char permutation_index = region_permutation_indices[region_index];
+
+					if (permutation_index!=NONE)
+					{
+						struct model_region_permutation *permutation = TAG_BLOCK_GET_ELEMENT(
+							&region->permutations,
+							permutation_index,
+							struct model_region_permutation);
+						short level_index = top_level_index;
+
+						while (level_index>highest_level_index && permutation->geometry_indices[level_index]==NONE)
+						{
+							level_index--;
+						}
+						highest_level_index = MAX(highest_level_index, level_index);
+					}
+				}
+				geometry_detail_level_index = highest_level_index;
+			}
+		}
 		if (rasterizer_debug_options.debug_model_lod!=NONE)
 		{
 			geometry_detail_level_index = PIN(rasterizer_debug_options.debug_model_lod, 0, NUMBER_OF_DETAIL_LEVELS_PER_MODEL-1);
@@ -968,6 +1081,10 @@ void render_model(
 			"c:\\halo\\SOURCE\\models\\models.c",
 			169,
 			geometry_detail_level_index>=0 && geometry_detail_level_index<NUMBER_OF_DETAIL_LEVELS_PER_MODEL);
+		if (!TEST_FLAG(flags, _render_model_shadow_bit))
+		{
+			model_counts.drawn[geometry_detail_level_index]++; /* port: debug.gpu_stats */
+		}
 
 		if (!TEST_FLAG(flags, _render_model_shadow_bit))
 		{

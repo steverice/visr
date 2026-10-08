@@ -47,9 +47,36 @@ SHADER_SOURCES = ("*.glsl", "*.metal")
 SHADER_INPUTS = ("*.vsh", "*.key")
 
 
+def coalesce_tables(lines):
+    """config.toml lines with each table's repeated headers folded into its first: TOML rejects a table
+    defined twice, and the game then ignores the whole file"""
+    preamble, order, bodies, current = [], [], {}, None
+    for line in lines:
+        if line.startswith("[") and line.rstrip().endswith("]"):
+            current = line.strip()
+            if current not in bodies:
+                order.append(current)
+                bodies[current] = []
+            continue
+        (preamble if current is None else bodies[current]).append(line)
+    # a key set twice in one table is invalid too; the first (the one merge_config updates) wins
+    out = list(preamble)
+    for header in order:
+        out.append(header)
+        keys = set()
+        for line in bodies[header]:
+            match = re.match(r"^([A-Za-z0-9_]+)\s*=", line)
+            if match:
+                if match.group(1) in keys:
+                    continue
+                keys.add(match.group(1))
+            out.append(line)
+    return out
+
+
 def merge_config(text, settings):
     """config.toml text with each dotted key in settings set to its raw TOML value"""
-    lines = text.splitlines()
+    lines = coalesce_tables(text.splitlines())
     for dotted, value in settings.items():
         section, key = dotted.split(".", 1)
         header = f"[{section}]"
@@ -88,16 +115,60 @@ DEFAULTS = {
     "display.upscaler": '"bilinear"',
     "display.high_res_hud": "true",
     "display.high_res_text": "true",
+    "display.upscaled_textures": "true",
     "display.immersive": "false",
     "display.mirror_resolution": '"half"',
+    "display.model_lod": '"auto"',  # the recorded references were made with the original LOD
+    "display.lod_scale": "1.0",
     "display.theater_width": "60.0",
     "display.theater_distance": "4.0",
     "display.theater_environment": '"passthrough"',
+    "display.stereo": '"off"',
+    "display.frame_repeat": "0",
+    "display.film_depth_share": "0.25",
+    "display.film_convergence": "1.75",
+    "display.screen_depth_share": "0.3",
+    "display.screen_convergence": "1.0",
+    "display.screen_framing": '"band"',
+    "display.stereo_vehicle_screen": "false",
+    "display.hud_corner_across": "28.0",
+    "display.hud_corner_up": "20.0",
+    "display.hud_tracker_down": "22.0",
+    "display.hud_messages_up": "12.0",
+    "display.hud_scale": "1.0",
+    "display.hud_distance": "2.0",
+    "display.hud_depth": "true",
+    "display.hud_depth_share": "0.85",
+    "display.hud_depth_floor": "0.3",
+    "display.hud_depth_pull_in": "0.1",
+    "display.hud_depth_relax": "1.0",
+    "display.hud_depth_relax_delay": "0.5",
+    "display.hud_resolution": "1.0",
+    "display.foveation": "true",
+    "display.render_quality": "0.6",
+    "display.first_person_body": "true",
+    "display.first_person_body_offset": "0.08",
+    "display.first_person_body_seats": "true",
+    "display.first_person_body_seat_offset": "0.0",
+    "display.weapon_offset_down": "0.0",
+    "display.weapon_offset_back": "0.0",
+    "display.eye_height_offset": "0.0",
+    "input.turn": '"snap"',
+    "input.snap_angle": "30.0",
+    "input.smooth_turn_speed": "120.0",
+    "input.comfort_vignette": "false",
     "input.stick_dead_zone": "0.27",
     "debug.null_renderer": "false",
     "debug.gl_debug": "false",
     "debug.metal_state_cache": "true",
+    "debug.metal_specialize": "true",
+    "debug.metal_pipeline_archive": "false",
+    "debug.shader_list_warm": "true",
+    "debug.shader_list_record": '"shader-lists-missed"',
     "debug.fixed_timestep": "false",
+    "debug.side_by_side_screen": "false",
+    "debug.screen_lean": "0.0",
+    "debug.side_by_side_tangents": '""',
     "debug.input_record": '""',
     "debug.input_replay": '""',
     "debug.benchmark": "false",
@@ -110,8 +181,34 @@ DEFAULTS = {
     "debug.gpu_debug_texture0": "false",
     "debug.gpu_debug_flat": "false",
     "debug.texture_dump_directory": '""',
+    "debug.texture_override_directory": '""',
     "debug.texture_log": "false",
     "debug.texture_no_cache": "false",
+    "debug.terminal_on_screen": "false",
+    "debug.render_scale_dpad": "false",
+    "debug.foveation_eye_passes": "true",
+    "debug.rate_map_test": "false",
+    "debug.network_test": '""',
+    "debug.network_test_start": "15.0",
+    "debug.network_test_kill": "0.0",
+    "debug.network_test_score": "0",
+    "debug.network_test_shoot": "0.0",
+    "debug.network_test_vehicle": "0.0",
+    "debug.network_test_pickup": "0.0",
+    "debug.network_test_pickup_weapon": '""',
+    "debug.network_latency": "0.0",
+    "debug.network_loss": "0.0",
+    "debug.telnet_console": "false",
+    "debug.telnet_console_port": "2323",
+    "debug.test_input": '""',
+    "debug.update_answer": '""',
+    "debug.hidden_window": "false",
+    "debug.fixed_timestep_paced": "false",
+    "debug.frame_trace": "false",
+    "debug.frame_counter": "false",
+    "debug.test_extra_scene": "false",
+    "debug.test_theater_reopen": "false",
+    "debug.gpu_flush_draws": "-1",
 }
 
 
@@ -156,24 +253,36 @@ def read_bmp(data):
     return width, height, data[offset:offset + width * height * 4]
 
 
-def bmp_difference(a, b, channel_tolerance=0):
+def region_pixels(width, height, region):
+    """the pixel box (left, top, right, bottom) of region, fractions (x0, y0, x1, y1) of a
+    width x height frame from its top left; the whole frame without one"""
+    if region is None:
+        return 0, 0, width, height
+    x0, y0, x1, y1 = region
+    return (round(x0 * width), round(y0 * height), round(x1 * width), round(y1 * height))
+
+
+def bmp_difference(a, b, channel_tolerance=0, region=None):
     """(pixels whose color differs by more than channel_tolerance in some channel,
     largest channel difference, (x, y) of the first pixel that difference is at, or
-    None); alpha is ignored, since write_screenshot forces it opaque"""
+    None); alpha is ignored, since write_screenshot forces it opaque. With region
+    (fractions x0, y0, x1, y1 from the top left: write_screenshot's rows are top
+    down), only the pixels inside it count"""
     width_a, height_a, pixels_a = read_bmp(a)
     width_b, height_b, pixels_b = read_bmp(b)
     if (width_a, height_a) != (width_b, height_b):
         return max(width_a * height_a, width_b * height_b), 255, None
     if pixels_a == pixels_b:
         return 0, 0, None
+    left, top, right, bottom = region_pixels(width_a, height_a, region)
     differing = largest = 0
     where = None
     row = width_a * 4
-    for start in range(0, len(pixels_a), row):
+    for start in range(top * row, bottom * row, row):
         line_a, line_b = pixels_a[start:start + row], pixels_b[start:start + row]
         if line_a == line_b:
             continue
-        for pixel in range(0, row, 4):
+        for pixel in range(left * 4, right * 4, 4):
             delta = max(abs(line_a[pixel + channel] - line_b[pixel + channel]) for channel in range(3))
             if delta > channel_tolerance:
                 differing += 1
@@ -182,10 +291,23 @@ def bmp_difference(a, b, channel_tolerance=0):
     return differing, largest, where
 
 
-def bmp_pixels(data):
-    """the pixel count of a BMP"""
+def bmp_pixels(data, region=None):
+    """the pixel count of a BMP, or of region in it (region_pixels)"""
     width, height, _ = read_bmp(data)
-    return width * height
+    left, top, right, bottom = region_pixels(width, height, region)
+    return max(right - left, 0) * max(bottom - top, 0)
+
+
+def parse_region(text):
+    """--region's X0,Y0,X1,Y1: fractions of a frame from its top left, with X0 < X1 and Y0 < Y1"""
+    try:
+        values = tuple(float(part) for part in text.split(","))
+    except ValueError:
+        values = ()
+    if len(values) != 4 or not all(0.0 <= value <= 1.0 for value in values) or \
+            values[0] >= values[2] or values[1] >= values[3]:
+        raise argparse.ArgumentTypeError(f"{text!r} is not X0,Y0,X1,Y1 with 0 <= X0 < X1 <= 1 and 0 <= Y0 < Y1 <= 1")
+    return values
 
 
 def stats_lines(log):
@@ -294,11 +416,13 @@ def compare_inputs(a, b):
     return problems
 
 
-def compare(a, b, tolerance=0, ignore_gl_calls=False, channel_tolerance=0, fraction=0.0, across_backends=False):
+def compare(a, b, tolerance=0, ignore_gl_calls=False, channel_tolerance=0, fraction=0.0, across_backends=False,
+            region=None):
     """the differences between two result folders (empty: they match). A pixel
     differs when a channel differs by more than channel_tolerance, and a frame
     matches when no more than tolerance pixels, or fraction of its pixels,
-    differ. With ignore_gl_calls the gpu_stats lines are compared without their
+    differ. With region (fractions x0, y0, x1, y1 of each frame from its top
+    left) only the pixels inside it are compared, and fraction is of those. With ignore_gl_calls the gpu_stats lines are compared without their
     GL call totals. across_backends compares a GL run with a Metal run: the
     shaders' inputs (.vsh, .key) must be the same files and their sources the
     same names, whatever their language; GL calls are ignored; and the two
@@ -321,8 +445,8 @@ def compare(a, b, tolerance=0, ignore_gl_calls=False, channel_tolerance=0, fract
     for name in sorted(shots_a.keys() & shots_b.keys()):
         try:
             data_a = shots_a[name].read_bytes()
-            differing, largest, where = bmp_difference(data_a, shots_b[name].read_bytes(), channel_tolerance)
-            allowed = max(tolerance, int(fraction * bmp_pixels(data_a)))
+            differing, largest, where = bmp_difference(data_a, shots_b[name].read_bytes(), channel_tolerance, region)
+            allowed = max(tolerance, int(fraction * bmp_pixels(data_a, region)))
         except ValueError as error:
             problems.append(f"{name}: unreadable ({error})")
             continue
@@ -740,10 +864,14 @@ def prepare(args, documents, rewrite=False):
         (runner / "shots").mkdir()
     if args.dump_shaders:
         (runner / "shaders").mkdir()
+    if getattr(args, "record_shader_lists", False):
+        (runner / "shader-lists").mkdir()
     if args.replay:
         shutil.copytree(args.replay, runner / "replay",
                         ignore=lambda folder, names: [n for n in names if not n.endswith((".vsh", ".key"))])
     settings = reset_settings(documents, args.screenshot_every, args.dump_shaders, bool(args.replay))
+    if getattr(args, "record_shader_lists", False):
+        settings["debug.shader_list_record"] = f'"{runner}/shader-lists"'
     settings["debug.exit_after"] = f"{float(args.exit_after)}"
     for assignment in args.set:
         key, value = assignment.split("=", 1)
@@ -1064,16 +1192,22 @@ def main():
                                  "with --runner native, cloned into a new data folder, in place of importing --xiso")
     run_parser.add_argument("--out", type=Path, required=True, help="folder to copy the results to")
     run_parser.add_argument("--xiso", type=Path, help="the player's XISO, imported on the first run")
-    run_parser.add_argument("--exit-after", type=float, default=60.0, help="seconds before the game quits")
+    run_parser.add_argument("--exit-after", type=float, default=60.0,
+                            help="seconds before the game quits; of game time (30 frames each) "
+                                 "with debug.fixed_timestep")
     run_parser.add_argument("--time-limit", type=float, default=0.0,
                             help="seconds after launch before the run is killed (default --exit-after + 120); "
-                                 "with debug.fixed_timestep --exit-after counts frames, which validation slows")
+                                 "with debug.fixed_timestep --exit-after counts seconds of game time, 30 frames each "
+                                 "(600 = 18,000 frames), which validation slows")
     run_parser.add_argument("--set", action="append", default=[], metavar="SECTION.KEY=VALUE",
                             help="a config.toml setting, value in TOML syntax (repeatable)")
     run_parser.add_argument("--init", action="append", default=[], metavar="COMMAND",
                             help="a console command for init.txt, e.g. 'map_name a10' (repeatable)")
     run_parser.add_argument("--screenshot-every", type=int, default=0, metavar="FRAMES")
     run_parser.add_argument("--dump-shaders", action="store_true")
+    run_parser.add_argument("--record-shader-lists", action="store_true",
+                            help="append the shaders and pipelines made while drawing to runner/shader-lists/MAP.txt "
+                                 "(tools/shader_lists.py merges them into port/shader-lists)")
     run_parser.add_argument("--replay", type=Path, help="a folder of recorded .vsh/.key shader inputs")
     run_parser.add_argument("--metal-validation", action="store_true",
                             help="turn on Metal's API validation (for display.renderer=\"metal\" runs)")
@@ -1096,6 +1230,8 @@ def main():
                                 help="compare gpu_stats without the GL call totals")
     compare_parser.add_argument("--across-backends", action="store_true",
                                 help="a GL run against a Metal run: shader inputs, not sources; capabilities; no GL calls")
+    compare_parser.add_argument("--region", type=parse_region, metavar="X0,Y0,X1,Y1",
+                                help="compare only this part of each frame, as fractions from its top left")
     inputs_parser = commands.add_parser("compare-inputs",
                                         help="compare what two runs were given: the log lines that name their "
                                              "inputs, and config.toml (the native runner's parity runs)")
@@ -1110,7 +1246,7 @@ def main():
         sys.exit(1 if problems else 0)
     else:
         problems = compare(args.a, args.b, args.tolerance, args.ignore_gl_calls, args.channel_tolerance,
-                           args.fraction, args.across_backends)
+                           args.fraction, args.across_backends, args.region)
         print("\n".join(problems) if problems else "match")
         sys.exit(1 if problems else 0)
 

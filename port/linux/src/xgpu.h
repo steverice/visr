@@ -79,6 +79,14 @@ NORMPACKED3 32-bit integers and unpacked in the shader. Returns a malloc'd
 string. */
 char *nv2a_vertex_shader_translate(const struct nv2a_dialect *dialect, const DWORD *instructions,
 	unsigned long instruction_count, unsigned long packed_attribute_mask);
+/* The same program run on the CPU for one vertex, for its position alone
+(oPos: the screen position the program ends with, before the translated
+shader undoes the screen-space conversion). inputs are the vertex's
+attributes as float4s (v0 to v15), constants the c[] registers
+(XGPU_VERTEX_CONSTANT_COUNT of them, biased as the shaders read them).
+d3d8_device.c measures the HUD's draws with it (stereo's HUD groups) */
+void nv2a_vertex_program_position(const DWORD *instructions, unsigned long instruction_count,
+	const float (*constants)[4], const float (*inputs)[4], float position[4]);
 
 /* ---------- pixel shaders */
 
@@ -88,6 +96,11 @@ enum
 	_xgpu_sampler_2d,
 	_xgpu_sampler_3d,
 	_xgpu_sampler_cube,
+	/* a 2D screen-sized target of a foveated eye (gpu_texture_description's
+	foveated_eye): its texels are in the eye's rate map's physical layout, so
+	the lookup maps its screen coordinates through the map (nv2a_msl.c; Metal
+	only) */
+	_xgpu_sampler_2d_foveated,
 };
 
 /* everything a translated pixel shader depends on; the GLSL program cache
@@ -157,6 +170,9 @@ guest memory as needed; *type receives a GPU_TEXTURE_* */
 gpu_texture xgpu_texture_get(const DWORD *resource, const D3DCOLOR *palette, uint32_t *type,
 	struct xgpu_texture_description *description);
 void xgpu_texture_cache_begin_frame(void);
+/* a small 2D texture's mean alpha (0 to 1), decoded from guest memory: 1 and
+*alpha set for one of at most 4096 texels (palettized ones excepted), else 0 */
+int xgpu_texture_mean_alpha(const DWORD *resource, float *alpha);
 
 /* ---------- render targets */
 
@@ -169,10 +185,17 @@ struct xgpu_render_target
 	/* pixels per unit of width and height: more than 1 for the screen's
 	targets when the game draws at the display's resolution (d3d8_device.c) */
 	float scale[2];
+	/* the logical size: width and height times scale */
 	unsigned long gl_width, gl_height;
 	/* changes whenever the target is drawn into or cleared (d3d8_device.c,
 	bind_targets) */
 	unsigned long written;
+	/* a foveated eye's target (gpu_texture_description.foveated_eye): the
+	eye, 1 or 2, and the texture's allocated size, of which the eye's rate
+	map fills the top left; gl_width by gl_height is its screen size. 0 for
+	any other target, allocated at gl_width by gl_height */
+	unsigned char foveated_eye;
+	unsigned long allocated_width, allocated_height;
 };
 
 /* the GL texture holding a render target with this physical address, or 0 */

@@ -6,8 +6,9 @@ and a GPU backend (gpu_gl.c; Metal in Phase 1). It is filled in one
 sub-step at a time (renderer split design, step 3).
 
 It compiles on the 64-bit iOS host as well as in the 32-bit guest, so it
-includes only <stdint.h> and gpu_uniforms.h (which includes nothing), and its
-structs use fixed-width fields alone: the two ABIs lay them out the same way.
+includes only <stdint.h>, gpu_uniforms.h (which includes nothing) and
+halo_stereo.h (which includes only <stdint.h>), and its structs use
+fixed-width fields alone: the two ABIs lay them out the same way.
 */
 
 #ifndef __HALO_GPU_H
@@ -15,6 +16,7 @@ structs use fixed-width fields alone: the two ABIs lay them out the same way.
 
 #include <stdint.h>
 #include "gpu_uniforms.h"
+#include "halo_stereo.h"
 
 /* 0 is none */
 typedef uint32_t gpu_texture, gpu_buffer, gpu_shader;
@@ -94,7 +96,14 @@ struct gpu_texture_description
 	uint8_t type;
 	uint8_t format;
 	uint8_t usage;
-	uint8_t pad;
+	/* 0 for an ordinary texture; 1 or 2 for a screen-sized target of the
+	left or right eye in a foveated frame (a render target allocated at the
+	Compositor's drawable size per view, which the eye's rate map fills only
+	in part): the backend binds that eye's rate map on any pass that writes
+	it, and its viewports and scissors are in the map's screen coordinates
+	(Task 10, d3d8_device.c). With debug.rate_map_test on the Mac, 1 marks
+	the mono screen's targets, which a synthetic map fills */
+	uint8_t foveated_eye;
 	uint32_t width, height, depth, levels;
 };
 
@@ -107,9 +116,12 @@ void gpu_texture_copy_level(gpu_texture source, gpu_texture destination, uint32_
 /* the levels after base_level from base_level */
 void gpu_texture_generate_mipmaps(gpu_texture texture, uint32_t base_level);
 void gpu_texture_destroy(gpu_texture texture);
-/* level 0 of a 2D color texture as BGRA8 rows from the top; returns 0 and
-writes nothing if size is short of width * height * 4 or the backend cannot
-read the texture (ES: block-compressed textures) */
+/* level 0 of a 2D color texture as BGRA8 rows from the top; of a 2D
+depth-stencil render target, its depth as one float per texel, rows from the
+top, as the game sees it (0 at the near plane, 1 at the far plane and where
+nothing drew), for debugging. Returns 0 and writes nothing if size is short of
+width * height * 4 or the backend cannot read the texture (ES: block-compressed
+textures and depth) */
 uint32_t gpu_texture_read(gpu_texture texture, void *pixels, uint32_t size);
 
 /* ---------- buffers: the vertex mirror's segments */
@@ -241,7 +253,10 @@ struct gpu_blend_state
 	uint32_t color;
 	/* bit 0 red, 1 green, 2 blue, 3 alpha */
 	uint8_t color_write_mask;
-	uint8_t pad[3];
+	/* nonzero: alpha blends by its own factors (same operation), else by
+	source and destination; only stereo's HUD layer sets it (d3d8_device.c,
+	hud_layer_blend) */
+	uint8_t alpha_separate, alpha_source, alpha_destination;
 };
 
 struct gpu_raster_state
@@ -252,6 +267,11 @@ struct gpu_raster_state
 	uint8_t depth_bias_enable;
 	float depth_bias_slope;
 	float depth_bias_constant;
+	/* nonzero: depth is clamped to the viewport's range instead of the
+	primitive being clipped at the near and far planes (only head-tracked
+	stereo's first-person body, halo_first_person_body_depth_clamp) */
+	uint8_t depth_clamp;
+	uint8_t pad[3];
 };
 
 /* texture filters (D3DTSS_MINFILTER, MAGFILTER, MIPFILTER); the GL backend
@@ -331,6 +351,23 @@ enum
 	GPU_PRIMITIVE_TRIANGLES, GPU_PRIMITIVE_TRIANGLE_STRIP, GPU_PRIMITIVE_TRIANGLE_FAN,
 };
 
+/* a pipeline as the Metal backend builds it for a draw, in terms the front
+end can name across runs (shader_list.c): its shaders, blending (factors
+only while it is on; alpha's are color's unless the draw blends alpha on its
+own, gpu_blend_state.alpha_separate), the color write mask (0 without a
+color target), the stages that rebuild their border colors, whether it has a
+depth-stencil target, and each attribute's kind (0 for a constant, else its
+GPU_ATTRIBUTE_* format). Fixed-width fields only: it crosses from the guest
+to the host as it is. */
+struct gpu_pipeline_description
+{
+	gpu_shader vertex_shader, pixel_shader;
+	uint8_t blend, source, destination, operation;
+	uint8_t write_mask, exact_borders, depth, alpha_source;
+	uint8_t alpha_destination, pad[3];
+	uint8_t attribute_kinds[GPU_ATTRIBUTE_COUNT];
+};
+
 /* one draw, complete: the backend applies the whole packet without reference
 to any draw before it */
 struct gpu_draw
@@ -404,9 +441,100 @@ the next frame is due on the display, when the backend schedules its frames
 (Metal), else 0: render_interpolation.c blends that frame for the moment it
 is shown. */
 uint32_t gpu_present(gpu_texture back_buffer);
+
+/* a stereo frame's pictures (halo_stereo.h): each eye's color and depth, and
+the HUD drawn once for both. Fixed-width fields only: it crosses the guest/host
+boundary */
+struct gpu_stereo_present
+{
+	gpu_texture eye_color[2], eye_depth[2], hud;   /* hud: 0 if nothing drew it this frame */
+	float near_meters, far_meters;     /* the frame's depth range, for the Compositor */
+	int32_t mode;                      /* enum halo_stereo_mode */
+	int32_t cinematic;                 /* 1 while the cutscene screen is up */
+	float fade[4];                     /* RGB and intensity of the script fade */
+	float hud_aspect;                  /* the HUD's width over its height as laid out */
+	float vignette;                    /* 0 to 1: how much HEAD mode darkens the eyes' edges */
+	int32_t cut_covered;               /* 1 while the script fade covers a cut (no fade through black) */
+	/* 1 while a menu, a help panel, the console or a progress bar drew:
+	into the UI layer (ui) in HEAD mode's full view, where the HUD is split;
+	into the HUD layer elsewhere (the film, SCREEN gameplay) */
+	int32_t hud_ui;
+	float reticle[3];                  /* where the HUD's center points in the eyes' frame (halo_stereo_reticle) */
+	float hud_tangents[2];             /* the HUD pass's half tangents across and up (halo_stereo_hud_tangents) */
+	/* the zoomed picture (halo_stereo.h), in place of the eyes' pictures,
+	over the whole view; 0 if the frame isn't zoomed. Its half tangents
+	across and up (halo_stereo_zoom_view) size the presenter's quad */
+	gpu_texture zoom;
+	float zoom_tangents[2];
+	/* the crosshairs' layer (HALO_STEREO_LAYER_RETICLE), laid out as the
+	HUD; 0 if none drew this frame */
+	gpu_texture reticle_layer;
+	/* each HUD group's target (enum halo_hud_group), laid out as the HUD,
+	and the rectangle its draws cover: x0, y0, x1, y1 in layout lines (x
+	across hud_aspect * 480, y down 480); 0 and an empty rectangle for a
+	group nothing drew this frame. The catch-all is hud */
+	gpu_texture hud_group[HALO_HUD_GROUP_COUNT];
+	float hud_group_extent[HALO_HUD_GROUP_COUNT][4];
+	/* the UI layer (HALO_STEREO_LAYER_UI), laid out as the HUD; 0 if
+	nothing drew it this frame */
+	gpu_texture ui;
+	/* 0 to 1: the widgets' full-screen dim this frame, which isn't drawn in
+	the UI layer (halo_stereo_ui_dim_active): the presenter multiplies the
+	eyes' color by 1 - ui_dim */
+	float ui_dim;
+	/* HEAD mode's cutscene window (halo_stereo_window.h, halo_stereo_expansion):
+	1 while the film's rectangle expands out to the full view, the eyes
+	showing inside it, with its progress (0 to 1) and the bars (0 to 1 of
+	the letterbox's) it still carries */
+	int32_t expanding;
+	float expansion;
+	float expansion_bars;
+	/* Task 12k's spike, the immersive cutscene (halo_stereo_cutscene.h): 1
+	on a frame whose eyes show a cutscene's camera turned by the head; the
+	director's frame's forward and up in the eyes' frame (the head's at the
+	render: x right, y up, z back), its half tangents across and up, and how
+	much the blurred outside is darkened and desaturated (0 to 1). The HUD
+	layer goes whole on the frame, as on the film's screen */
+	int32_t cutscene;
+	float cutscene_forward[3];
+	float cutscene_up[3];
+	float cutscene_tangents[2];
+	float cutscene_dim;
+	/* 1 while HEAD mode's full view is held black to cover a seat's exit
+	glide (halo_stereo_cut_requested); when it drops, the view comes up as
+	after any cut */
+	int32_t cut_requested;
+};
+
+/* presents a stereo frame as gpu_present does a mono one (and returns the
+same). The GL backend's debug view puts eye 0 in the left half of the window,
+eye 1 in the right (or, zoomed, the zoomed picture in both), and the HUD over
+each half. */
+uint32_t gpu_present_stereo(const struct gpu_stereo_present *present);
 /* the GL calls (a backend's commands) issued since the last call, for
 debug.gpu_stats */
 uint32_t gpu_call_count_take(void);
+
+/* ---------- compiling at map load (shader_list.c)
+
+A map's list names the shaders and pipelines its draws use, recorded from
+earlier runs, so that they are compiled while it loads rather than when a
+frame first draws with them. */
+
+/* the list for name (a map's file name, "a10"), as the app carries it: its
+length, 0 for none; the text, without a terminator, is copied while it fits
+size */
+uint32_t gpu_warm_list_read(const char *name, char *text, uint32_t size);
+/* from warm_begin to warm_end, gpu_shader_create returns at once and the
+shader compiles alongside the others, and gpu_pipeline_warm builds a
+pipeline as a draw with that description would; warm_end returns when all of
+it is done */
+void gpu_warm_begin(void);
+void gpu_pipeline_warm(const struct gpu_pipeline_description *description);
+void gpu_warm_end(void);
+/* a pipeline a draw built outside warming, since the last call: 1 and its
+description, or 0 when there are no more */
+uint32_t gpu_pipeline_built_take(struct gpu_pipeline_description *description);
 
 /* gpu_initialize flags */
 enum
@@ -437,6 +565,13 @@ enum
 	call a draw has, without skipping the ones that set what the encoder
 	already holds (metal_state_cache.h) */
 	GPU_INITIALIZE_NO_STATE_CACHE = 512,
+	/* debug.metal_specialize = false: the Metal backend draws with each
+	vertex shader's unspecialized function (vertex_function), its fallback
+	when specializing fails */
+	GPU_INITIALIZE_NO_SPECIALIZE = 1024,
+	/* debug.metal_pipeline_archive = false: the Metal backend neither loads
+	nor saves its pipeline archive (archive_open) */
+	GPU_INITIALIZE_NO_PIPELINE_ARCHIVE = 2048,
 };
 /* probe the context, which must be current, and set it up */
 void gpu_initialize(uint32_t flags, struct gpu_capabilities *capabilities);
@@ -485,7 +620,20 @@ its own functions. */
 	F(uint32_t, visibility_result, (uint32_t slot, uint32_t *samples), (slot, samples)) \
 	P(flush, (void), ()) \
 	F(uint32_t, present, (gpu_texture back_buffer), (back_buffer)) \
-	F(uint32_t, call_count_take, (void), ())
+	F(uint32_t, present_stereo, (const struct gpu_stereo_present *present), (present)) \
+	F(uint32_t, call_count_take, (void), ()) \
+	/* compiling at map load (shader_list.c): the map's list as the app \
+	carries it (its length; the text is copied while it fits size), and \
+	between warm_begin and warm_end, shaders compile in parallel and \
+	pipeline_warm builds a pipeline as a draw would, all finished by \
+	warm_end; a backend without pipelines (GL) has no list and builds none */ \
+	F(uint32_t, warm_list_read, (const char *name, char *text, uint32_t size), (name, text, size)) \
+	P(warm_begin, (void), ()) \
+	P(pipeline_warm, (const struct gpu_pipeline_description *description), (description)) \
+	P(warm_end, (void), ()) \
+	/* a pipeline built for a draw, outside warming, since the last call: 1 \
+	and its description, or 0 when there are no more */ \
+	F(uint32_t, pipeline_built_take, (struct gpu_pipeline_description *description), (description))
 
 #define GPU_FUNCTIONS(F, P) \
 	GPU_OPERATIONS(F, P) \

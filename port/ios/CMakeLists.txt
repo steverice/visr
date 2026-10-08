@@ -59,11 +59,12 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "visionOS")
     set(HALO_RENDER_HEIGHT 0 CACHE STRING "Internal render height (display.render_height)")
     option(HALO_EXTENDED_VIRTUAL_ADDRESSING "Sign with the extended virtual addressing entitlement" OFF)
     set(HALO_PLATFORM_SOURCES Assets-visionOS.xcassets host/host_tv.m host/host_import.m host/host_orientation.m
-        host/host_theater.m host/Theater.swift)
+        host/host_theater.m host/Theater.swift host/host_texture_settings.m host/texture_refine.m)
     set(HALO_INFO_PLIST Info-visionOS.plist)
     set(HALO_DEVICE_FAMILY 7)
 else()
-    set(HALO_PLATFORM_SOURCES Assets.xcassets host/host_import.m host/host_orientation.m host/host_touch.m)
+    set(HALO_PLATFORM_SOURCES Assets.xcassets host/host_import.m host/host_orientation.m host/host_touch.m
+        host/host_texture_settings.m host/texture_refine.m)
     if(HALO_MAC)
         # Mac Catalyst: Info.plist without the iOS-only keys (LSRequiresIPhoneOS, UIRequiresFullScreen, Files sharing)
         set(HALO_INFO_PLIST Info-macOS.plist)
@@ -72,11 +73,22 @@ else()
     endif()
     set(HALO_DEVICE_FAMILY "1,2")
 endif()
+# the texture upscale policy (port/assets/texture-policy.json) as a C table for port/runtime/texture_policy.c
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_custom_command(
+    OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/texture_policy_table.c"
+    COMMAND Python3::Interpreter "${ROOT}/tools/embed_texture_policy.py"
+            "${ROOT}/port/assets/texture-policy.json" "${CMAKE_CURRENT_BINARY_DIR}/texture_policy_table.c"
+    DEPENDS "${ROOT}/tools/embed_texture_policy.py" "${ROOT}/port/assets/texture-policy.json"
+    COMMENT "Embedding the texture upscale policy")
 add_executable(VISR MACOSX_BUNDLE
     ${HALO_PLATFORM_SOURCES} "${ROOT}/port/runtime/xiso.c"
+    "${ROOT}/port/runtime/texture_policy.c" "${ROOT}/port/runtime/texture_cache.c"
+    "${CMAKE_CURRENT_BINARY_DIR}/texture_policy_table.c"
     host/host_main.m host/host_memory.c host/host_loader.c host/host_syscall.c host/guest_call.S
     host/host_thread.c host/host_sdl.c host/host_gpu.c host/host_gpu_dispatch.c host/gpu_metal.m host/host_frame_counter.m host/host_lifecycle.m
     host/host_join_link.c host/host_config.c
+    host/host_stereo.m host/host_stereo_head.c host/host_stereo_hud.c
     "${ROOT}/port/linux/src/posix_files.c" host/posix_net.c
     "${ROOT}/build/ios/host/bridges.c" "${ROOT}/build/ios/embedded/guest_image.S")
 target_include_directories(VISR PRIVATE host "${ROOT}/port/runtime" "${ROOT}/port/runtime/include"
@@ -98,7 +110,7 @@ if(NOT HALO_VISIONOS)
 endif()
 target_compile_options(VISR PRIVATE "$<$<COMPILE_LANGUAGE:OBJC>:-fobjc-arc>")
 target_link_libraries(VISR PRIVATE SDL3::SDL3-static "-framework Foundation" "-framework UIKit"
-    "-framework Metal" "-framework QuartzCore")
+    "-framework Metal" "-framework QuartzCore" z)
 # display.upscaler = "metalfx" (gpu_metal.m); the simulators have no MetalFX
 if(NOT CMAKE_OSX_SYSROOT MATCHES "[Ss]imulator")
     target_link_libraries(VISR PRIVATE "-weak_framework MetalFX")
@@ -110,6 +122,9 @@ elseif(HALO_VISIONOS)
     target_link_libraries(VISR PRIVATE "-framework UniformTypeIdentifiers" "-framework CompositorServices"
         "-framework ARKit" "-framework SwiftUI")
     set_source_files_properties(Assets-visionOS.xcassets PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+    # the app's page in the Settings app (host/host_texture_settings.m)
+    target_sources(VISR PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/Settings.bundle")
+    set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/Settings.bundle" PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
     # Theater.swift calls host_theater.m's C functions
     set_target_properties(VISR PROPERTIES
         XCODE_ATTRIBUTE_SWIFT_OBJC_BRIDGING_HEADER "${CMAKE_CURRENT_SOURCE_DIR}/host/host_theater.h"
@@ -126,6 +141,9 @@ elseif(HALO_VISIONOS)
 else()
     target_link_libraries(VISR PRIVATE "-framework UniformTypeIdentifiers")
     set_source_files_properties(Assets.xcassets PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+    # the app's page in the Settings app (host/host_texture_settings.m)
+    target_sources(VISR PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/Settings.bundle")
+    set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/Settings.bundle" PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
 endif()
 set_target_properties(VISR PROPERTIES XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_APPICON_NAME "AppIcon")
 # internet play's MQTT brokers (network.brokers_file): host_main.m writes them
@@ -135,6 +153,10 @@ set_source_files_properties("${ROOT}/port/assets/network/brokers.txt" PROPERTIES
 file(GLOB HALO_LICENSES "${ROOT}/build/ios/licenses/*.txt")
 target_sources(VISR PRIVATE ${HALO_LICENSES})
 set_source_files_properties(${HALO_LICENSES} PROPERTIES MACOSX_PACKAGE_LOCATION Resources/Licenses)
+# the maps' shader lists, compiled at map load (d3d8_device.c's halo_shader_list_warm)
+file(GLOB HALO_SHADER_LISTS CONFIGURE_DEPENDS "${ROOT}/port/shader-lists/*.txt")
+target_sources(VISR PRIVATE ${HALO_SHADER_LISTS})
+set_source_files_properties(${HALO_SHADER_LISTS} PROPERTIES MACOSX_PACKAGE_LOCATION Resources/shader-lists)
 set_target_properties(VISR PROPERTIES MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/${HALO_INFO_PLIST}"
     XCODE_ATTRIBUTE_CLANG_ENABLE_OBJC_ARC YES
     XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "${HALO_BUNDLE_IDENTIFIER}"

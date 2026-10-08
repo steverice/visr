@@ -293,6 +293,86 @@ void cinematic_set_title_delayed(
 	return;
 }
 
+/* port: stereo's log line (port/linux/src/sdl_platform.c, or the iOS host) */
+void platform_log(char const *format, ...);
+
+/* port: how far stereo's cutscene screen brings its bars in
+(halo_stereo.h), once a frame: none while the script fade shows (the bars
+would sit over the white of a fade-in), else in at the Xbox letterbox's
+rate (one a second) while a title cinematic_render can draw is up, and out
+with that title's own fade-out (halo_stereo_title_bars_ease) */
+float halo_cinematic_title_bars(
+	void)
+{
+	static real eased = 0.0f;
+	static real last_time = -1.0f;
+	real limit = 0.0f;
+	real now;
+	real seconds;
+	float fade[4];
+	short title_slot_index;
+	long help_text_tag_index = global_scenario_get()->ingame_help_text.index;
+	struct string_list *string_list;
+
+	/* the picture's game time, continuous between ticks; a gap (the film
+	wasn't up) starts from none */
+	now = render_interpolation_game_time_sec(game_time_get());
+	seconds = now - last_time;
+	if (last_time < 0.0f || seconds < 0.0f || seconds > 0.25f)
+	{
+		eased = 0.0f;
+		seconds = 0.0f;
+	}
+	last_time = now;
+
+	/* cinematic_render draws no title without the font or the help text */
+	if (hud_globals->messaging.single_player_font.index == NONE ||
+		help_text_tag_index == NONE)
+	{
+		eased = 0.0f;
+		return 0.0f;
+	}
+	string_list = unicode_string_list_definition_get(help_text_tag_index);
+
+	for (title_slot_index = 0;
+		title_slot_index < MAXIMUM_QUEUED_CINEMATIC_TITLES;
+		title_slot_index++)
+	{
+		struct cinematic_title const *active_title =
+			&cinematic_globals->queued_titles[title_slot_index];
+		struct scenario_cutscene_title const *title;
+		real fade_amount = 1.0f;
+
+		if (active_title->title_index == NONE)
+			continue;
+		title = TAG_BLOCK_GET_ELEMENT(
+			&global_scenario_get()->cutscene_chapter_titles,
+			active_title->title_index,
+			struct scenario_cutscene_title);
+		if (title->text_index < 0 ||
+			title->text_index >= string_list->strings.count)
+		{
+			continue;
+		}
+		if (!game_in_editor())
+		{
+			real title_time = (real)active_title->time;
+
+			/* not up yet (a delayed title), or fading out: its fade; else
+			the bars may come all the way in */
+			if (title_time < 0.0f)
+				fade_amount = 0.0f;
+			else if (title_time > title->up_time)
+				fade_amount = PIN(1.0f - (title_time - title->up_time) / title->fade_out_time, 0.0f, 1.0f);
+		}
+		limit = MAX(limit, fade_amount);
+	}
+
+	halo_stereo_fade(fade);
+	eased = halo_stereo_title_bars_ease(eased, limit, fade[3], seconds);
+	return eased;
+}
+
 void cinematic_render(
 	void)
 {
@@ -303,6 +383,7 @@ void cinematic_render(
 		long game_time;
 		long elapsed_ticks;
 		real letterbox_amount;
+		real bar_amount;
 
 		game_time = game_time_get();
 		elapsed_ticks =
@@ -326,13 +407,39 @@ void cinematic_render(
 
 		cinematic_globals->letterbox_amount = letterbox_amount;
 
-		if (cinematic_globals->letterbox_amount > 0.0f)
+		/* port: stereo's 3D film (port/linux/game/stereo.c) fills its 16:9
+		screen with the letterbox's inside, so its bars come in only while a
+		title shows, as far as the title has faded in, through the film's
+		hold too; other stereo frames (gameplay, as the bars slide out after
+		a cutscene) have none */
+		bar_amount = cinematic_globals->letterbox_amount;
+		if (halo_stereo_frame()->eye_count == 2)
+		{
+			static boolean bars_shown = FALSE;
+
+			/* (and Task 12k's immersive cutscene, whose HUD layer goes on the
+			director's frame as on the film's screen) */
+			bar_amount = halo_stereo_film_letterbox() || halo_stereo_cutscene_immersive_letterbox() ?
+				halo_cinematic_title_bars() : 0.0f;
+			/* (the cutscene window's expansion carries on from the film's last) */
+			halo_stereo_set_title_bars(bar_amount);
+			/* once each time a title brings them in, and as they leave */
+			if ((bar_amount > 0.0f) != bars_shown)
+			{
+				bars_shown = bar_amount > 0.0f;
+				platform_log(bars_shown
+					? "stereo: a title brings the cutscene screen's bars in (tick %ld)"
+					: "stereo: the cutscene screen's bars are out (tick %ld)", game_time);
+			}
+		}
+
+		if (bar_amount > 0.0f)
 		{
 			rectangle2d bar;
 			real bar_height;
 			real viewport_height;
 
-			bar_height = cinematic_globals->letterbox_amount * 0.125f;
+			bar_height = bar_amount * 0.125f;
 			viewport_height = (real)(
 				render.camera.viewport_bounds.y1 -
 				render.camera.viewport_bounds.y0);
@@ -473,6 +580,11 @@ void cinematic_render(
 					wide_bounds.x1 += shift;
 					title_bounds = &wide_bounds;
 				}
+				/* port: a title over HEAD mode's full view (a first-person
+				cutscene, which isn't the film) goes to the help text's piece,
+				top left, with no bars (halo_stereo.h) */
+				if (halo_stereo_hud_split())
+					halo_hud_group_begin(HALO_HUD_GROUP_PROMPT);
 				rasterizer_draw_unicode_string(
 					title_bounds,
 					NULL,
@@ -481,6 +593,8 @@ void cinematic_render(
 					unicode_string_list_get_string(
 						help_text_tag_index,
 						title->text_index));
+				if (halo_stereo_hud_split()) /* port */
+					halo_hud_group_end();
 
 				rasterizer_text_set_shadow_color(0);
 			}

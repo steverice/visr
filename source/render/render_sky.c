@@ -247,9 +247,16 @@ void render_sky(
 			}
 
 			view_matrix = *global_identity4x3;
-			view_matrix.position.x = render.camera.position.x * 0.9990234375f;
-			view_matrix.position.y = render.camera.position.y * 0.9990234375f;
-			view_matrix.position.z = render.camera.position.z * 0.9990234375f;
+			{
+				/* port: in an eye pass the sky sits about that eye, so it has no disparity (at infinity) */
+				const real_point3d *sky_center = halo_stereo_eye_position();
+
+				if (!sky_center)
+					sky_center = &render.camera.position;
+				view_matrix.position.x = sky_center->x * 0.9990234375f;
+				view_matrix.position.y = sky_center->y * 0.9990234375f;
+				view_matrix.position.z = sky_center->z * 0.9990234375f;
+			}
 			{
 				/* port: no more nodes than node_matrices holds (a map's count) */
 				long node_count = MIN(model->nodes.count, MAXIMUM_NODES_PER_ANIMATION);

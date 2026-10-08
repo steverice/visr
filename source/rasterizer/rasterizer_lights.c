@@ -381,6 +381,16 @@ static boolean screenshot_in_progress(
 	return global_screenshot_count>1 || (global_screenshot_count==1 && global_screenshot_size>1);
 }
 
+/* port: in stereo, eye 1's flares take a spare window index (stereo renders
+one window, so the last is never used) for their occlusion slots: each eye
+keeps its own results, fades them once per frame and draws only its own.
+The zoomed pass, a zoomed frame's only one, takes eye 0's */
+static long lens_flare_window_index(
+	void)
+{
+	return halo_stereo_current_layer() == 1 ? MAXIMUM_WINDOWS - 1 : global_window_parameters.window_index;
+}
+
 static struct rasterizer_lens_flare_submit_parameters *lens_flare_parameters_get(
 	short lens_flare_index)
 {
@@ -567,6 +577,13 @@ void rasterizer_lens_flare_submit(
 					lens_flare_parameters_get((short)local_lens_flare_count++);
 
 				memcpy(lens_flare_parameters, parameters, sizeof(*lens_flare_parameters));
+				/* port: eye 1's own occlusion slots (lens_flare_window_index) */
+				if (halo_stereo_repeat_pass())
+				{
+					lens_flare_parameters->compressed_window_index= (byte)(
+						(parameters->compressed_window_index & _lens_flare_first_person_weapon_flag) |
+						lens_flare_window_index());
+				}
 
 				if (parameters->light_identifier==NONE)
 				{
@@ -847,7 +864,7 @@ void rasterizer_lens_flares_submit_occlusion_tests(
 			real_vector3d direction = uncompress_int32_to_real_vector3d(lens_flare_parameters->compressed_direction);
 
 			if ((lens_flare_parameters->compressed_window_index & _lens_flare_window_index_mask) ==
-				global_window_parameters.window_index)
+				lens_flare_window_index() /* port */)
 			{
 				real occlusion_radius = definition->occlusion_radius;
 				real_point3d occlusion_point;
@@ -917,7 +934,7 @@ void rasterizer_lens_flares_draw(
 			real_vector3d direction = uncompress_int32_to_real_vector3d(lens_flare_parameters->compressed_direction);
 
 			if ((lens_flare_parameters->compressed_window_index & _lens_flare_window_index_mask) ==
-				global_window_parameters.window_index)
+				lens_flare_window_index() /* port */)
 			{
 				struct lens_flare_definition *definition = lens_flare_parameters->definition;
 
@@ -939,8 +956,16 @@ void rasterizer_lens_flares_draw(
 					real light_scale;
 					short reflection_index;
 
+					/* port: in a stereo eye, from the center camera (render.camera
+					in an eye's window, render.c): the reflections lie on the line
+					from the light through the camera's axis, which would otherwise
+					be each eye's own axis, so each eye would put them at different
+					points, with the light's parallax reversed (beyond infinity for
+					a light a few meters away). From the center, both eyes draw the
+					same points, at the light's depth */
 					vector_from_points3d(
-						&global_window_parameters.camera.position,
+						halo_stereo_current_layer() == 0 || halo_stereo_current_layer() == 1 ?
+							&render.camera.position : &global_window_parameters.camera.position,
 						&corona_position,
 						&eye_to_corona_vector);
 					depth = dot_product3d(&global_window_parameters.camera.forward, &eye_to_corona_vector);
@@ -1176,7 +1201,7 @@ void rasterizer_lens_flares_draw(
 
 				if (lens_flare_parameters->internal__occlusion_pixels > 0 &&
 					(lens_flare_parameters->compressed_window_index & _lens_flare_window_index_mask) ==
-						global_window_parameters.window_index &&
+						lens_flare_window_index() /* port */ &&
 					(lens_flare_parameters->definition->occlusion_radius == 50.0f ||
 						TEST_FLAG(lens_flare_parameters->definition->flags, _lens_flare_sun_bit)))
 				{

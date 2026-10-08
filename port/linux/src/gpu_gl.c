@@ -8,7 +8,9 @@ gpu.h declares.
 
 #include "gpu.h"
 #include "gl.h"
+#include "halo_stereo.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -262,7 +264,7 @@ static struct gpu_gl_state
 	GLuint stencil_value_mask;
 	GLenum stencil_operations[3];
 	GLuint stencil_write_mask;
-	GLenum blend_source, blend_destination, blend_equation;
+	GLenum blend_source, blend_destination, blend_alpha_source, blend_alpha_destination, blend_equation;
 	float blend_color[4];
 	unsigned char color_mask;
 	GLenum front_face, cull_mode, polygon_mode;
@@ -284,6 +286,39 @@ static struct gpu_gl_state
 static void state_invalidate(void)
 {
 	memset(&gl_state, 0xff, sizeof(gl_state));
+}
+
+/* GL_DEPTH_CLAMP (GL_DEPTH_CLAMP_EXT on ES, 0x864f either way), which only
+the first-person body's draws turn on (gpu_raster_state.depth_clamp). Its
+state lives apart from gl_state: nothing else turns it on, so it stays
+known across state_invalidate, and a frame without such a draw makes no GL
+call for it (the GL records count every call). ES checks GL_EXT_depth_clamp
+on the first draw that asks; without it the body is clipped at the near
+plane as before */
+static void depth_clamp_apply(int enabled)
+{
+	static int on, supported = -1;
+
+	enabled = enabled != 0;
+	if (enabled == on)
+		return;
+	if (supported < 0)
+	{
+#ifdef GPU_GL_ES
+		supported = gl_extension_supported("GL_EXT_depth_clamp") ? 1 : 0;
+#else
+		supported = 1;
+#endif
+		platform_log("the first-person body's depth clamp: %s", supported ? "on" :
+			"not supported (no GL_EXT_depth_clamp), so the body is clipped at the near plane");
+	}
+	if (!supported)
+		return;
+	on = enabled;
+	if (on)
+		glEnable(0x864f);
+	else
+		glDisable(0x864f);
 }
 
 static void state_enable(unsigned char *shadow, GLenum capability, int enabled)
@@ -634,14 +669,22 @@ static void apply_raster_state(const struct gpu_viewport *viewport, const struct
 	{
 		GLenum source = gl_blend_factor(blend->source);
 		GLenum destination = gl_blend_factor(blend->destination);
+		GLenum alpha_source = blend->alpha_separate ? gl_blend_factor(blend->alpha_source) : source;
+		GLenum alpha_destination = blend->alpha_separate ? gl_blend_factor(blend->alpha_destination) : destination;
 		GLenum equation = gl_blend_equation(blend->operation);
 		float blend_color[4];
 
-		if (gl_state.blend_source != source || gl_state.blend_destination != destination)
+		if (gl_state.blend_source != source || gl_state.blend_destination != destination ||
+			gl_state.blend_alpha_source != alpha_source || gl_state.blend_alpha_destination != alpha_destination)
 		{
 			gl_state.blend_source = source;
 			gl_state.blend_destination = destination;
-			glBlendFunc(source, destination);
+			gl_state.blend_alpha_source = alpha_source;
+			gl_state.blend_alpha_destination = alpha_destination;
+			if (blend->alpha_separate)
+				glBlendFuncSeparate(source, destination, alpha_source, alpha_destination);
+			else
+				glBlendFunc(source, destination);
 		}
 		if (gl_state.blend_equation != equation)
 		{
@@ -693,6 +736,7 @@ static void apply_raster_state(const struct gpu_viewport *viewport, const struct
 	}
 #endif
 
+	depth_clamp_apply(raster->depth_clamp);
 	state_enable(&gl_state.offset_fill, GL_POLYGON_OFFSET_FILL, raster->depth_bias_enable);
 #ifndef GPU_GL_ES
 	state_enable(&gl_state.offset_line, GL_POLYGON_OFFSET_LINE, raster->depth_bias_enable);
@@ -1215,10 +1259,24 @@ static uint32_t gpu_gl_texture_read(gpu_texture texture, void *pixels, uint32_t 
 	const struct gpu_texture_description *description = &texture_record(texture)->description;
 	uint32_t width = description->width, height = description->height;
 
-	if (description->type != GPU_TEXTURE_2D || description->format == GPU_FORMAT_DEPTH_STENCIL ||
-		size < width * height * 4)
-	{
+	if (description->type != GPU_TEXTURE_2D || size < width * height * 4)
 		return 0;
+	if (description->format == GPU_FORMAT_DEPTH_STENCIL)
+	{
+#ifdef GPU_GL_ES
+		/* ES 3.0 reads back no depth */
+		return 0;
+#else
+		/* the depth as floats, rows in the order the color reads give them */
+		state_texture(0, GL_TEXTURE_2D, texture);
+		if (gl_state.active_texture != GL_TEXTURE0)
+		{
+			gl_state.active_texture = GL_TEXTURE0;
+			glActiveTexture(GL_TEXTURE0);
+		}
+		glGetTexImage(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, GL_FLOAT, pixels);
+		return 1;
+#endif
 	}
 	if (description->usage != GPU_USAGE_RENDER_TARGET)
 	{
@@ -1875,12 +1933,270 @@ static uint32_t gpu_gl_present(gpu_texture back_buffer)
 	return 0;
 }
 
+/* gpu_present_stereo's HUD: a render target's picture over the viewport,
+blended by its alpha (a blit can't blend). Row 0 of the texture is the top. */
+static struct
+{
+	GLuint program, sampler, vertex_array;
+	/* the program's source rectangle (u0, v0, u1, v1, v down) */
+	GLint source;
+} overlay;
+
+static int overlay_prepare(void)
+{
+	static const char *const vertex_source =
+#ifdef GPU_GL_ES
+		"#version 300 es\n"
+#else
+		"#version 450 core\n"
+#endif
+		"uniform vec4 source;\n"
+		"out vec2 uv;\n"
+		"void main()\n"
+		"{\n"
+		"	vec2 corner = vec2(float(gl_VertexID & 1), float(gl_VertexID >> 1));\n"
+		"	uv = mix(source.xy, source.zw, vec2(corner.x, 1.0 - corner.y));\n"
+		"	gl_Position = vec4(corner * 2.0 - 1.0, 0.0, 1.0);\n"
+		"}\n";
+	static const char *const fragment_source =
+#ifdef GPU_GL_ES
+		"#version 300 es\nprecision highp float;\n"
+#else
+		"#version 450 core\n"
+#endif
+		"uniform sampler2D picture;\n"
+		"in vec2 uv;\n"
+		"out vec4 color;\n"
+		"void main()\n"
+		"{\n"
+		"	color = texture(picture, uv);\n"
+		"}\n";
+
+	if (!overlay.program)
+	{
+		GLuint vertex = compile_shader(GL_VERTEX_SHADER, vertex_source, "HUD overlay vertex");
+		GLuint fragment = compile_shader(GL_FRAGMENT_SHADER, fragment_source, "HUD overlay pixel");
+		GLint status = 0;
+
+		if (!vertex || !fragment)
+			return 0;
+		overlay.program = glCreateProgram();
+		glAttachShader(overlay.program, vertex);
+		glAttachShader(overlay.program, fragment);
+		glLinkProgram(overlay.program);
+		glGetProgramiv(overlay.program, GL_LINK_STATUS, &status);
+		glDeleteShader(vertex);
+		glDeleteShader(fragment);
+		if (!status)
+		{
+			platform_log("cannot link the HUD overlay program");
+			glDeleteProgram(overlay.program);
+			overlay.program = 0;
+			return 0;
+		}
+		glGenSamplers(1, &overlay.sampler);
+		glSamplerParameteri(overlay.sampler, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+		glSamplerParameteri(overlay.sampler, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		glSamplerParameteri(overlay.sampler, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+		glSamplerParameteri(overlay.sampler, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+		glGenVertexArrays(1, &overlay.vertex_array);
+		overlay.source = glGetUniformLocation(overlay.program, "source");
+	}
+	return 1;
+}
+
+/* one picture (a render target) letterboxed into the half of the window at
+half_x, as gpu_gl_present does the whole; returns its rectangle */
+static void present_half(gpu_texture picture, int half_x, int half_width, int window_height, int box[4])
+{
+	const struct gpu_texture_description *description = &texture_record(picture)->description;
+	int width = half_width, height = (int)((long)half_width * description->height / description->width);
+
+	if (height > window_height)
+	{
+		height = window_height;
+		width = (int)((long)window_height * description->width / description->height);
+	}
+	box[0] = half_x + (half_width - width) / 2;
+	box[1] = (window_height - height) / 2;
+	box[2] = width;
+	box[3] = height;
+	glBindFramebuffer(GL_READ_FRAMEBUFFER, framebuffer_get(picture, 0));
+	glBlitFramebuffer(0, 0, (GLint)description->width, (GLint)description->height,
+		box[0], box[1] + height, box[0] + width, box[1], GL_COLOR_BUFFER_BIT, GL_LINEAR);
+}
+
+/* the side-by-side debug view: eye 0 in the left half of the window, eye 1 in
+the right (or, zoomed, the zoomed picture in both), the HUD over each */
+static uint32_t gpu_gl_present_stereo(const struct gpu_stereo_present *present)
+{
+	int window_width, window_height, half_width, eye, boxes[2][4];
+
+	platform_video_drawable_size(&window_width, &window_height);
+	half_width = window_width / 2;
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, default_framebuffer());
+	glDisable(GL_SCISSOR_TEST);
+	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+	glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+	glClear(GL_COLOR_BUFFER_BIT);
+	for (eye = 0; eye < 2; eye++)
+		present_half(present->eye_color[eye], eye * half_width, half_width, window_height, boxes[eye]);
+	/* zoomed (halo_stereo.h): the zoomed picture in place of the eyes'
+	(their pictures are last frame's), as HEAD mode's presenter's quad on
+	the HUD's plane shows it to each eye's fixed frustum, with the parallax
+	of its distance */
+	if (present->zoom && present->zoom_tangents[0] > 0.0f && present->zoom_tangents[1] > 0.0f && overlay_prepare())
+	{
+		float across = present->zoom_tangents[0], up = present->zoom_tangents[1];
+
+		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, default_framebuffer());
+		glDisable(GL_DEPTH_TEST);
+		glDisable(GL_CULL_FACE);
+		glDisable(GL_STENCIL_TEST);
+		glDisable(GL_BLEND);
+		glUseProgram(overlay.program);
+		glBindVertexArray(overlay.vertex_array);
+		glActiveTexture(GL_TEXTURE0);
+		glBindTexture(GL_TEXTURE_2D, present->zoom);
+		glBindSampler(0, overlay.sampler);
+		for (eye = 0; eye < 2; eye++)
+		{
+			/* the eye sits its offset (meters) to the side: its view's edge
+			at tangent t meets the quad at (offset / distance + t) of the
+			quad's half tangent */
+			float offset = (eye == 0 ? -HALO_STEREO_SIDE_BY_SIDE_OFFSET : HALO_STEREO_SIDE_BY_SIDE_OFFSET) * 3.048f /
+				HALO_STEREO_ZOOM_DISTANCE_METERS;
+
+			glUniform4f(overlay.source, 0.5f + (offset - HALO_STEREO_SIDE_BY_SIDE_TANGENT) / (2.0f * across),
+				0.5f - HALO_STEREO_SIDE_BY_SIDE_TANGENT / (2.0f * up),
+				0.5f + (offset + HALO_STEREO_SIDE_BY_SIDE_TANGENT) / (2.0f * across),
+				0.5f + HALO_STEREO_SIDE_BY_SIDE_TANGENT / (2.0f * up));
+			glViewport(boxes[eye][0], boxes[eye][1], boxes[eye][2], boxes[eye][3]);
+			glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+		}
+		glBindSampler(0, 0);
+		glBindVertexArray(streams.vertex_array);
+	}
+	/* the widgets' dim (halo_stereo_ui_dim_active), as HEAD mode's presenter
+	darkens the eyes by it: each eye's picture times 1 - ui_dim (the quad's
+	own color counts for nothing) */
+	if (present->ui_dim > 0.0f && overlay_prepare())
+	{
+		float keep = present->ui_dim < 1.0f ? 1.0f - present->ui_dim : 0.0f;
+
+		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, default_framebuffer());
+		glDisable(GL_DEPTH_TEST);
+		glDisable(GL_CULL_FACE);
+		glDisable(GL_STENCIL_TEST);
+		glEnable(GL_BLEND);
+		glBlendColor(keep, keep, keep, 1.0f);
+		glBlendFuncSeparate(GL_ZERO, GL_CONSTANT_COLOR, GL_ZERO, GL_ONE);
+		glUseProgram(overlay.program);
+		glUniform4f(overlay.source, 0.0f, 0.0f, 1.0f, 1.0f);
+		glBindVertexArray(overlay.vertex_array);
+		glActiveTexture(GL_TEXTURE0);
+		glBindTexture(GL_TEXTURE_2D, present->eye_color[0]);
+		glBindSampler(0, overlay.sampler);
+		for (eye = 0; eye < 2; eye++)
+		{
+			glViewport(boxes[eye][0], boxes[eye][1], boxes[eye][2], boxes[eye][3]);
+			glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+		}
+		glBindSampler(0, 0);
+		glBindVertexArray(streams.vertex_array);
+		glDisable(GL_BLEND);
+	}
+	/* the HUD over each half: the crosshairs' layer, each HUD group's
+	target and the HUD layer itself (the catch-all), each laid out as the
+	whole HUD, so the debug view shows the HUD as mono lays it out; a layer
+	nothing drew this frame is 0 */
+	{
+		gpu_texture layers[HALO_HUD_GROUP_COUNT + 3];
+		int layer_count = 0, layer;
+
+		if (present->reticle_layer)
+			layers[layer_count++] = present->reticle_layer;
+		for (layer = 0; layer < HALO_HUD_GROUP_COUNT; layer++)
+			if (present->hud_group[layer])
+				layers[layer_count++] = present->hud_group[layer];
+		if (present->hud)
+			layers[layer_count++] = present->hud;
+		/* the UI layer over everything, as the presenter's UI quad is */
+		if (present->ui)
+			layers[layer_count++] = present->ui;
+		if (layer_count > 0 && overlay_prepare())
+		{
+			glBindFramebuffer(GL_DRAW_FRAMEBUFFER, default_framebuffer());
+			glDisable(GL_DEPTH_TEST);
+			glDisable(GL_CULL_FACE);
+			glDisable(GL_STENCIL_TEST);
+			glEnable(GL_BLEND);
+			/* premultiplied color over the picture by the layer's alpha, the
+			picture's transmittance (d3d8_device.c, hud_layer_blend) */
+			glBlendFuncSeparate(GL_ONE, GL_SRC_ALPHA, GL_ZERO, GL_ONE);
+			glUseProgram(overlay.program);
+			glUniform4f(overlay.source, 0.0f, 0.0f, 1.0f, 1.0f);
+			glBindVertexArray(overlay.vertex_array);
+			glActiveTexture(GL_TEXTURE0);
+			glBindSampler(0, overlay.sampler);
+			for (layer = 0; layer < layer_count; layer++)
+			{
+				glBindTexture(GL_TEXTURE_2D, layers[layer]);
+				for (eye = 0; eye < 2; eye++)
+				{
+					glViewport(boxes[eye][0], boxes[eye][1], boxes[eye][2], boxes[eye][3]);
+					glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+				}
+			}
+			glBindSampler(0, 0);
+			glBindVertexArray(streams.vertex_array);
+			glDisable(GL_BLEND);
+		}
+	}
+	platform_video_swap();
+	/* the blits and the overlay bypassed the cached state */
+	state_invalidate();
+	stream_frame();
+	frames++;
+	return 0;
+}
+
 static uint32_t gpu_gl_call_count_take(void)
 {
 	uint32_t count = (uint32_t)halo_gl_call_count;
 
 	halo_gl_call_count = 0;
 	return count;
+}
+
+/* ---------- compiling at map load: GL links its programs as it draws, and
+carries no lists (gpu.h) */
+
+static uint32_t gpu_gl_warm_list_read(const char *name, char *text, uint32_t size)
+{
+	(void)name;
+	(void)text;
+	(void)size;
+	return 0;
+}
+
+static void gpu_gl_warm_begin(void)
+{
+}
+
+static void gpu_gl_pipeline_warm(const struct gpu_pipeline_description *description)
+{
+	(void)description;
+}
+
+static void gpu_gl_warm_end(void)
+{
+}
+
+static uint32_t gpu_gl_pipeline_built_take(struct gpu_pipeline_description *description)
+{
+	(void)description;
+	return 0;
 }
 
 /* ---------- the backend */

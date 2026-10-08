@@ -62,7 +62,15 @@ host_gpu_visibility_end
 host_gpu_visibility_result
 host_gpu_flush
 host_gpu_present
+host_gpu_present_stereo
 host_gpu_call_count_take
+host_gpu_warm_list_read
+host_gpu_warm_begin
+host_gpu_pipeline_warm
+host_gpu_warm_end
+host_gpu_pipeline_built_take
 host_gpu_initialize
+# stereo (halo_stereo.h)
+host_stereo_frame
 
 host_errno

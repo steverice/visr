@@ -1358,6 +1358,10 @@ void hud_draw_screen(
 	{
 		struct player_datum *player = player_get(player_index);
 
+		/* port: what the HUD projects onto the world (players' markers and
+		names, nav points, damage indicators) is the catch-all's, never a
+		corner's group (halo_stereo.h) */
+		halo_hud_group_begin(HALO_HUD_GROUP_NONE);
 		if ((!game_engine_running() || game_engine_display_team_indicators()) &&
 			!cinematic_in_progress())
 		{
@@ -1373,6 +1377,7 @@ void hud_draw_screen(
 		/* port: the network co-op vote to skip a cinematic */
 		if (cinematic_in_progress())
 			coop_skip_vote_draw(render.local_player_index);
+		halo_hud_group_end(); /* port */
 
 		if (!game_time_get_paused() &&
 			render.local_player_index == local_player_get_next(NONE))
@@ -1390,8 +1395,10 @@ void hud_draw_screen(
 				hud_show_action_response(player_index);
 				hud_play_unit_sounds(player, hud_scripted_globals->show_hud);
 				hud_render_unit_interface(player);
+				halo_hud_group_begin(HALO_HUD_GROUP_NONE); /* port */
 				hud_render_nav_points(render.local_player_index);
 				hud_render_damage_indicators(render.local_player_index);
+				halo_hud_group_end(); /* port */
 			}
 			else
 			{

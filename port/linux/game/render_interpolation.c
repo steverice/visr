@@ -42,6 +42,7 @@ with their unit, and with what it rides.
 #include "game/players.h"
 #include "render/render_cameras.h"
 #include "units/units.h"
+#include "../src/halo_stereo.h"
 
 /* port/linux/src/port_config.c */
 int config_boolean(const char *name);
@@ -135,6 +136,14 @@ struct interpolated_camera
 	/* its player's unit (or what it rides) corrected: as an object's */
 	real_vector3d correction;
 	real_vector3d correction_pending;
+	/* HEAD mode: the head yaw each holds (halo_stereo_head_yaw_taken when it
+	was kept: the first-person camera is posed each frame from the facing,
+	which has the head's yaw the look had taken by then), and whether it was
+	posed from the facing at all (camera_facing_posed) */
+	real previous_head_yaw;
+	real latest_head_yaw;
+	boolean previous_facing_posed;
+	boolean latest_facing_posed;
 };
 
 struct interpolated_first_person
@@ -742,6 +751,41 @@ static void trace_camera(struct interpolated_camera const *camera, struct observ
 
 static struct observer_result direct_cameras[MAXIMUM_LOCAL_PLAYERS];
 
+/* how this frame's camera was made, for stereo (halo_stereo_camera_head_yaw):
+the head yaw it holds, the blend and the way; source NULL until one is. And
+whether it holds the facing with the look's yaw as of now
+(halo_stereo_camera_posed): the observer posed from the facing this frame,
+the direct camera, or a blend of two cameras both posed from it, each turned
+to the yaw taken now; a blend with a side not posed from it (edge,
+unposed) doesn't */
+static struct
+{
+	real head_yaw;
+	real fraction;
+	char const *source;
+	boolean holds_facing;
+} camera_note;
+
+/* the observer's camera is posed from the player's facing this frame: the
+director's first person, not pausing on a change of camera
+(director_peek_perspective), with the observer's orientation at its
+command, not gliding toward it. A glide (leaving a seat) or any other
+camera holds none of the facing's head yaw that stereo could take out, nor
+does it hold the facing (camera_note's holds_facing) */
+static boolean camera_facing_posed(short local_player_index)
+{
+	return director_peek_perspective(local_player_index) == _director_perspective_first_person &&
+		observer_orientation_settled(local_player_index);
+}
+
+static void camera_noted(real head_yaw, char const *source, boolean holds_facing)
+{
+	camera_note.head_yaw = head_yaw;
+	camera_note.fraction = render_interpolation_fraction();
+	camera_note.source = source;
+	camera_note.holds_facing = holds_facing;
+}
+
 static struct observer_result const *render_interpolation_blended_camera(
 	short local_player_index,
 	struct observer_result const *observer);
@@ -786,6 +830,7 @@ static struct observer_result const *render_interpolation_direct_camera(
 	*direct = *observer;
 	player_control_get_facing_direction(local_player_index, &direct->forward);
 	observer_up_from_forward(&direct->forward, &direct->up);
+	camera_noted(halo_stereo_head_yaw_taken(), "direct", TRUE);
 	return direct;
 #endif
 }
@@ -794,10 +839,35 @@ struct observer_result const *render_interpolation_camera(
 	short local_player_index,
 	struct observer_result const *observer)
 {
+	struct observer_result const *result;
+
 	if (local_player_index < 0 || local_player_index >= MAXIMUM_LOCAL_PLAYERS)
 		return observer;
-	return render_interpolation_direct_camera(local_player_index,
+	camera_note.source = NULL;
+	result = render_interpolation_direct_camera(local_player_index,
 		render_interpolation_blended_camera(local_player_index, observer));
+	/* (stereo is player one's) */
+	if (local_player_index == 0 && result && camera_note.source)
+		halo_stereo_camera_head_yaw(camera_note.head_yaw, camera_note.fraction, camera_note.source);
+	/* and, once a frame, whether that camera holds the facing with the
+	look's yaw as of now (camera_note's holds_facing): the next frame's look
+	gives the facing the yaw the eye cameras kept (a seat's leftover, the
+	head's turn through a third-person camera) only then, so the view
+	doesn't move; and a fold this frame into a camera that doesn't hold it
+	(a camera change in the fold's tick) is covered by stereo's cut */
+	if (local_player_index == 0 && result)
+		halo_stereo_camera_posed(camera_note.source && camera_note.holds_facing);
+	return result;
+}
+
+/* v turned about the world's up (k) by angle, left positive as the game's yaw */
+static void vector_turn_about_up(real_vector3d *v, real angle)
+{
+	real c = (real)cos(angle), s = (real)sin(angle);
+	real i = v->i, j = v->j;
+
+	v->i = i * c - j * s;
+	v->j = i * s + j * c;
 }
 
 static struct observer_result const *render_interpolation_blended_camera(
@@ -806,9 +876,14 @@ static struct observer_result const *render_interpolation_blended_camera(
 {
 	struct interpolated_camera *camera;
 	real t = interpolation_fraction;
+	real_vector3d previous_forward, previous_up, latest_forward, latest_up;
+	real taken;
 
 	if (!interpolation_rendering || !observer)
 	{
+		/* the observer as posed this frame: all the look took, or (not
+		posed from the facing) nothing to take out */
+		camera_noted(halo_stereo_head_yaw_taken(), "live", camera_facing_posed(local_player_index));
 		return observer;
 	}
 	camera = &interpolated_cameras[local_player_index];
@@ -825,19 +900,59 @@ static struct observer_result const *render_interpolation_blended_camera(
 		camera->has_previous = camera->valid;
 		camera->previous = camera->latest;
 		camera->latest = *observer;
+		camera->previous_head_yaw = camera->latest_head_yaw;
+		camera->latest_head_yaw = halo_stereo_head_yaw_taken();
+		camera->previous_facing_posed = camera->latest_facing_posed;
+		camera->latest_facing_posed = camera_facing_posed(local_player_index);
 		camera->tick = interpolation_tick;
 		camera->valid = TRUE;
+	}
+	/* HEAD mode: each camera posed from the facing turned about the world's
+	up by the head yaw the look has taken since it was kept, so it holds the
+	head yaw as of now: the head's turn is neither blended a tick late nor
+	taken for a cut, and stereo.c adds only what the look hasn't taken yet
+	(halo_stereo_head_orient). With both posed this is the later one's turn
+	passed through the blend (a rotation about one axis does). A glide or
+	another camera, never turned by the facing, stays as it is, so a blend
+	between one and a posed camera moves from the head as it is now to that
+	camera's own pose without a step at either end. Elsewhere every camera
+	holds none and nothing turns */
+	taken = halo_stereo_head_yaw_taken();
+	previous_forward = camera->previous.forward;
+	previous_up = camera->previous.up;
+	latest_forward = camera->latest.forward;
+	latest_up = camera->latest.up;
+	if (camera->previous_facing_posed)
+	{
+		real turn = remainderf(taken - camera->previous_head_yaw, 2.0f * _pi);
+
+		if (turn != 0.0f)
+		{
+			vector_turn_about_up(&previous_forward, turn);
+			vector_turn_about_up(&previous_up, turn);
+		}
+	}
+	if (camera->latest_facing_posed)
+	{
+		real turn = remainderf(taken - camera->latest_head_yaw, 2.0f * _pi);
+
+		if (turn != 0.0f)
+		{
+			vector_turn_about_up(&latest_forward, turn);
+			vector_turn_about_up(&latest_up, turn);
+		}
 	}
 	/* (so written that a position or direction not a number cuts) */
 	if (!camera->has_previous ||
 		!(distance_squared(&camera->previous.position, &camera->latest.position) <=
 			CAMERA_CUT_DISTANCE * CAMERA_CUT_DISTANCE) ||
-		!(camera->previous.forward.i * camera->latest.forward.i +
-			camera->previous.forward.j * camera->latest.forward.j +
-			camera->previous.forward.k * camera->latest.forward.k >= CAMERA_CUT_COSINE))
+		!(previous_forward.i * latest_forward.i +
+			previous_forward.j * latest_forward.j +
+			previous_forward.k * latest_forward.k >= CAMERA_CUT_COSINE))
 	{
 		if (local_player_index == 0 && halo_frame_trace_enabled())
 			trace_camera(camera, observer, camera->has_previous ? "cut" : "first");
+		camera_noted(halo_stereo_head_yaw_taken(), "cut", camera_facing_posed(local_player_index));
 		return observer;
 	}
 
@@ -852,8 +967,8 @@ static struct observer_result const *render_interpolation_blended_camera(
 		camera->blended.position.y += drawn.j;
 		camera->blended.position.z += drawn.k;
 	}
-	vector_nlerp(&camera->previous.forward, &camera->latest.forward, t, &camera->blended.forward);
-	vector_nlerp(&camera->previous.up, &camera->latest.up, t, &camera->blended.up);
+	vector_nlerp(&previous_forward, &latest_forward, t, &camera->blended.forward);
+	vector_nlerp(&previous_up, &latest_up, t, &camera->blended.up);
 	{
 		/* keep up perpendicular to forward */
 		real_vector3d *forward = &camera->blended.forward;
@@ -873,10 +988,14 @@ static struct observer_result const *render_interpolation_blended_camera(
 		}
 		else
 		{
-			*up = camera->latest.up;
+			*up = latest_up;
 		}
 	}
 	camera->blended.field_of_view = lerp(camera->previous.field_of_view, camera->latest.field_of_view, t);
+	/* the head yaw as of now, whatever it blends */
+	camera_noted(taken, camera->previous_facing_posed && camera->latest_facing_posed ? "blended" :
+		camera->previous_facing_posed || camera->latest_facing_posed ? "edge" : "unposed",
+		camera->previous_facing_posed && camera->latest_facing_posed);
 	if (local_player_index == 0 && halo_frame_trace_enabled())
 		trace_camera(camera, &camera->blended, "blended");
 	return &camera->blended;

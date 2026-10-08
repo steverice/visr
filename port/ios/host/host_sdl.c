@@ -13,8 +13,10 @@ so the audio callback is handed to a thread that has one.
 #include <TargetConditionals.h>
 #if TARGET_OS_VISION
 #include "host_theater.h"
+#include "host_stereo.h"
 #endif
 #include "host.h"
+#include "host_config.h"
 
 #include <SDL3/SDL.h>
 #include <limits.h>
@@ -168,10 +170,12 @@ void host_sdl_window_size_in_pixels(uint32_t window, int *width, int *height)
 	*height = 0;
 #if TARGET_OS_VISION
 	/* theater mode: the game renders for the screen in the room, not for its
-	hidden window (host_theater.m) */
+	hidden window (host_theater.m); in head-tracked stereo, for the eyes'
+	views (host_stereo.m) */
 	if (object && host_theater_active())
 	{
-		host_theater_picture_size(width, height);
+		if (!host_stereo_picture_size(width, height))
+			host_theater_picture_size(width, height);
 		return;
 	}
 #endif
@@ -226,10 +230,59 @@ int host_sdl_gl_swap_window(uint32_t window)
 
 /* ---------- events */
 
+/* host_main.m: a second window scene's start, undone (see there); and its
+test */
+void host_extra_scene_poll(void);
+void host_extra_scene_test(void);
+
 int host_sdl_poll_event(void *event)
 {
 	SDL_Event host_event;
+	static int test_extra_scene = -1;
+	static unsigned long polls;
 
+	host_extra_scene_poll();
+#if TARGET_OS_VISION
+	if (test_extra_scene < 0)
+	{
+		char value[16];
+
+		host_config_string("debug.test_extra_scene", "false", value, sizeof(value));
+		test_extra_scene = !strcmp(value, "true");
+	}
+	/* a few seconds in, once the game's window is up */
+	if (test_extra_scene && ++polls == 600)
+		host_extra_scene_test();
+	/* and later, that the host still reads config.toml */
+	if (test_extra_scene && polls == 1800)
+		host_logf(HOST_LOG_INFO, "debug.test_extra_scene: config.toml's display.theater_distance reads %.2f",
+			host_config_real("display.theater_distance", -1.0));
+	/* debug.test_theater_reopen: the immersive space closed, then opened again
+	from the window's button */
+	{
+		static int test_theater_reopen = -1;
+		static unsigned long theater_polls;
+
+		if (test_theater_reopen < 0)
+		{
+			char value[16];
+
+			host_config_string("debug.test_theater_reopen", "false", value, sizeof(value));
+			test_theater_reopen = !strcmp(value, "true");
+		}
+		if (test_theater_reopen)
+		{
+			theater_polls++;
+			if (theater_polls == 900)
+				host_theater_test_close();
+			if (theater_polls == 3600)
+				host_theater_test_reopen();
+		}
+	}
+#else
+	(void)test_extra_scene;
+	(void)polls;
+#endif
 	if (!SDL_PollEvent(&host_event))
 		return 0;
 	/* the layouts agree except for the pointers of text, drop and user

@@ -42,6 +42,18 @@ static uint32_t present_wrapped(gpu_texture back_buffer)
 	return next_frame_due;
 }
 
+/* a stereo frame is a Present too */
+static uint32_t present_stereo_wrapped(const struct gpu_stereo_present *present)
+{
+	uint32_t next_frame_due;
+
+	host_lifecycle_hold();
+	next_frame_due = wrapped_backend->present_stereo(present);
+	if (frame_counter)
+		host_frame_counter_show(presented++);
+	return next_frame_due;
+}
+
 void gpu_initialize(uint32_t flags, struct gpu_capabilities *capabilities)
 {
 #if TARGET_OS_VISION
@@ -55,6 +67,7 @@ void gpu_initialize(uint32_t flags, struct gpu_capabilities *capabilities)
 	wrapped_backend = backend;
 	wrapped = *backend;
 	wrapped.present = present_wrapped;
+	wrapped.present_stereo = present_stereo_wrapped;
 	backend = &wrapped;
 	frame_counter = (flags & GPU_INITIALIZE_FRAME_COUNTER) != 0;
 	if (frame_counter)

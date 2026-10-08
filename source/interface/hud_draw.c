@@ -1043,6 +1043,9 @@ void hud_calculate_point(
 		placement);
 
 	corner = absolute_placement->corner;
+	/* port: outside the HUD's group spans, the element's corner picks its
+	group (halo_stereo.h) */
+	halo_hud_group_corner(corner);
 	if (corner < _hud_anchor_center)
 	{
 		point.x = placement->offset.x *

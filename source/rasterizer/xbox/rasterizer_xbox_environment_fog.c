@@ -397,6 +397,20 @@ static struct render_lighting const *cached_lighting = NULL;
 static struct render_animation const *cached_animation = NULL;
 static boolean reported_too_many_opaque_models = FALSE;
 static boolean local_fog_screen_first_time = TRUE;
+/* port: a stereo frame's repeat pass (eye 1; halo_stereo_repeat_pass)
+shares the window's fog screen state with eye 0:
+the scroll its layers take from the camera's motion since the last pass,
+and the camera that motion is measured from. Each repeat pass takes its
+layers from that state as eye 0 left it, which turns the offset between
+its camera and eye 0's into the layers' parallax, and puts the state back
+when its window ends, so the persistent state follows eye 0's camera alone
+from frame to frame. Without that, a repeat pass with a narrower view
+(Task 8's zoom inset: a larger scroll for the same offset) left a net
+scroll every frame and the fog crawled sideways while the player held
+still */
+static struct rasterizer_environment_fog_screen_window fog_screen_saved_window;
+static real_matrix4x3 fog_screen_saved_camera_matrix;
+static short fog_screen_saved_window_index = NONE;
 
 static boolean rasterizer_environment_fog_screen_is_active(
 	void);
@@ -434,6 +448,13 @@ boolean rasterizer_environment_fog_screen_initialize(
 void rasterizer_environment_fog_screen_window_end(
 	void)
 {
+	/* port: a repeat pass's fog screen state goes back to eye 0's (above) */
+	if (fog_screen_saved_window_index != NONE)
+	{
+		windows[fog_screen_saved_window_index] = fog_screen_saved_window;
+		*previous_camera_matrix_for_window(fog_screen_saved_window_index) = fog_screen_saved_camera_matrix;
+		fog_screen_saved_window_index = NONE;
+	}
 	return;
 }
 
@@ -998,6 +1019,14 @@ void _rasterizer_environment_fog_screen_begin(
 			real sine;
 			short layer;
 
+			/* port: a repeat pass keeps eye 0's state to put back (above) */
+			if (halo_stereo_repeat_pass() && fog_screen_saved_window_index == NONE)
+			{
+				fog_screen_saved_window_index = global_window_parameters.window_index;
+				fog_screen_saved_window = *window;
+				fog_screen_saved_camera_matrix = *previous_camera_matrix;
+			}
+
 			{
 			if (local_fog_screen_first_time)
 			{
@@ -1030,10 +1059,14 @@ void _rasterizer_environment_fog_screen_begin(
 				local_fog_screen_first_time = FALSE;
 			}
 
-			rasterizer_environment_fog_screen_wind_update(screen, &window->wind);
+			/* port: once per frame in stereo: the wind turns and blows in eye 0
+			only (or in the zoomed pass, a zoomed frame's only one); eye 1 still
+			moves the layers by its own camera */
+			if (!halo_stereo_repeat_pass())
+				rasterizer_environment_fog_screen_wind_update(screen, &window->wind);
 			rasterizer_environment_fog_screen_wind_get_vector(
 				global_window_parameters.window_index,
-				global_frame_parameters.dt,
+				halo_stereo_repeat_pass() ? 0.0f : global_frame_parameters.dt,
 				&vector);
 			wind_matrix.position.x = vector.i;
 			wind_matrix.position.y = vector.j;
@@ -1295,6 +1328,30 @@ void _rasterizer_environment_fog_screen_begin(
 
 			}
 
+			/* port: in a stereo eye (layers 0 and 1), lay the layers out by
+			direction, not by the picture's position. The layers' texture
+			coordinates are a transform of the screen quad's clip position
+			(-1 to 1 across the picture), which on an off-axis frustum isn't
+			centered on the view's forward: the Vision Pro's eyes are
+			mirrored, so the same position would be a different direction in
+			each eye and the pattern would disagree. The projection's x and
+			y offsets (the bounds' centers, render_camera_build_frustum)
+			move the coordinates to (-1 to 1 of the eye's own half width)
+			about the forward axis; on a symmetric frustum they are 0 and
+			the picture is unchanged */
+			if (halo_stereo_current_layer() == 0 || halo_stereo_current_layer() == 1)
+			{
+				real offset_x = global_window_parameters.frustum.projection_matrix[2][0];
+				real offset_y = global_window_parameters.frustum.projection_matrix[2][1];
+
+				for (layer = 0; layer < screen->layer_count; layer++)
+				{
+					texture_transforms[layer][3] += texture_transforms[layer][0] * offset_x +
+						texture_transforms[layer][1] * offset_y;
+					texture_transforms[layer][7] += texture_transforms[layer][4] * offset_x +
+						texture_transforms[layer][5] * offset_y;
+				}
+			}
 			IDirect3DDevice8_SetVertexShaderConstant(
 				global_d3d_device,
 				-81,

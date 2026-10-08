@@ -136,6 +136,7 @@ enum
 	_rasterizer_geometry_first_person_bit = 7,
 	RASTERIZER_STENCIL_MODE_WRITE = 1,
 	RASTERIZER_STENCIL_MODE_REJECT = 2,
+	RASTERIZER_STENCIL_MODE_REJECT_AND_MARK = 6, /* port: rasterizer_xbox.c */
 	_render_model_effect_type_none = 0,
 	_render_model_effect_type_active_camouflage,
 	_render_model_effect_type_modifier,
@@ -617,6 +618,12 @@ void _rasterizer_model_end(
 			rasterizer_set_stencil_mode(RASTERIZER_STENCIL_MODE_REJECT);
 			rasterizer_set_frustum_z(0.0f, 0.0f);
 		}
+		/* port: the first-person body's mark ends with its model, so the
+		transparents and decals after it see the weapon's REJECT */
+		else if (!local_do_not_change_z_stencil_states && halo_first_person_body_depth_clamp())
+		{
+			rasterizer_set_stencil_mode(RASTERIZER_STENCIL_MODE_REJECT);
+		}
 		local_parameters = NULL;
 	}
 
@@ -646,6 +653,14 @@ void _rasterizer_model_begin(
 			rasterizer_set_frustum_z(
 				rasterizer_globals.first_person_weapon_near_clip_distance,
 				rasterizer_globals.first_person_weapon_far_clip_distance);
+		}
+		/* port: head-tracked stereo's first-person body (both its passes)
+		draws where the weapon didn't, as under REJECT, and marks stencil
+		value 4, so the presenter's HUD depth skips the body as it skips the
+		weapon's value 1 */
+		else if (!do_not_change_z_stencil_states && halo_first_person_body_depth_clamp())
+		{
+			rasterizer_set_stencil_mode(RASTERIZER_STENCIL_MODE_REJECT_AND_MARK);
 		}
 
 		local_parameters = parameters;
@@ -1592,6 +1607,60 @@ void rasterizer_model_draw_environment_shader(
 	return;
 }
 
+/* port: head-tracked stereo's first-person body, its second pass
+(halo_first_person_body_fill, render_objects.c): its geometry with the cull
+reversed, so only the inside faces seen through the cut neck draw, in a
+flat dark color, at LESS so the outside faces the first pass drew stay in
+front, even where both are clamped to the nearest depth
+(halo_first_person_body_depth_clamp). The pixel shader is a local one, so the next model's draw sets
+its own whole again */
+#define FIRST_PERSON_BODY_FILL_COLOR 0xFF0D0D0D /* RGB 0.05 */
+static void rasterizer_model_draw_first_person_body_fill(
+	struct triangle_buffer const *triangle_buffer,
+	long dynamic_triangle_buffer_index,
+	long triangle_count,
+	struct vertex_buffer const *vertex_buffer,
+	long dynamic_vertex_buffer_index)
+{
+	struct pixel_shader_definition fill_pixel_shader;
+
+	rasterizer_set_vertex_shader_permutation(
+		_rasterizer_vertex_shader_model,
+		vertex_buffer ?
+			vertex_buffer->type :
+			rasterizer_dynamic_vertices_get_type(dynamic_vertex_buffer_index),
+		_model_vertex_shader_permutation_reflection);
+	csmemset(&fill_pixel_shader, 0, sizeof(fill_pixel_shader));
+	fill_pixel_shader.combiner_count = 1;
+	fill_pixel_shader.final_combiner_inputs_abcd = PS_COMBINERINPUTS(
+		PS_REGISTER_ZERO,
+		PS_REGISTER_ZERO,
+		PS_REGISTER_ZERO,
+		PS_REGISTER_C0);
+	fill_pixel_shader.final_combiner_constant_0 = FIRST_PERSON_BODY_FILL_COLOR;
+	rasterizer_set_pixel_shader(&fill_pixel_shader);
+	local_pixel_shader_dirty_flag = TRUE;
+	IDirect3DDevice8_SetRenderState(global_d3d_device, D3DRS_ZENABLE, TRUE);
+	IDirect3DDevice8_SetRenderState(global_d3d_device, D3DRS_ZWRITEENABLE, TRUE);
+	IDirect3DDevice8_SetRenderState(global_d3d_device, D3DRS_ZFUNC, D3DCMP_LESS);
+	IDirect3DDevice8_SetRenderState(global_d3d_device, D3DRS_ZBIAS, 0);
+	IDirect3DDevice8_SetRenderState(global_d3d_device, D3DRS_CULLMODE, D3DCULL_CW);
+	IDirect3DDevice8_SetRenderState(
+		global_d3d_device,
+		D3DRS_COLORWRITEENABLE,
+		D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE);
+	IDirect3DDevice8_SetRenderState(global_d3d_device, D3DRS_ALPHABLENDENABLE, FALSE);
+	IDirect3DDevice8_SetRenderState(global_d3d_device, D3DRS_ALPHATESTENABLE, FALSE);
+	rasterizer_draw(
+		triangle_buffer,
+		dynamic_triangle_buffer_index,
+		0,
+		triangle_count,
+		vertex_buffer,
+		dynamic_vertex_buffer_index);
+	return;
+}
+
 void _rasterizer_model_draw(
 	struct shader *shader,
 	short shader_permutation_index,
@@ -1640,6 +1709,22 @@ void _rasterizer_model_draw(
 			"c:\\halo\\SOURCE\\rasterizer\\xbox\\rasterizer_xbox_models.c",
 			676,
 			shader);
+
+		/* port: the first-person body's inside faces, in place of the
+		shader's passes (none under active camouflage) */
+		if (halo_first_person_body_fill())
+		{
+			if (local_model_effect_type == _render_model_effect_type_none)
+			{
+				rasterizer_model_draw_first_person_body_fill(
+					triangle_buffer,
+					dynamic_triangle_buffer_index,
+					triangle_count,
+					vertex_buffer,
+					dynamic_vertex_buffer_index);
+			}
+			return;
+		}
 
 		if (local_parameters->effect.modifier_shader)
 		{

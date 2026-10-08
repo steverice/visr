@@ -118,6 +118,34 @@ def test_bmp_difference_different_sizes_counts_every_pixel():
     assert mac_run.bmp_difference(a, b) == (2, 255, None)
 
 
+def test_bmp_difference_region_counts_only_its_pixels():
+    # 2x2, top down: the top-left pixel differs, the bottom-right one more
+    a = _bmp(2, 2, bytes(16))
+    b = _bmp(2, 2, b"\x05\x00\x00\xff" + bytes(8) + b"\x09\x00\x00\xff")
+    assert mac_run.bmp_difference(a, b) == (2, 9, (1, 1))
+    assert mac_run.bmp_difference(a, b, region=(0.0, 0.0, 0.5, 0.5)) == (1, 5, (0, 0))
+    assert mac_run.bmp_difference(a, b, region=(0.5, 0.0, 1.0, 0.5)) == (0, 0, None)
+    assert mac_run.bmp_pixels(a, (0.0, 0.0, 0.5, 1.0)) == 2
+
+
+def test_parse_region_accepts_fractions_and_rejects_the_rest():
+    assert mac_run.parse_region("0.34,0.34,0.66,0.66") == (0.34, 0.34, 0.66, 0.66)
+    for text in ("0.5,0.5,0.4,0.6", "0,0,1", "a,b,c,d", "0,0,1.5,1"):
+        try:
+            mac_run.parse_region(text)
+        except Exception as error:
+            assert "X0,Y0,X1,Y1" in str(error)
+        else:
+            raise AssertionError(text)
+
+
+def test_compare_region_ignores_differences_outside_it(tmp_path):
+    a = _result(tmp_path / "a", {}, {"frame00300.bmp": _bmp(2, 1, bytes(8))}, "")
+    b = _result(tmp_path / "b", {}, {"frame00300.bmp": _bmp(2, 1, bytes(4) + b"\x30\x00\x00\xff")}, "")
+    assert any("1 pixels differ" in p for p in mac_run.compare(a, b))
+    assert not any("differ" in p for p in mac_run.compare(a, b, region=(0.0, 0.0, 0.5, 1.0)))
+
+
 def test_stats_lines_strip_prefix_and_frame_number():
     log = "halo-linux: frame 60: 812 draws, 3 immediate, 4 GL calls\nother\nhalo-linux: frame 120: 800 draws, 3 immediate, 4 GL calls\n"
     assert mac_run.stats_lines(log) == ["812 draws, 3 immediate, 4 GL calls", "800 draws, 3 immediate, 4 GL calls"]
@@ -209,6 +237,18 @@ def test_reset_settings_turn_off_the_fixed_timestep(tmp_path):
     """a run that doesn't ask for the virtual clock must get the real one"""
     settings = mac_run.reset_settings(tmp_path, screenshot_every=0, dump_shaders=False, replay=False)
     assert settings["debug.fixed_timestep"] == "false"
+
+
+def test_reset_settings_turn_off_the_texture_override(tmp_path):
+    """a run that doesn't --set an override folder must draw the game's own textures"""
+    settings = mac_run.reset_settings(tmp_path, screenshot_every=0, dump_shaders=False, replay=False)
+    assert settings["debug.texture_override_directory"] == '""'
+
+
+def test_reset_settings_turn_the_upscaled_textures_back_on(tmp_path):
+    """a run that turned upscaled textures off must not leak into the next"""
+    settings = mac_run.reset_settings(tmp_path, screenshot_every=0, dump_shaders=False, replay=False)
+    assert settings["display.upscaled_textures"] == "true"
 
 
 def test_launch_script_fails_when_the_ipad_destination_never_appears():
@@ -522,7 +562,8 @@ def test_prepare_rewrite_drops_settings_an_earlier_run_left(tmp_path):
                               set=["display.renderer=\"metal\""], init=[])
     mac_run.prepare(args, tmp_path, rewrite=True)
     text = (tmp_path / "config.toml").read_text()
-    assert "network_test" not in text
+    # DEFAULTS resets debug.network_test itself, to "": the earlier run's value is gone either way
+    assert "bloodgulch" not in text
     assert "exit_after = 5.0" in text and 'renderer = "metal"' in text
 
 

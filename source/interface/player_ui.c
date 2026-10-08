@@ -448,10 +448,31 @@ boolean player_ui_edit_profile_is_dirty(
 	return result;
 }
 
+/* port_config.c's */
+const char *config_string(const char *name);
+void platform_log(char const *format, ...);
+
 boolean player0_look_pitch_is_inverted(
 	void)
 {
-	return player_ui_globals.local_players[0].profile.controller_settings.invert_look;
+	static short logged_answer = NONE;
+	boolean profile_inverted = player_ui_globals.local_players[0].profile.controller_settings.invert_look;
+	boolean result = profile_inverted;
+	/* port: on foot in HEAD mode the head pitches the look, so a10's inversion test (taken on foot) means nothing; answering "inverted" makes tutorial_setup skip it without saving the profile. Seats that keep the stick's pitch (Task 7d) still use the profile's own setting, which this doesn't change */
+	const char *stereo = config_string("display.stereo");
+
+	if (stereo && (!strcmp(stereo, "head") || !strcmp(stereo, "side_by_side")))
+	{
+		result = TRUE;
+	}
+	if (logged_answer != (short)result)
+	{
+		logged_answer = (short)result;
+		platform_log("player0_look_pitch_is_inverted: display.stereo %s, profile invert_look %d, answering %d",
+			stereo ? stereo : "(none)", (int)profile_inverted, (int)result);
+	}
+
+	return result;
 }
 
 boolean player0_joystick_set_is_normal(
@@ -1191,6 +1212,7 @@ void player0_look_invert_pitch(
 	wchar_t const *message;
 
 	player_ui_globals.local_players[0].profile.controller_settings.invert_look = invert;
+	platform_log("player0_look_invert_pitch: invert_look set to %d", (int)invert);
 	if (player_ui_globals.local_players[0].active_profile_index != NONE)
 	{
 		string_list_index = tag_loaded(

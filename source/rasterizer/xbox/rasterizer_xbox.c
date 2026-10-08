@@ -567,6 +567,11 @@ enum
 	RASTERIZER_STENCIL_MODE_ACCEPT,
 	RASTERIZER_STENCIL_MODE_WRITE_ALPHA_TESTED_DECAL,
 	RASTERIZER_STENCIL_MODE_REJECT_ALPHA_TESTED_DECAL,
+	/* port: head-tracked stereo's first-person body: rejected where the
+	weapon drew (value 1), as REJECT, and marks value 4 where it draws, so
+	the presenter's HUD depth skips it (host_stereo.m). Appended: the other
+	rasterizer files hard-code the values before it */
+	RASTERIZER_STENCIL_MODE_REJECT_AND_MARK,
 	NUMBER_OF_RASTERIZER_STENCIL_MODES
 };
 
@@ -2759,6 +2764,34 @@ void rasterizer_set_stencil_mode(
 				0);
 			break;
 
+		/* port: the first-person body's mark (the decal write's pattern) */
+		case RASTERIZER_STENCIL_MODE_REJECT_AND_MARK:
+			SetRenderStateSmart(
+				D3DRS_STENCILENABLE,
+				TRUE);
+			SetRenderStateSmart(
+				D3DRS_STENCILFAIL,
+				D3DSTENCILOP_KEEP);
+			SetRenderStateSmart(
+				D3DRS_STENCILZFAIL,
+				D3DSTENCILOP_KEEP);
+			SetRenderStateSmart(
+				D3DRS_STENCILPASS,
+				D3DSTENCILOP_REPLACE);
+			SetRenderStateSmart(
+				D3DRS_STENCILFUNC,
+				D3DCMP_EQUAL);
+			SetRenderStateSmart(
+				D3DRS_STENCILREF,
+				4);
+			SetRenderStateSmart(
+				D3DRS_STENCILMASK,
+				1);
+			SetRenderStateSmart(
+				D3DRS_STENCILWRITEMASK,
+				4);
+			break;
+
 		default:
 			display_assert(
 				"### ERROR unsupported stencil mode",
@@ -2770,6 +2803,82 @@ void rasterizer_set_stencil_mode(
 		}
 		rasterizer_state_cache.stencil_mode = mode;
 	}
+	return;
+}
+
+/* port: the first-person weapon's own eye in a SCREEN gameplay eye
+(halo_stereo_first_person_eye): the window's view and the projection's x
+and y columns as the window began, while the weapon's are in place */
+static real_matrix4x3 first_person_saved_world_to_view;
+static real first_person_saved_projection_columns[4][2];
+static boolean first_person_eye_applied;
+
+/* port: the weapon's eye in place of the window's for the weapon's draws:
+the window's camera (this eye's) moved by the difference between the
+weapon's eye and this one, with the weapon eye's bounds (tangents over the
+center camera's, as render_player_frame_stereo divides them). Its view and
+its projection's x and y columns go into the window's frustum; the z
+column is the weapon's depth range, which render_camera_hack_frustum_z
+sets next */
+static void rasterizer_first_person_eye(
+	struct halo_stereo_eye const *weapon_eye)
+{
+	struct halo_stereo_eye const *eye = &halo_stereo_frame()->eyes[halo_stereo_current_layer()];
+	struct render_camera camera = global_window_parameters.camera;
+	struct render_frustum frustum;
+	real_rectangle2d bounds;
+	real_vector3d right;
+	real_vector3d up;
+	real right_offset = weapon_eye->offset[0] - eye->offset[0];
+	real up_offset = weapon_eye->offset[1] - eye->offset[1];
+	real aspect = (real)(camera.viewport_bounds.x1 - camera.viewport_bounds.x0) /
+		(real)(camera.viewport_bounds.y1 - camera.viewport_bounds.y0);
+	real field_of_view_tangent = tangent(camera.vertical_field_of_view * 0.5f);
+	short row;
+
+	cross_product3d(&camera.forward, &camera.up, &right);
+	normalize3d(&right);
+	cross_product3d(&right, &camera.forward, &up);
+	normalize3d(&up);
+	camera.position.x += right.i * right_offset + up.i * up_offset;
+	camera.position.y += right.j * right_offset + up.j * up_offset;
+	camera.position.z += right.k * right_offset + up.k * up_offset;
+	bounds.x0 = -weapon_eye->left / (aspect * field_of_view_tangent);
+	bounds.x1 = weapon_eye->right / (aspect * field_of_view_tangent);
+	bounds.y0 = -weapon_eye->down / field_of_view_tangent;
+	bounds.y1 = weapon_eye->up / field_of_view_tangent;
+	render_camera_build_frustum(&camera, &bounds, &frustum, TRUE);
+	global_window_parameters.frustum.world_to_view = frustum.world_to_view;
+	for (row = 0; row < 4; row++)
+	{
+		global_window_parameters.frustum.projection_matrix[row][0] = frustum.projection_matrix[row][0];
+		global_window_parameters.frustum.projection_matrix[row][1] = frustum.projection_matrix[row][1];
+	}
+	first_person_eye_applied = TRUE;
+	return;
+}
+
+/* port: in HEAD mode's full view the first-person weapon's draws move down
+and back (halo_stereo_weapon_offset): the window's view as it began, its
+camera moved up by down and forward by back, the projection unchanged. The
+headset's taller view shows the arms' cut edge, which the Xbox's kept below
+the frame */
+static void rasterizer_first_person_offset(
+	real down,
+	real back)
+{
+	real_vector3d camera_move;
+	real_vector3d view_move;
+
+	camera_move.i = global_window_parameters.camera.up.i * down + global_window_parameters.camera.forward.i * back;
+	camera_move.j = global_window_parameters.camera.up.j * down + global_window_parameters.camera.forward.j * back;
+	camera_move.k = global_window_parameters.camera.up.k * down + global_window_parameters.camera.forward.k * back;
+	global_window_parameters.frustum.world_to_view = first_person_saved_world_to_view;
+	matrix4x3_transform_vector(&first_person_saved_world_to_view, &camera_move, &view_move);
+	global_window_parameters.frustum.world_to_view.position.x -= view_move.i;
+	global_window_parameters.frustum.world_to_view.position.y -= view_move.j;
+	global_window_parameters.frustum.world_to_view.position.z -= view_move.k;
+	first_person_eye_applied = TRUE;
 	return;
 }
 
@@ -2785,6 +2894,46 @@ void rasterizer_set_frustum_z(
 		"c:\\halo\\SOURCE\\rasterizer\\xbox\\rasterizer_xbox.c",
 		2967,
 		global_d3d_device);
+	/* port: in a SCREEN mode eye (gameplay or the film) the first-person
+	weapon has its own eye, nearly flat with its nearest point on the
+	screen's surface (stereo.c); in HEAD mode's full view its draws may move
+	down and back instead (rasterizer_first_person_offset). The window's
+	save call keeps the view and projection, and the restore call puts them
+	back beside the depth range. Mono never changes them */
+	if (z_near == -1.0f && z_far == -1.0f)
+	{
+		first_person_saved_world_to_view = global_window_parameters.frustum.world_to_view;
+		for (row = 0; row < 4; row++)
+		{
+			first_person_saved_projection_columns[row][0] = global_window_parameters.frustum.projection_matrix[row][0];
+			first_person_saved_projection_columns[row][1] = global_window_parameters.frustum.projection_matrix[row][1];
+		}
+		first_person_eye_applied = FALSE;
+	}
+	else if (z_near == 0.0f && z_far == 0.0f)
+	{
+		if (first_person_eye_applied)
+		{
+			global_window_parameters.frustum.world_to_view = first_person_saved_world_to_view;
+			for (row = 0; row < 4; row++)
+			{
+				global_window_parameters.frustum.projection_matrix[row][0] = first_person_saved_projection_columns[row][0];
+				global_window_parameters.frustum.projection_matrix[row][1] = first_person_saved_projection_columns[row][1];
+			}
+			first_person_eye_applied = FALSE;
+		}
+	}
+	else if (z_near == rasterizer_globals.first_person_weapon_near_clip_distance)
+	{
+		struct halo_stereo_eye weapon_eye;
+		float down;
+		float back;
+
+		if (halo_stereo_first_person_eye(&weapon_eye))
+			rasterizer_first_person_eye(&weapon_eye);
+		else if (halo_stereo_weapon_offset(&down, &back))
+			rasterizer_first_person_offset(down, back);
+	}
 	render_camera_hack_frustum_z(
 		&global_window_parameters.frustum,
 		z_near,

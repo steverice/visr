@@ -34,10 +34,15 @@ but never returns to its run loop, which would otherwise drain them.
 #endif
 #include <math.h>
 #include <os/lock.h>
+#include <pthread.h>
 #include <stdatomic.h>
 #include <stddef.h>
 #include <stdlib.h>
+#include <ctype.h>
 #include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/resource.h>
 
 /* the platform layer's (host_gpu.c) */
 void platform_log(const char *format, ...) __attribute__((format(printf, 1, 2)));
@@ -86,6 +91,10 @@ Handles index tables of these; 0 is none. */
 	NSString *source;
 	id<MTLFunction> exact[16];
 	uint16_t exact_tried;
+	/* a vertex shader's library, and its function specialized for each set
+	of attribute kinds it is drawn with (vertex_function) */
+	id<MTLLibrary> library;
+	NSMutableDictionary<NSData *, id<MTLFunction>> *specialized;
 }
 @end
 @implementation MetalShader
@@ -161,16 +170,28 @@ static id<MTLCommandQueue> queue;
 static CAMetalLayer *layer;
 /* reversed-Z (see depth_compare_function) */
 static float reversed_depth(float depth);
+@class MetalTexture;
+/* foveated eyes' targets (the foveation section) */
+static BOOL foveation_sizes(MetalTexture *record, MTLSize *screen, MTLSize *physical);
+static id<MTLTexture> foveation_resolve(MetalTexture *record, NSUInteger width, NSUInteger height);
+#include "host_config.h"
+#include "host_stereo.h"
 #if TARGET_OS_VISION
 #include "host_theater.h"
+#include "host_stereo_hud.h"
 /* display.immersive: frames go to the theater screen while its space is open */
 static BOOL theater_wanted;
+/* the cut's fade through black (gpu_metal_present_stereo) */
+static float stereo_cut_brightness(int view, int covered, int requested);
 #endif
 static MetalTable *textures, *buffers, *shaders;
 static int metal_debug;
 /* display.compressed_textures, where the GPU has BC formats: DXT textures
 upload as they are, not decoded to BGRA8 (gpu_capabilities.s3tc) */
 static BOOL compressed_textures;
+/* debug.metal_specialize = false: vertex_function returns the unspecialized
+function, its fallback when specializing fails */
+static BOOL specialize_off;
 /* debug.fixed_timestep: visibility answers wait for the GPU (visibility_result) */
 static BOOL visibility_wait;
 
@@ -180,6 +201,10 @@ static id<MTLRenderCommandEncoder> encoder;
 /* what encoder holds, to skip calls that set it again (metal_state_cache.h;
 debug.metal_state_cache) */
 static struct metal_state_cache state_cache;
+/* the encoder's depth clip mode: 1 after setDepthClipMode:MTLDepthClipModeClamp
+(only the first-person body's draws, gpu_raster_state.depth_clamp); outside
+the state cache, so a frame with no such draw makes no call and counts none */
+static int encoder_depth_clamp;
 _Static_assert(GPU_STAGE_COUNT == 4 && GPU_ATTRIBUTE_COUNT == 16, "metal_state_cache.h's slots");
 static gpu_texture pass_color, pass_depth;
 static unsigned long pass_commands;
@@ -222,6 +247,20 @@ static void gpu_busy_add(CFTimeInterval start, CFTimeInterval end)
 		atomic_fetch_add(&pacing_gpu_nanoseconds, (uint64_t)(counted * 1e9));
 }
 static CFTimeInterval pacing_waited;
+
+#if TARGET_OS_VISION
+/* the presenters' command buffers (host_stereo.m, host_theater.m): their GPU
+time counts with the game's, so stereo's frame-time line has the whole
+frame's */
+void gpu_metal_count_gpu_time(id<MTLCommandBuffer> commands)
+{
+	[commands addCompletedHandler:^(id<MTLCommandBuffer> completed)
+	{
+		if (completed.GPUEndTime > completed.GPUStartTime)
+			gpu_busy_add(completed.GPUStartTime, completed.GPUEndTime);
+	}];
+}
+#endif
 
 /* ---------- visibility tests: state (the functions are after the draws)
 
@@ -425,6 +464,7 @@ static void pass_finish(BOOL frame_end)
 	[encoder endEncoding];
 	encoder = nil;
 	metal_state_reset(&state_cache);
+	encoder_depth_clamp = 0;
 	visibility.entry_open = 0;
 	pass_color = pass_depth = 0;
 	pass_commands = 0;
@@ -725,12 +765,80 @@ static uint32_t gpu_metal_texture_read(gpu_texture texture, void *pixels, uint32
 		id<MTLBlitCommandEncoder> blit;
 
 		if (!record || !record->texture || description->type != GPU_TEXTURE_2D ||
-			description->format != GPU_FORMAT_BGRA8)
+			(description->format != GPU_FORMAT_BGRA8 && description->format != GPU_FORMAT_DEPTH_STENCIL) ||
+			(description->format == GPU_FORMAT_DEPTH_STENCIL && description->usage != GPU_USAGE_RENDER_TARGET))
 			return 0;
 		width = description->width;
 		height = description->height;
+		/* a foveated eye's target: resolved to its screen size first, so the
+		picture has the view's shape and each pixel weighs its screen area
+		(the depth's empty share), then read as an ordinary one */
+		{
+			MTLSize screen, physical;
+			id<MTLTexture> resolved;
+
+			if (foveation_sizes(record, &screen, &physical))
+			{
+				width = screen.width;
+				height = screen.height;
+				if (size < width * height * 4)
+					return 0;
+				resolved = foveation_resolve(record, width, height);
+				if (!resolved)
+					return 0;
+				staging = [device newBufferWithLength:width * height * 4 options:MTLResourceStorageModeShared];
+				blit = [command_buffer() blitCommandEncoder];
+				[blit copyFromTexture:resolved sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
+					sourceSize:MTLSizeMake(width, height, 1) toBuffer:staging destinationOffset:0
+					destinationBytesPerRow:width * 4 destinationBytesPerImage:width * height * 4];
+				[blit endEncoding];
+				{
+					id<MTLCommandBuffer> waited = commands;
+
+					commit(NO);
+					[waited waitUntilCompleted];
+				}
+				memcpy(pixels, staging.contents, width * height * 4);
+				if (description->format == GPU_FORMAT_DEPTH_STENCIL)
+				{
+					float *depth = pixels;
+					unsigned long index;
+
+					for (index = 0; index < width * height; index++)
+						depth[index] = reversed_depth(depth[index]);
+				}
+				return 1;
+			}
+		}
 		if (size < width * height * 4)
 			return 0;
+		/* a depth target's depth plane, which holds the reversed depth
+		(reversed_depth): read back as the game's */
+		if (description->format == GPU_FORMAT_DEPTH_STENCIL)
+		{
+			float *depth = pixels;
+			unsigned long index;
+
+			staging = [device newBufferWithLength:width * height * 4 options:MTLResourceStorageModeShared];
+			pass_end();
+			blit = [command_buffer() blitCommandEncoder];
+			[blit copyFromTexture:record->texture sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
+				sourceSize:MTLSizeMake(width, height, 1) toBuffer:staging destinationOffset:0
+				destinationBytesPerRow:width * 4 destinationBytesPerImage:width * height * 4
+				options:MTLBlitOptionDepthFromDepthStencil];
+			[blit endEncoding];
+			use_texture(record);
+			{
+				id<MTLCommandBuffer> waited = commands;
+
+				commit(NO);
+				[waited waitUntilCompleted];
+			}
+			memcpy(pixels, staging.contents, width * height * 4);
+			for (index = 0; index < width * height; index++)
+				depth[index] = reversed_depth(depth[index]);
+			return 1;
+		}
 		/* BGRA8Unorm is already the BGRA byte order gpu.h reads back, and row
 		0 is the top */
 		if (description->usage != GPU_USAGE_RENDER_TARGET)
@@ -888,37 +996,117 @@ static uint32_t gpu_metal_stream(uint32_t kind, const void *data, uint32_t size,
 /* vertex shaders' and pixel shaders' (gpu_metal_initialize) */
 static MTLCompileOptions *compile_options, *pixel_compile_options;
 
+/* debug.gl_debug: the shader work done while drawing, which a frame waits
+for: shader libraries compiled, vertex functions specialized and pipelines
+made (each the newLibrary, newFunction or newRenderPipelineState call
+alone), with their time and the longest one; logged and reset at a frame
+with any (gpu_metal_present) */
+enum { COMPILE_LIBRARY, COMPILE_SPECIALIZE, COMPILE_PIPELINE, COMPILE_KINDS };
+static struct
+{
+	unsigned long count[COMPILE_KINDS];
+	double seconds[COMPILE_KINDS], longest[COMPILE_KINDS];
+	unsigned long total_count[COMPILE_KINDS];
+	double total_seconds[COMPILE_KINDS];
+	/* made while drawing, outside warming (the map's list missed them) */
+	unsigned long during_play[COMPILE_KINDS];
+} compile_stats;
+
+static void compile_count(int kind, CFTimeInterval started)
+{
+	double seconds = CACurrentMediaTime() - started;
+
+	compile_stats.count[kind]++;
+	compile_stats.seconds[kind] += seconds;
+	if (seconds > compile_stats.longest[kind])
+		compile_stats.longest[kind] = seconds;
+	compile_stats.total_count[kind]++;
+	compile_stats.total_seconds[kind] += seconds;
+}
+
+/* compiling at map load (gpu_warm_begin to gpu_warm_end): shaders compile
+in parallel, joining warm_group until they are done, and the pipelines the
+map's list names wait in warm_list for warm_end, which builds them in
+parallel too */
+static BOOL warming;
+static dispatch_group_t warm_group;
+static NSMutableData *warm_list;
+
+/* a shader's library made into its record: its function (a vertex shader's
+unspecialized one) and what later specializations or variants compile from;
+NO, logged, if it can't be */
+static BOOL shader_finish(MetalShader *record, uint32_t stage, NSString *text, id<MTLLibrary> library, NSError *error)
+{
+	/* debug.gl_debug: the warnings of a shader that compiled */
+	if (library && error && metal_debug)
+		platform_log("the %s shader compiled with warnings:\n%s", stage == GPU_SHADER_VERTEX ? "vertex" : "pixel",
+			error.localizedDescription.UTF8String);
+	if (!library)
+	{
+		platform_log("cannot compile the %s shader:\n%s\n%s", stage == GPU_SHADER_VERTEX ? "vertex" : "pixel",
+			error.localizedDescription.UTF8String, text.UTF8String);
+		return NO;
+	}
+	/* a vertex shader's attribute kinds are function constants, which the
+	unspecialized function leaves undefined: its fetches read the kinds
+	from the attribute table (nv2a_msl.c) */
+	error = nil;
+	record->function = stage == GPU_SHADER_VERTEX ?
+		[library newFunctionWithName:@"vertex_main" constantValues:[MTLFunctionConstantValues new] error:&error] :
+		[library newFunctionWithName:@"fragment_main"];
+	if (!record->function)
+	{
+		platform_log("cannot make the %s shader's function: %s", stage == GPU_SHADER_VERTEX ? "vertex" : "pixel",
+			error ? error.localizedDescription.UTF8String : "no entry point");
+		return NO;
+	}
+	if (stage != GPU_SHADER_VERTEX)
+		record->source = text;
+	else
+		record->library = library;
+	return YES;
+}
+
 /* the translators' MSL (nv2a_msl.c); 0 if it doesn't compile, which the front
-end counts as a draw skipped for its program, as under GL */
+end counts as a draw skipped for its program, as under GL. While warming,
+the handle comes back at once and the shader compiles in the background; one
+that fails then has no function, and its draws are skipped as a pipeline
+that can't be made (draw_pipeline) */
 static gpu_shader gpu_metal_shader_create(uint32_t stage, const char *source)
 {
 	@autoreleasepool
 	{
 		NSError *error = nil;
 		NSString *text = @(source);
-		id<MTLLibrary> library = [device newLibraryWithSource:text
-			options:stage == GPU_SHADER_VERTEX ? compile_options : pixel_compile_options error:&error];
-		MetalShader *record;
+		MTLCompileOptions *options = stage == GPU_SHADER_VERTEX ? compile_options : pixel_compile_options;
+		MetalShader *record = [MetalShader new];
+		CFTimeInterval started;
+		id<MTLLibrary> library;
 
-		/* debug.gl_debug: the warnings of a shader that compiled */
-		if (library && error && metal_debug)
-			platform_log("the %s shader compiled with warnings:\n%s", stage == GPU_SHADER_VERTEX ? "vertex" : "pixel",
-				error.localizedDescription.UTF8String);
-		if (!library)
+		/* (each on a worker thread, compiled synchronously there: not with
+		newLibraryWithSource's completion handler, which runs on Metal's
+		compiler queue, where shader_finish's newFunctionWithName waits on
+		that same queue and libdispatch traps) */
+		if (warming)
 		{
-			platform_log("cannot compile the %s shader:\n%s\n%s", stage == GPU_SHADER_VERTEX ? "vertex" : "pixel",
-				error.localizedDescription.UTF8String, source);
-			return 0;
+			dispatch_group_async(warm_group, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^
+			{
+				@autoreleasepool
+				{
+					NSError *failure = nil;
+					id<MTLLibrary> compiled = [device newLibraryWithSource:text options:options error:&failure];
+
+					shader_finish(record, stage, text, compiled, failure);
+				}
+			});
+			return [shaders add:record];
 		}
-		record = [MetalShader new];
-		record->function = [library newFunctionWithName:stage == GPU_SHADER_VERTEX ? @"vertex_main" : @"fragment_main"];
-		if (!record->function)
-		{
-			platform_log("the %s shader has no entry point", stage == GPU_SHADER_VERTEX ? "vertex" : "pixel");
+		started = CACurrentMediaTime();
+		library = [device newLibraryWithSource:text options:options error:&error];
+		compile_count(COMPILE_LIBRARY, started);
+		compile_stats.during_play[COMPILE_LIBRARY]++;
+		if (!shader_finish(record, stage, text, library, error))
 			return 0;
-		}
-		if (stage != GPU_SHADER_VERTEX)
-			record->source = text;
 		return [shaders add:record];
 	}
 }
@@ -951,12 +1139,162 @@ static id<MTLFunction> pixel_function(MetalShader *pixel, unsigned exact)
 	return pixel->exact[exact];
 }
 
+/* ---------- foveation (Task 10)
+
+A foveated eye's targets (gpu_texture_description.foveated_eye) are
+allocated at the Compositor's drawable size per view and drawn through the
+eye's rate map (host_stereo_rate_map), which fills their top left: every
+pass that writes one binds the map, and its viewports and scissors are in
+the map's screen coordinates, the eye's logical size (target_size). What
+reads them maps each screen point to where the map put it: the presenter
+(host_stereo.m), the game's shaders (nv2a_msl.c's foveated sampler) and
+foveation_resolve here, which draws a picture at its screen shape for the
+film's paths, the screenshots and the depth reads. */
+
+/* debug.rate_map_test (the Mac's runner): the mono screen's targets, which
+the front end marks as eye 1's, render through a synthetic map the size of
+the screen, made here (test_map) since there's no Compositor: full rate in
+the middle third each way, half outside it, except the top band at three
+quarters, so a flip shows as the dense band at the bottom. Each map with its
+parameter data, by screen size */
+static BOOL rate_map_test;
+static NSMutableDictionary<NSString *, NSArray *> *test_maps;
+
+static NSArray *test_map(NSUInteger width, NSUInteger height)
+{
+	NSString *key = [NSString stringWithFormat:@"%lux%lu", (unsigned long)width, (unsigned long)height];
+	NSArray *entry = test_maps[key];
+
+	if (!entry)
+	{
+		/* The samples are points from edge to edge, the rate between them
+		interpolated: 31 a side put samples 10 to 20 on the middle third's
+		edges and inside it, so it is all at 1.0. The sides' rates are
+		nudged until the middle third's offset from the screen is even each
+		way: the GPU takes derivatives over 2x2 quads in physical pixels, and
+		an odd offset pairs other rows or columns than the reference does,
+		which changes the texture level of detail a little on detailed
+		surfaces (a10's ship, by up to 22 levels) though the remap is exact */
+		enum { SAMPLES = 31 };
+		static const float sides[] = { 0.5f, 0.55f, 0.45f, 0.6f, 0.4f };
+		static const float tops[] = { 0.75f, 0.7f, 0.8f, 0.65f, 0.85f };
+		float horizontal[SAMPLES], vertical[SAMPLES];
+		id<MTLRasterizationRateMap> map = nil;
+		id<MTLBuffer> parameters;
+		MTLSize physical;
+		MTLCoordinate2D middle = { 0.0f, 0.0f };
+		float side = sides[0], top = tops[0];
+		int index, tried;
+
+		if (![device supportsRasterizationRateMapWithLayerCount:1])
+		{
+			platform_log("Metal: debug.rate_map_test: this GPU has no rate maps");
+			rate_map_test = NO;
+			return nil;
+		}
+		for (tried = 0; tried < 25; tried++)
+		{
+			MTLRasterizationRateLayerDescriptor *layer;
+			float screen_x = (float)(width / 2) + 0.5f, screen_y = (float)(height / 2) + 0.5f;
+
+			side = sides[tried % 5];
+			top = tops[tried / 5];
+			for (index = 0; index < SAMPLES; index++)
+			{
+				BOOL inside = index >= 10 && index <= 20;
+
+				horizontal[index] = inside ? 1.0f : side;
+				vertical[index] = inside ? 1.0f : index < 10 ? top : 0.5f;
+			}
+			layer = [[MTLRasterizationRateLayerDescriptor alloc] initWithSampleCount:MTLSizeMake(SAMPLES, SAMPLES, 0)
+				horizontal:horizontal vertical:vertical];
+			map = [device newRasterizationRateMapWithDescriptor:[MTLRasterizationRateMapDescriptor
+				rasterizationRateMapDescriptorWithScreenSize:MTLSizeMake(width, height, 0) layer:layer]];
+			if (!map)
+				return nil;
+			middle = [map mapScreenToPhysicalCoordinates:MTLCoordinate2DMake(screen_x, screen_y) forLayer:0];
+			middle.x = screen_x - middle.x;
+			middle.y = screen_y - middle.y;
+			if (fmodf(middle.x, 2.0f) == 0.0f && fmodf(middle.y, 2.0f) == 0.0f)
+				break;
+		}
+		parameters = [device newBufferWithLength:map.parameterBufferSizeAndAlign.size options:MTLResourceStorageModeShared];
+		[map copyParameterDataToBuffer:parameters offset:0];
+		physical = [map physicalSizeForLayer:0];
+		platform_log("Metal: debug.rate_map_test: a %lux%lu screen renders through a synthetic map into %lux%lu "
+			"(granularity %lux%lu; the sides at %.2f, the top at %.2f, the bottom at 0.50): the middle third is "
+			"1:1, %.2f, %.2f pixels from the screen's", (unsigned long)width, (unsigned long)height,
+			(unsigned long)physical.width, (unsigned long)physical.height, (unsigned long)map.physicalGranularity.width,
+			(unsigned long)map.physicalGranularity.height, side, top, middle.x, middle.y);
+		entry = @[ map, parameters ];
+		test_maps[key] = entry;
+	}
+	return entry;
+}
+
+/* the eye's map for a foveated target this frame, or nil */
+static id<MTLRasterizationRateMap> foveation_map(MetalTexture *record)
+{
+	id<MTLRasterizationRateMap> map;
+
+	if (!record || !record->description.foveated_eye)
+		return nil;
+	map = host_stereo_rate_map(record->description.foveated_eye - 1);
+	if (!map && rate_map_test)
+		map = test_map(record->description.width, record->description.height).firstObject;
+	return map;
+}
+
+/* the map's parameter data, for a shader's rasterization_rate_map_decoder */
+static id<MTLBuffer> foveation_parameters(MetalTexture *record)
+{
+	id<MTLBuffer> parameters;
+
+	if (!record || !record->description.foveated_eye)
+		return nil;
+	parameters = host_stereo_rate_map_parameters(record->description.foveated_eye - 1);
+	if (!parameters && rate_map_test)
+		parameters = test_map(record->description.width, record->description.height).lastObject;
+	return parameters;
+}
+
+/* a foveated target's screen size (the eye's logical size, which the game's
+viewports cover; a test map's, the target's) and its map's physical size;
+NO if it isn't foveated this frame */
+static BOOL foveation_sizes(MetalTexture *record, MTLSize *screen, MTLSize *physical)
+{
+	id<MTLRasterizationRateMap> map = foveation_map(record);
+	int screen_width, screen_height, allocated_width, allocated_height;
+
+	if (!map)
+		return NO;
+	if (host_stereo_rate_map(record->description.foveated_eye - 1))
+	{
+		if (!host_stereo_foveated_size(&screen_width, &screen_height, &allocated_width, &allocated_height))
+			return NO;
+		*screen = MTLSizeMake((NSUInteger)screen_width, (NSUInteger)screen_height, 1);
+	}
+	else
+		*screen = MTLSizeMake(record->description.width, record->description.height, 1);
+	*physical = [map physicalSizeForLayer:0];
+	return YES;
+}
+
 /* ---------- render passes */
 
+/* the targets' size in the units of their viewports and scissors: a
+foveated target's screen size, else its texture's */
 static void target_size(gpu_texture color, gpu_texture depth, unsigned long *width, unsigned long *height)
 {
 	MetalTexture *record = texture_record(color ? color : depth);
+	MTLSize screen, physical;
 
+	if (foveation_sizes(record, &screen, &physical))
+	{
+		*width = screen.width;
+		*height = screen.height;
+		return;
+	}
 	*width = record && record->texture ? record->texture.width : 0;
 	*height = record && record->texture ? record->texture.height : 0;
 }
@@ -1030,6 +1368,16 @@ static BOOL pass_begin(gpu_texture color, gpu_texture depth, const struct gpu_cl
 	pass_end();
 	pass = [MTLRenderPassDescriptor renderPassDescriptor];
 	pass.visibilityResultBuffer = visibility_buffer;
+	/* a foveated eye's targets render through its map; both attachments are
+	the eye's then, at the same allocated size */
+	pass.rasterizationRateMap = foveation_map(color ? color_record : depth_record);
+	if (color && depth && foveation_map(color_record) != foveation_map(depth_record))
+	{
+		static int logged;
+
+		if (!logged++)
+			platform_log("Metal: a pass pairs targets %u and %u, of which only one is a foveated eye's", color, depth);
+	}
 	if (!color)
 	{
 		/* a depth-only pass: the game's pixel shaders still write a color
@@ -1082,6 +1430,7 @@ static BOOL pass_begin(gpu_texture color, gpu_texture depth, const struct gpu_cl
 	}
 	encoder = [command_buffer() renderCommandEncoderWithDescriptor:pass];
 	metal_state_reset(&state_cache);
+	encoder_depth_clamp = 0;
 	if (metal_debug)
 		encoder.label = [NSString stringWithFormat:@"targets %u/%u", color, depth];
 	pass_color = color;
@@ -1294,23 +1643,35 @@ struct metal_attribute_table
 	float constants[GPU_ATTRIBUTE_COUNT][4];
 };
 
-/* what a pipeline is made of besides the shaders' text */
+/* what a pipeline is made of besides the shaders' text. Every descriptor
+field draw_pipeline sets must be in it (a sample count for anti-aliasing,
+say): the caches return a pipeline for an equal key, and nothing checks the
+descriptor against the target it draws to. */
 struct pipeline_key
 {
 	gpu_shader vertex_shader, pixel_shader;
-	uint8_t blend, source, destination, operation, write_mask;
+	uint8_t blend, source, destination, operation, write_mask, alpha_source, alpha_destination;
 	/* the stages that rebuild their border colors (exact_borders) */
 	uint8_t exact_borders;
-	uint8_t pad[2];
 	uint32_t color_format, depth_format;
+	/* the vertex function's specialization (attribute_kinds) */
+	uint8_t attribute_kinds[GPU_ATTRIBUTE_COUNT];
 };
+
+/* debug.gl_debug's count of pipeline changes (gpu_metal_draw), logged every
+600 frames, and the last draw's shaders */
+static struct
+{
+	unsigned long changes, same_shaders;
+	gpu_shader vertex_shader, pixel_shader;
+} pipeline_changes;
 
 /* a direct-mapped cache in front of pipelines, depth_states and samplers:
 nearly every draw repeats a recent key, which then costs a hash and a
 compare of its bytes rather than an NSData and a dictionary lookup. The
 dictionaries keep every object for good, so the cache needn't retain them. */
 #define FRONT_CACHE_ENTRIES 256
-#define FRONT_CACHE_KEY 32
+#define FRONT_CACHE_KEY 48
 struct front_cache
 {
 	struct
@@ -1328,9 +1689,21 @@ static unsigned long front_cache_index(const void *key, size_t length)
 	uint32_t hash = 2166136261u;
 	size_t index;
 
-	for (index = 0; index < length; index++)
+	/* FNV-1a over 32-bit words (and any bytes after the last whole one) */
+	for (index = 0; index + 4 <= length; index += 4)
+	{
+		uint32_t word;
+
+		memcpy(&word, bytes + index, sizeof(word));
+		hash = (hash ^ word) * 16777619u;
+	}
+	for (; index < length; index++)
 		hash = (hash ^ bytes[index]) * 16777619u;
-	return (hash ^ (hash >> 16)) & (FRONT_CACHE_ENTRIES - 1);
+	/* the multiplies carry a difference only upward, so one in the last
+	word's top byte (attribute kind 15) reaches only bits 24-31: fold those
+	down into the 8 bits the index keeps */
+	hash ^= hash >> 16;
+	return (hash ^ (hash >> 8)) & (FRONT_CACHE_ENTRIES - 1);
 }
 
 /* the object cached for key, or nil */
@@ -1486,8 +1859,327 @@ static void check_uniform_layout(MTLRenderPipelineReflection *reflection)
 }
 
 /* the pipeline for a draw, or nil if it can't be made (cached either way) */
-static id<MTLRenderPipelineState> draw_pipeline(const struct gpu_draw *draw, MetalShader *vertex, MetalShader *pixel,
-	unsigned exact, MTLPixelFormat color, MTLPixelFormat depth)
+/* a draw's attributes, decided once (gpu_metal_draw) for both the pipeline
+(the vertex function's specialization) and the bindings (bind_attributes), so
+the two can't disagree: each streamed attribute's buffer record, nil for a
+constant (GPU_STREAM_NONE never arrives: the front end makes every unused
+attribute a constant; a stream with no buffer is one too), and its kind, as
+the vertex shaders' function constants take it (nv2a_msl.c): 0 for a
+constant, else its GPU_ATTRIBUTE_* format */
+struct draw_attributes
+{
+	__unsafe_unretained MetalBuffer *records[GPU_ATTRIBUTE_COUNT];
+	uint8_t kinds[GPU_ATTRIBUTE_COUNT];
+};
+
+static void draw_attributes_decide(const struct gpu_draw *draw, struct draw_attributes *attributes)
+{
+	int index;
+
+	for (index = 0; index < GPU_ATTRIBUTE_COUNT; index++)
+	{
+		const struct gpu_vertex_attribute *attribute = &draw->attributes[index];
+
+		attributes->records[index] = attribute->stream < GPU_STREAM_CONSTANT ?
+			buffer_record(draw->streams[attribute->stream].buffer) : nil;
+		attributes->kinds[index] = attributes->records[index] ? attribute->format : 0;
+	}
+}
+
+/* a vertex shader's function specialized for these attribute kinds, which
+folds its fetches' format switches away; made with the pipeline, so once
+for each pair. The unspecialized function if it can't be made (logged
+once): it reads the same kinds from the attribute table. */
+static id<MTLFunction> vertex_function(MetalShader *vertex, const uint8_t kinds[GPU_ATTRIBUTE_COUNT])
+{
+	NSData *name = [NSData dataWithBytes:kinds length:GPU_ATTRIBUTE_COUNT];
+	id<MTLFunction> function;
+
+	if (!vertex->library || specialize_off)
+		return vertex->function;
+	if (!vertex->specialized)
+		vertex->specialized = [NSMutableDictionary dictionary];
+	function = vertex->specialized[name];
+	if (!function)
+	{
+		MTLFunctionConstantValues *values = [MTLFunctionConstantValues new];
+		NSError *error = nil;
+		NSUInteger index;
+		CFTimeInterval started;
+
+		for (index = 0; index < GPU_ATTRIBUTE_COUNT; index++)
+		{
+			uint32_t kind = kinds[index];
+
+			[values setConstantValue:&kind type:MTLDataTypeUInt atIndex:index];
+		}
+		started = CACurrentMediaTime();
+		function = [vertex->library newFunctionWithName:@"vertex_main" constantValues:values error:&error];
+		compile_count(COMPILE_SPECIALIZE, started);
+		compile_stats.during_play[COMPILE_SPECIALIZE]++;
+		if (!function)
+		{
+			/* (once for each shader and set of kinds, which the dictionary
+			then keeps with the fallback) */
+			platform_log("Metal: cannot specialize vertex shader %p for its attributes, which it then reads per draw: %s",
+				(__bridge void *)vertex, error.localizedDescription.UTF8String);
+			function = vertex->function;
+		}
+		vertex->specialized[name] = function;
+	}
+	return function;
+}
+
+/* a pipeline's descriptor, its functions made first (vertex_function,
+pixel_function), which may compile */
+static MTLRenderPipelineDescriptor *pipeline_descriptor(const struct pipeline_key *key, MetalShader *vertex,
+	MetalShader *pixel)
+{
+	MTLRenderPipelineDescriptor *descriptor = [MTLRenderPipelineDescriptor new];
+	MTLRenderPipelineColorAttachmentDescriptor *attachment = descriptor.colorAttachments[0];
+
+	descriptor.vertexFunction = vertex_function(vertex, key->attribute_kinds);
+	descriptor.fragmentFunction = pixel_function(pixel, key->exact_borders) ?: pixel->function;
+	attachment.pixelFormat = (MTLPixelFormat)key->color_format;
+	attachment.writeMask = write_mask(key->write_mask);
+	if (key->blend)
+	{
+		attachment.blendingEnabled = YES;
+		attachment.sourceRGBBlendFactor = blend_factor(key->source);
+		attachment.sourceAlphaBlendFactor = blend_factor(key->alpha_source);
+		attachment.destinationRGBBlendFactor = blend_factor(key->destination);
+		attachment.destinationAlphaBlendFactor = blend_factor(key->alpha_destination);
+		attachment.rgbBlendOperation = attachment.alphaBlendOperation = blend_operation(key->operation);
+	}
+	descriptor.depthAttachmentPixelFormat = (MTLPixelFormat)key->depth_format;
+	descriptor.stencilAttachmentPixelFormat = (MTLPixelFormat)key->depth_format;
+	return descriptor;
+}
+
+/* the pipelines this device has compiled before, kept between launches in
+the app's caches folder: a pipeline found there is loaded rather than
+compiled, and one that isn't is compiled and added, then written out at the
+next warm_end (archive_save). The file's name holds the app's build, the
+GPU and the system's version, which an archive is only good for; any other
+file there is a stale one and is deleted, and one that can't be read is
+replaced by an empty archive. */
+static id<MTLBinaryArchive> archive;
+static NSURL *archive_url;
+static BOOL archive_dirty;
+/* the archive's reads (pipelines loaded from it, in parallel at warm_end)
+share this lock, and its writes (pipelines added, the file written) hold it
+alone: Metal's headers promise nothing about using one archive from several
+threads at once */
+static pthread_rwlock_t archive_lock = PTHREAD_RWLOCK_INITIALIZER;
+
+static void archive_open(void)
+{
+	NSFileManager *files = [NSFileManager defaultManager];
+	/* (the bundle's own folder: an app outside a sandbox, the Mac app, shares
+	its caches folder with every other) */
+	NSURL *folder = [[[files URLsForDirectory:NSCachesDirectory inDomains:NSUserDomainMask].firstObject
+		URLByAppendingPathComponent:[NSBundle mainBundle].bundleIdentifier ?: @"VISR" isDirectory:YES]
+		URLByAppendingPathComponent:@"metal-pipelines" isDirectory:YES];
+	NSString *build = [NSBundle mainBundle].infoDictionary[@"CFBundleVersion"] ?: @"0";
+	NSString *system = [NSProcessInfo processInfo].operatingSystemVersionString;
+	NSMutableString *name = [NSMutableString stringWithFormat:@"%@ %@ %@", build, device.name, system];
+	MTLBinaryArchiveDescriptor *descriptor = [MTLBinaryArchiveDescriptor new];
+	NSError *error = nil;
+	NSUInteger index;
+
+	/* a file name: letters, digits, dots and dashes */
+	for (index = 0; index < name.length; index++)
+	{
+		unichar c = [name characterAtIndex:index];
+
+		if (!(isalnum(c) || c == '.' || c == '-'))
+			[name replaceCharactersInRange:NSMakeRange(index, 1) withString:@"_"];
+	}
+	[files createDirectoryAtURL:folder withIntermediateDirectories:YES attributes:nil error:nil];
+	archive_url = [folder URLByAppendingPathComponent:[name stringByAppendingString:@".binarchive"]];
+	for (NSURL *old in [files contentsOfDirectoryAtURL:folder includingPropertiesForKeys:nil options:0 error:nil])
+	{
+		if (![old.lastPathComponent isEqualToString:archive_url.lastPathComponent])
+		{
+			platform_log("Metal: deleting a stale pipeline archive, %s", old.lastPathComponent.UTF8String);
+			[files removeItemAtURL:old error:nil];
+		}
+	}
+	if ([files fileExistsAtPath:archive_url.path])
+	{
+		descriptor.url = archive_url;
+		archive = [device newBinaryArchiveWithDescriptor:descriptor error:&error];
+		if (!archive)
+		{
+			platform_log("Metal: the pipeline archive can't be read (%s); starting a new one",
+				error.localizedDescription.UTF8String);
+			[files removeItemAtURL:archive_url error:nil];
+		}
+	}
+	if (!archive)
+	{
+		descriptor.url = nil;
+		archive = [device newBinaryArchiveWithDescriptor:descriptor error:&error];
+		if (!archive)
+			platform_log("Metal: no pipeline archive: %s", error.localizedDescription.UTF8String);
+	}
+	platform_log("Metal: pipeline archive %s", archive_url.lastPathComponent.UTF8String);
+}
+
+/* writes the archive out if pipelines were added since */
+static void archive_save(void)
+{
+	NSError *error = nil;
+	CFTimeInterval started = CACurrentMediaTime();
+
+	if (!archive || !archive_dirty)
+		return;
+	pthread_rwlock_wrlock(&archive_lock);
+	if ([archive serializeToURL:archive_url error:&error])
+	{
+		platform_log("Metal: wrote the pipeline archive in %.0f ms", (CACurrentMediaTime() - started) * 1e3);
+		archive_dirty = NO;
+	}
+	else
+	{
+		/* (diagnosis, 2026-10-06: the Mac app's writes to its caches folder
+		fail with "cannot create temporary file"; try the temporary folder,
+		then move the file into place) */
+		NSURL *temporary = [NSURL fileURLWithPath:[NSTemporaryDirectory()
+			stringByAppendingPathComponent:archive_url.lastPathComponent]];
+		NSError *second = nil, *moved = nil;
+		char folder[1024];
+
+		struct rlimit limit = { 0 };
+		int descriptor, open_files = 0;
+		char user_temporary[1024] = "?";
+
+		getrlimit(RLIMIT_NOFILE, &limit);
+		for (descriptor = 0; descriptor < (int)(limit.rlim_cur < 65536 ? limit.rlim_cur : 65536); descriptor++)
+			open_files += fcntl(descriptor, F_GETFD) != -1;
+		confstr(_CS_DARWIN_USER_TEMP_DIR, user_temporary, sizeof(user_temporary));
+		platform_log("Metal: the pipeline archive write failed (%s); TMPDIR %s, user temporary folder %s, HOME %s, "
+			"working folder %s, its folder %s, %d files open of %llu (hard limit %llu)",
+			error.localizedDescription.UTF8String, getenv("TMPDIR") ?: "(unset)", user_temporary,
+			getenv("HOME") ?: "(unset)", getcwd(folder, sizeof(folder)) ?: "?",
+			[[NSFileManager defaultManager] isWritableFileAtPath:archive_url.URLByDeletingLastPathComponent.path] ?
+			"writable" : "not writable", open_files, (unsigned long long)limit.rlim_cur, (unsigned long long)limit.rlim_max);
+		[[NSFileManager defaultManager] removeItemAtURL:temporary error:nil];
+		if ([archive serializeToURL:temporary error:&second])
+		{
+			[[NSFileManager defaultManager] removeItemAtURL:archive_url error:nil];
+			if ([[NSFileManager defaultManager] moveItemAtURL:temporary toURL:archive_url error:&moved])
+			{
+				archive_dirty = NO;
+				platform_log("Metal: wrote the pipeline archive by way of the temporary folder in %.0f ms (directly: %s)",
+					(CACurrentMediaTime() - started) * 1e3, error.localizedDescription.UTF8String);
+			}
+			else
+				platform_log("Metal: wrote the pipeline archive to the temporary folder but can't move it: %s",
+					moved.localizedDescription.UTF8String);
+		}
+		else
+			platform_log("Metal: can't write the pipeline archive %s: %s; nor to the temporary folder: %s",
+				archive_url.path.UTF8String, error.description.UTF8String, second.description.UTF8String);
+	}
+	pthread_rwlock_unlock(&archive_lock);
+}
+
+/* the pipeline for a descriptor, or NSNull, logged, if it can't be made
+(as a GL link failure: the draws are skipped): loaded from the archive when
+it has it, else compiled and added to it. Safe on any thread. */
+static id pipeline_make(MTLRenderPipelineDescriptor *descriptor)
+{
+	NSError *error = nil;
+	id pipeline = nil;
+
+	if (descriptor.vertexFunction && descriptor.fragmentFunction)
+	{
+		if (archive)
+		{
+			descriptor.binaryArchives = @[archive];
+			pthread_rwlock_rdlock(&archive_lock);
+			pipeline = [device newRenderPipelineStateWithDescriptor:descriptor
+				options:MTLPipelineOptionFailOnBinaryArchiveMiss reflection:nil error:nil];
+			pthread_rwlock_unlock(&archive_lock);
+		}
+		if (!pipeline)
+		{
+			/* (compiled without the archive: Metal would read it outside
+			archive_lock, while another thread adds to it) */
+			descriptor.binaryArchives = nil;
+			pipeline = [device newRenderPipelineStateWithDescriptor:descriptor error:&error];
+			if (pipeline && archive)
+			{
+				pthread_rwlock_wrlock(&archive_lock);
+				if ([archive addRenderPipelineFunctionsWithDescriptor:descriptor error:nil])
+					archive_dirty = YES;
+				pthread_rwlock_unlock(&archive_lock);
+			}
+		}
+	}
+
+	if (!pipeline)
+	{
+		platform_log("cannot link a shader program: %s",
+			error ? error.localizedDescription.UTF8String : "a shader did not compile");
+		pipeline = [NSNull null];
+	}
+	return pipeline;
+}
+
+/* a key's description in the front end's terms (gpu.h), and back */
+static void pipeline_describe(const struct pipeline_key *key, struct gpu_pipeline_description *description)
+{
+	memset(description, 0, sizeof(*description));
+	description->vertex_shader = key->vertex_shader;
+	description->pixel_shader = key->pixel_shader;
+	description->blend = key->blend;
+	description->source = key->source;
+	description->destination = key->destination;
+	description->operation = key->operation;
+	description->alpha_source = key->alpha_source;
+	description->alpha_destination = key->alpha_destination;
+	description->write_mask = key->write_mask;
+	description->exact_borders = key->exact_borders;
+	description->depth = key->depth_format != MTLPixelFormatInvalid;
+	memcpy(description->attribute_kinds, key->attribute_kinds, sizeof(description->attribute_kinds));
+}
+
+static void pipeline_key_from_description(const struct gpu_pipeline_description *description, struct pipeline_key *key)
+{
+	memset(key, 0, sizeof(*key));
+	key->vertex_shader = description->vertex_shader;
+	key->pixel_shader = description->pixel_shader;
+	key->blend = description->blend != 0;
+	if (key->blend)
+	{
+		key->source = description->source;
+		key->destination = description->destination;
+		key->operation = description->operation;
+		/* alpha's factors are color's but in the stereo HUD layer's draws
+		(gpu_blend_state.alpha_separate); a list's line from before it
+		carried them reads as color's (halo_shader_list_warm) */
+		key->alpha_source = description->alpha_source;
+		key->alpha_destination = description->alpha_destination;
+	}
+	key->write_mask = description->write_mask & 0xf;
+	key->exact_borders = description->exact_borders & 0xf;
+	/* every pass draws to BGRA8 (pass_begin's scratch color in a depth-only
+	one) and depth-stencil targets are Depth32Float_Stencil8 */
+	key->color_format = (uint32_t)MTLPixelFormatBGRA8Unorm;
+	key->depth_format = (uint32_t)(description->depth ? MTLPixelFormatDepth32Float_Stencil8 : MTLPixelFormatInvalid);
+	memcpy(key->attribute_kinds, description->attribute_kinds, sizeof(key->attribute_kinds));
+}
+
+/* pipelines built for draws outside warming, which gpu_pipeline_built_take
+hands to the front end to log and record (shader_list.c), oldest first */
+static NSMutableData *built_during_play;
+static unsigned long built_taken;
+
+/* the pipeline for a draw, or nil if it can't be made (cached either way) */
+static id<MTLRenderPipelineState> draw_pipeline(const struct gpu_draw *draw, const struct draw_attributes *attributes,
+	MetalShader *vertex, MetalShader *pixel, unsigned exact, MTLPixelFormat color, MTLPixelFormat depth)
 {
 	struct pipeline_key key;
 	NSData *name;
@@ -1503,11 +2195,14 @@ static id<MTLRenderPipelineState> draw_pipeline(const struct gpu_draw *draw, Met
 		key.source = draw->blend.source;
 		key.destination = draw->blend.destination;
 		key.operation = draw->blend.operation;
+		key.alpha_source = draw->blend.alpha_separate ? draw->blend.alpha_source : key.source;
+		key.alpha_destination = draw->blend.alpha_separate ? draw->blend.alpha_destination : key.destination;
 	}
 	key.write_mask = draw->color_target ? draw->blend.color_write_mask & 0xf : 0;
 	key.exact_borders = (uint8_t)exact;
 	key.color_format = (uint32_t)color;
 	key.depth_format = (uint32_t)depth;
+	memcpy(key.attribute_kinds, attributes->kinds, sizeof(key.attribute_kinds));
 	_Static_assert(sizeof(key) <= FRONT_CACHE_KEY, "pipeline_key fits the front cache");
 	if ((pipeline = front_cache_get(&pipeline_cache, &key, sizeof(key))))
 		return pipeline == [NSNull null] ? nil : pipeline;
@@ -1515,48 +2210,268 @@ static id<MTLRenderPipelineState> draw_pipeline(const struct gpu_draw *draw, Met
 	pipeline = pipelines[name];
 	if (!pipeline)
 	{
-		MTLRenderPipelineDescriptor *descriptor = [MTLRenderPipelineDescriptor new];
-		MTLRenderPipelineColorAttachmentDescriptor *attachment = descriptor.colorAttachments[0];
-		MTLRenderPipelineReflection *reflection = nil;
-		NSError *error = nil;
+		MTLRenderPipelineDescriptor *descriptor = pipeline_descriptor(&key, vertex, pixel);
+		CFTimeInterval started = CACurrentMediaTime();
 
-		descriptor.vertexFunction = vertex->function;
-		descriptor.fragmentFunction = pixel_function(pixel, exact) ?: pixel->function;
-		attachment.pixelFormat = color;
-		attachment.writeMask = write_mask(key.write_mask);
-		if (key.blend)
+		if (metal_debug && !layout_checked && descriptor.vertexFunction && descriptor.fragmentFunction)
 		{
-			attachment.blendingEnabled = YES;
-			attachment.sourceRGBBlendFactor = attachment.sourceAlphaBlendFactor = blend_factor(key.source);
-			attachment.destinationRGBBlendFactor = attachment.destinationAlphaBlendFactor = blend_factor(key.destination);
-			attachment.rgbBlendOperation = attachment.alphaBlendOperation = blend_operation(key.operation);
-		}
-		descriptor.depthAttachmentPixelFormat = depth;
-		descriptor.stencilAttachmentPixelFormat = depth;
-		if (metal_debug && !layout_checked)
-		{
+			MTLRenderPipelineReflection *reflection = nil;
+
 			pipeline = [device newRenderPipelineStateWithDescriptor:descriptor
-				options:MTLPipelineOptionBindingInfo | MTLPipelineOptionBufferTypeInfo reflection:&reflection error:&error];
+				options:MTLPipelineOptionBindingInfo | MTLPipelineOptionBufferTypeInfo reflection:&reflection error:nil];
 			if (pipeline)
 			{
 				check_uniform_layout(reflection);
 				layout_checked = YES;
 			}
 		}
-		else
-		{
-			pipeline = [device newRenderPipelineStateWithDescriptor:descriptor error:&error];
-		}
 		if (!pipeline)
-		{
-			/* as a GL link failure: logged once, the draws skipped */
-			platform_log("cannot link a shader program: %s", error.localizedDescription.UTF8String);
-			pipeline = [NSNull null];
-		}
+			pipeline = pipeline_make(descriptor);
+		compile_count(COMPILE_PIPELINE, started);
+		compile_stats.during_play[COMPILE_PIPELINE]++;
 		pipelines[name] = pipeline;
+		{
+			struct gpu_pipeline_description built;
+
+			pipeline_describe(&key, &built);
+			[built_during_play appendBytes:&built length:sizeof(built)];
+		}
 	}
 	front_cache_put(&pipeline_cache, &key, sizeof(key), pipeline);
 	return pipeline == [NSNull null] ? nil : pipeline;
+}
+
+static uint32_t gpu_metal_pipeline_built_take(struct gpu_pipeline_description *description)
+{
+	unsigned long count = built_during_play.length / sizeof(*description);
+
+	if (built_taken >= count)
+	{
+		[built_during_play setLength:0];
+		built_taken = 0;
+		return 0;
+	}
+	memcpy(description, (const struct gpu_pipeline_description *)built_during_play.bytes + built_taken++,
+		sizeof(*description));
+	return 1;
+}
+
+/* ---------- compiling at map load (gpu.h; the front end's shader_list.c) */
+
+static uint32_t gpu_metal_warm_list_read(const char *name, char *text, uint32_t size)
+{
+	@autoreleasepool
+	{
+		NSString *path = [[NSBundle mainBundle] pathForResource:@(name) ofType:@"txt" inDirectory:@"shader-lists"];
+		NSData *list = path ? [NSData dataWithContentsOfFile:path] : nil;
+
+		if (!list)
+			return 0;
+		if (list.length <= size)
+			memcpy(text, list.bytes, list.length);
+		return (uint32_t)list.length;
+	}
+}
+
+static void gpu_metal_warm_begin(void)
+{
+	warming = YES;
+	warm_list = [NSMutableData data];
+	warm_group = dispatch_group_create();
+}
+
+static void gpu_metal_pipeline_warm(const struct gpu_pipeline_description *description)
+{
+	if (warming)
+		[warm_list appendBytes:description length:sizeof(*description)];
+}
+
+/* waits for the shaders, then builds the listed pipelines: the vertex
+functions' specializations and the pipelines themselves in parallel, the
+bookkeeping (dictionaries, which aren't thread-safe) on this thread */
+static void gpu_metal_warm_end(void)
+{
+	@autoreleasepool
+	{
+		const struct gpu_pipeline_description *list = warm_list.bytes;
+		unsigned long count = warm_list.length / sizeof(*list), index;
+		NSMutableArray *names = [NSMutableArray array], *descriptors = [NSMutableArray array];
+		NSMutableSet *named = [NSMutableSet set];
+		NSMutableArray *specialize = [NSMutableArray array];
+		NSMutableDictionary<NSData *, id> *specialized = [NSMutableDictionary dictionary];
+		CFTimeInterval started = CACurrentMediaTime(), shaders_done;
+		NSMutableArray *made;
+
+		if (!warming)
+			return;
+		dispatch_group_wait(warm_group, DISPATCH_TIME_FOREVER);
+		warming = NO;
+		shaders_done = CACurrentMediaTime();
+		/* the specializations the pipelines need and don't have, made in
+		parallel and filed under their shaders here */
+		for (index = 0; index < count; index++)
+		{
+			struct pipeline_key key;
+			MetalShader *vertex;
+			NSMutableData *name;
+
+			pipeline_key_from_description(&list[index], &key);
+			vertex = table_get(shaders, key.vertex_shader);
+			if (!vertex || !vertex->library || specialize_off)
+				continue;
+			name = [NSMutableData dataWithBytes:&key.vertex_shader length:sizeof(key.vertex_shader)];
+			[name appendBytes:key.attribute_kinds length:sizeof(key.attribute_kinds)];
+			if (vertex->specialized[[NSData dataWithBytes:key.attribute_kinds length:sizeof(key.attribute_kinds)]] ||
+				specialized[name])
+				continue;
+			specialized[name] = [NSNull null];
+			[specialize addObject:name];
+		}
+		{
+			NSMutableArray *functions = [NSMutableArray arrayWithCapacity:specialize.count];
+
+			for (index = 0; index < specialize.count; index++)
+				[functions addObject:[NSNull null]];
+			dispatch_apply(specialize.count, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^(size_t item)
+			{
+				NSData *name = specialize[item];
+				gpu_shader handle;
+				MetalShader *vertex;
+				MTLFunctionConstantValues *values = [MTLFunctionConstantValues new];
+				NSUInteger attribute;
+				id function;
+
+				memcpy(&handle, name.bytes, sizeof(handle));
+				vertex = table_get(shaders, handle);
+				for (attribute = 0; attribute < GPU_ATTRIBUTE_COUNT; attribute++)
+				{
+					uint32_t kind = ((const uint8_t *)name.bytes)[sizeof(handle) + attribute];
+
+					[values setConstantValue:&kind type:MTLDataTypeUInt atIndex:attribute];
+				}
+				function = [vertex->library newFunctionWithName:@"vertex_main" constantValues:values error:nil];
+				if (function)
+				{
+					@synchronized (functions)
+					{
+						functions[item] = function;
+					}
+				}
+			});
+			for (index = 0; index < specialize.count; index++)
+			{
+				NSData *name = specialize[index];
+				gpu_shader handle;
+
+				MetalShader *vertex;
+
+				memcpy(&handle, name.bytes, sizeof(handle));
+				vertex = table_get(shaders, handle);
+				if (!vertex->specialized)
+					vertex->specialized = [NSMutableDictionary dictionary];
+				/* (one that failed gets the unspecialized function, as
+				vertex_function files it, rather than compiling again there) */
+				if (functions[index] == [NSNull null])
+					platform_log("Metal: cannot specialize vertex shader %p for its attributes, which it then reads per draw",
+						(__bridge void *)vertex);
+				vertex->specialized[[name subdataWithRange:NSMakeRange(sizeof(handle), GPU_ATTRIBUTE_COUNT)]] =
+					functions[index] != [NSNull null] ? functions[index] : vertex->function;
+			}
+		}
+		/* the pixel shaders' exact-border variants the pipelines need
+		(pixel_function), compiled in parallel too and filed here, so that
+		pipeline_descriptor finds them made */
+		{
+			NSMutableArray *variants = [NSMutableArray array], *compiled = [NSMutableArray array];
+			NSMutableSet *seen = [NSMutableSet set];
+
+			for (index = 0; index < count; index++)
+			{
+				struct pipeline_key key;
+				MetalShader *pixel;
+				NSData *variant;
+
+				pipeline_key_from_description(&list[index], &key);
+				pixel = table_get(shaders, key.pixel_shader);
+				if (!key.exact_borders || !pixel || !pixel->source || (pixel->exact_tried & (1u << key.exact_borders)))
+					continue;
+				variant = [NSData dataWithBytes:(uint32_t[2]){ key.pixel_shader, key.exact_borders } length:8];
+				if ([seen containsObject:variant])
+					continue;
+				[seen addObject:variant];
+				[variants addObject:variant];
+				[compiled addObject:[NSNull null]];
+			}
+			dispatch_apply(variants.count, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^(size_t item)
+			{
+				@autoreleasepool
+				{
+					const uint32_t *variant = ((NSData *)variants[item]).bytes;
+					MetalShader *pixel = table_get(shaders, variant[0]);
+					NSString *text = [NSString stringWithFormat:@"#define EXACT_BORDERS %u\n%@", variant[1], pixel->source];
+					id<MTLLibrary> library = [device newLibraryWithSource:text options:pixel_compile_options error:nil];
+					id function = [library newFunctionWithName:@"fragment_main"];
+
+					if (function)
+					{
+						@synchronized (compiled)
+						{
+							compiled[item] = function;
+						}
+					}
+				}
+			});
+			for (index = 0; index < variants.count; index++)
+			{
+				const uint32_t *variant = ((NSData *)variants[index]).bytes;
+				MetalShader *pixel = table_get(shaders, variant[0]);
+
+				/* (one that failed is left untried, for pixel_function to compile and log) */
+				if (compiled[index] == [NSNull null])
+					continue;
+				pixel->exact_tried |= 1u << variant[1];
+				pixel->exact[variant[1]] = compiled[index];
+			}
+		}
+		/* the descriptors, then the pipelines in parallel */
+		for (index = 0; index < count; index++)
+		{
+			struct pipeline_key key;
+			MetalShader *vertex, *pixel;
+			NSData *name;
+
+			pipeline_key_from_description(&list[index], &key);
+			name = [NSData dataWithBytes:&key length:sizeof(key)];
+			vertex = table_get(shaders, key.vertex_shader);
+			pixel = table_get(shaders, key.pixel_shader);
+			if (pipelines[name] || [named containsObject:name] || !vertex || !pixel)
+				continue;
+			[names addObject:name];
+			[named addObject:name];
+			[descriptors addObject:pipeline_descriptor(&key, vertex, pixel)];
+		}
+		made = [NSMutableArray arrayWithCapacity:names.count];
+		for (index = 0; index < names.count; index++)
+			[made addObject:[NSNull null]];
+		dispatch_apply(names.count, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^(size_t item)
+		{
+			id pipeline = pipeline_make(descriptors[item]);
+
+			@synchronized (made)
+			{
+				made[item] = pipeline;
+			}
+		});
+		for (index = 0; index < names.count; index++)
+			pipelines[names[index]] = made[index];
+		warm_list = nil;
+		warm_group = nil;
+		archive_save();
+		platform_log("Metal: warmed %lu pipelines (%lu listed, %lu specializations) in %.0f ms, after waiting %.0f ms "
+			"for the shaders",
+			(unsigned long)names.count, count, (unsigned long)specialize.count,
+			(CACurrentMediaTime() - shaders_done) * 1e3, (shaders_done - started) * 1e3);
+	}
 }
 
 static id<MTLDepthStencilState> depth_state(const struct gpu_depth_stencil_state *state)
@@ -1768,7 +2683,7 @@ static void bind_constants(const struct gpu_constant_store *constants, const str
 		[encoder setFragmentBuffer:record->buffer offset:snapshot.offset + sizeof(constants->c) atIndex:0];
 }
 
-static void bind_attributes(const struct gpu_draw *draw)
+static void bind_attributes(const struct gpu_draw *draw, const struct draw_attributes *attributes)
 {
 	struct metal_attribute_table table;
 	int index;
@@ -1778,14 +2693,12 @@ static void bind_attributes(const struct gpu_draw *draw)
 	{
 		const struct gpu_vertex_attribute *attribute = &draw->attributes[index];
 		struct metal_attribute *entry = &table.entries[index];
-		__unsafe_unretained MetalBuffer *record = attribute->stream < GPU_STREAM_CONSTANT ?
-			buffer_record(draw->streams[attribute->stream].buffer) : nil;
+		__unsafe_unretained MetalBuffer *record = attributes->records[index];
 
 		entry->format = attribute->format;
 		if (!record)
 		{
-			/* a constant (GPU_STREAM_NONE never arrives: the front end makes
-			every unused attribute a constant) */
+			/* a constant (draw_attributes) */
 			entry->stream = GPU_STREAM_CONSTANT;
 			memcpy(table.constants[index], draw->constant_values[index], sizeof(table.constants[index]));
 			if (metal_state_object(&state_cache, METAL_STATE_ATTRIBUTE_BUFFER + index, (__bridge void *)empty_buffer, 0))
@@ -1818,13 +2731,31 @@ static struct
 static void bind_stages(const struct gpu_draw *draw, unsigned exact)
 {
 	int stage;
+	/* a foveated eye's target read through its map (nv2a_msl.c's foveated
+	sampler): the map's parameter data, and per stage its screen and
+	physical sizes, then its allocated size */
+	float foveation[GPU_STAGE_COUNT][2][4];
+	id<MTLBuffer> foveation_map_data = nil;
 
+	memset(foveation, 0, sizeof(foveation));
 	for (stage = 0; stage < GPU_STAGE_COUNT; stage++)
 	{
 		const struct gpu_stage *packet = &draw->stages[stage];
 		__unsafe_unretained MetalTexture *record = packet->type ? texture_record(packet->texture) : nil;
 		__unsafe_unretained id<MTLTexture> texture = record ? record->texture : nil;
 		__unsafe_unretained id<MTLSamplerState> sampler;
+		MTLSize screen, physical;
+
+		if (texture && foveation_sizes(record, &screen, &physical))
+		{
+			foveation[stage][0][0] = (float)screen.width;
+			foveation[stage][0][1] = (float)screen.height;
+			foveation[stage][0][2] = (float)physical.width;
+			foveation[stage][0][3] = (float)physical.height;
+			foveation[stage][1][0] = (float)texture.width;
+			foveation[stage][1][1] = (float)texture.height;
+			foveation_map_data = foveation_parameters(record);
+		}
 
 		/* a stage with no texture, or one with no storage yet, samples black,
 		as GL's texture 0 or an incomplete texture does */
@@ -1868,6 +2799,14 @@ static void bind_stages(const struct gpu_draw *draw, unsigned exact)
 			colors[stage][3] = (float)(color >> 24) / 255.0f;
 		}
 		[encoder setFragmentBytes:colors length:sizeof(colors) atIndex:3];
+		metal_state_always(&state_cache);
+	}
+	if (foveation_map_data)
+	{
+		/* set on every foveated draw (the state cache doesn't track them) */
+		[encoder setFragmentBuffer:foveation_map_data offset:0 atIndex:1];
+		metal_state_always(&state_cache);
+		[encoder setFragmentBytes:foveation length:sizeof(foveation) atIndex:2];
 		metal_state_always(&state_cache);
 	}
 }
@@ -1951,11 +2890,13 @@ static uint32_t gpu_metal_draw(const struct gpu_draw *draw, const struct gpu_con
 		MTLScissorRect scissor;
 		MTLPrimitiveType type;
 		unsigned exact = exact_borders(draw);
+		struct draw_attributes attributes;
 
 		/* as GL's program_get: no program, no draw */
 		if (!vertex || !pixel)
 			return 0;
-		pipeline = draw_pipeline(draw, vertex, pixel, exact, MTLPixelFormatBGRA8Unorm,
+		draw_attributes_decide(draw, &attributes);
+		pipeline = draw_pipeline(draw, &attributes, vertex, pixel, exact, MTLPixelFormatBGRA8Unorm,
 			depth && depth->texture ? depth->texture.pixelFormat : MTLPixelFormatInvalid);
 		if (!pipeline)
 			return 0;
@@ -1991,7 +2932,24 @@ static uint32_t gpu_metal_draw(const struct gpu_draw *draw, const struct gpu_con
 			metal_state_always(&state_cache);
 		}
 		if (metal_state_object(&state_cache, METAL_STATE_PIPELINE, (__bridge void *)pipeline, 0))
+		{
 			[encoder setRenderPipelineState:pipeline];
+			/* debug.gl_debug: how often the pipeline changes between draws of
+			one pass, and how often the shaders stay the same (only blending,
+			the write mask or the vertex specialization changed) */
+			if (metal_debug)
+			{
+				pipeline_changes.changes++;
+				if (pipeline_changes.vertex_shader == draw->vertex_shader &&
+					pipeline_changes.pixel_shader == draw->pixel_shader)
+					pipeline_changes.same_shaders++;
+			}
+		}
+		if (metal_debug)
+		{
+			pipeline_changes.vertex_shader = draw->vertex_shader;
+			pipeline_changes.pixel_shader = draw->pixel_shader;
+		}
 		{
 			__unsafe_unretained id<MTLDepthStencilState> depth_stencil = depth_state(&draw->depth_stencil);
 			uint32_t reference = draw->depth_stencil.stencil_reference & 0xff;
@@ -2028,10 +2986,15 @@ static uint32_t gpu_metal_draw(const struct gpu_draw *draw, const struct gpu_con
 				[encoder setDepthBias:bias[0] slopeScale:bias[1] clamp:bias[2]];
 			if (metal_state_value(&state_cache, METAL_STATE_BLEND_COLOR, blend, sizeof(blend)))
 				[encoder setBlendColorRed:blend[0] green:blend[1] blue:blend[2] alpha:blend[3]];
+			if ((draw->raster.depth_clamp != 0) != encoder_depth_clamp)
+			{
+				encoder_depth_clamp = draw->raster.depth_clamp != 0;
+				[encoder setDepthClipMode:encoder_depth_clamp ? MTLDepthClipModeClamp : MTLDepthClipModeClip];
+			}
 		}
 		bind_stages(draw, exact);
 		bind_constants(constants, uniforms);
-		bind_attributes(draw);
+		bind_attributes(draw, &attributes);
 		pass_commands++;
 		/* the draw call itself, made below unless a conversion leaves nothing */
 		metal_state_always(&state_cache);
@@ -2443,6 +3406,157 @@ static id<MTLTexture> upscale(id<MTLTexture> back_buffer, long width, long heigh
 /* the back buffer letterboxed into the drawable, as gpu_gl.c's gpu_present,
 without its vertical flip: GL's window shows row 0 at the bottom, Metal's
 drawable at the top */
+/* foveation_resolve's shaders, compiled when first needed: the decoder is
+Metal 2.3's, and a GPU without rate maps never needs them */
+static NSString *const resolve_source =
+	@"#include <metal_stdlib>\n"
+	"using namespace metal;\n"
+	"struct PresentOut { float4 position [[position]]; float2 coordinates; };\n"
+	"struct FoveationSizes { float2 screen; float2 physical; float2 allocated; };\n"
+	/* a screen point (the normalized coordinate times the screen size, inside
+	it) where the map put it, half a texel inside its physical region: the
+	targets are allocated larger, and past the region they are stale */
+	"static float2 foveated_at(float2 coordinates, constant rasterization_rate_map_data &map,\n"
+	"\tconstant FoveationSizes &f)\n"
+	"{\n"
+	"\trasterization_rate_map_decoder decoder(map);\n"
+	"\tfloat2 screen = clamp(coordinates * f.screen, float2(0.0), f.screen - 1.0 / 256.0);\n"
+	"\tfloat2 physical = clamp(decoder.map_screen_to_physical_coordinates(screen), float2(0.5), f.physical - 0.5);\n"
+	"\treturn physical / f.allocated;\n"
+	"}\n"
+	"fragment float4 resolve_color(PresentOut in [[stage_in]], texture2d<float> picture [[texture(0)]],\n"
+	"\tsampler linear [[sampler(0)]], constant rasterization_rate_map_data &map [[buffer(0)]],\n"
+	"\tconstant FoveationSizes &f [[buffer(1)]])\n"
+	"{\n"
+	"\treturn picture.sample(linear, foveated_at(in.coordinates, map, f));\n"
+	"}\n"
+	"fragment float resolve_depth(PresentOut in [[stage_in]], depth2d<float> depth [[texture(0)]],\n"
+	"\tsampler nearest [[sampler(0)]], constant rasterization_rate_map_data &map [[buffer(0)]],\n"
+	"\tconstant FoveationSizes &f [[buffer(1)]])\n"
+	"{\n"
+	"\treturn depth.sample(nearest, foveated_at(in.coordinates, map, f));\n"
+	"}\n";
+
+struct foveation_sizes_uniform
+{
+	float screen[2], physical[2], allocated[2];
+};
+
+static id<MTLRenderPipelineState> resolve_color_pipeline, resolve_depth_pipeline;
+static id<MTLSamplerState> resolve_nearest;
+/* foveation_resolve's outputs, by kind, size and eye */
+static NSMutableDictionary<NSString *, id<MTLTexture>> *resolve_outputs;
+
+/* a foveated target drawn unfoveated at width x height, at its screen
+shape, into a new texture: BGRA8 for a color target, R32Float for a depth
+target's depth (as stored, reversed). Encoded in the open command buffer,
+after the open pass; nil if the target isn't foveated this frame */
+static id<MTLTexture> foveation_resolve(MetalTexture *record, NSUInteger width, NSUInteger height)
+{
+	MTLSize screen, physical;
+	BOOL depth = record && record->description.format == GPU_FORMAT_DEPTH_STENCIL;
+	MTLTextureDescriptor *descriptor;
+	MTLRenderPassDescriptor *pass;
+	id<MTLRenderCommandEncoder> resolve;
+	id<MTLTexture> output;
+	struct foveation_sizes_uniform sizes;
+
+	if (!record || !record->texture || !foveation_sizes(record, &screen, &physical) || !width || !height)
+		return nil;
+	if (!resolve_color_pipeline)
+	{
+		NSError *error = nil;
+		id<MTLLibrary> library = [device newLibraryWithSource:resolve_source options:nil error:&error];
+		MTLRenderPipelineDescriptor *pipeline = [MTLRenderPipelineDescriptor new];
+		MTLSamplerDescriptor *nearest = [MTLSamplerDescriptor new];
+
+		if (library)
+		{
+			pipeline.vertexFunction = present_vertex;
+			pipeline.fragmentFunction = [library newFunctionWithName:@"resolve_color"];
+			pipeline.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+			resolve_color_pipeline = [device newRenderPipelineStateWithDescriptor:pipeline error:&error];
+			pipeline.fragmentFunction = [library newFunctionWithName:@"resolve_depth"];
+			pipeline.colorAttachments[0].pixelFormat = MTLPixelFormatR32Float;
+			if (resolve_color_pipeline)
+				resolve_depth_pipeline = [device newRenderPipelineStateWithDescriptor:pipeline error:&error];
+		}
+		if (!resolve_color_pipeline || !resolve_depth_pipeline)
+		{
+			platform_log("Metal: the foveation resolve's shaders failed: %s", error.description.UTF8String);
+			resolve_color_pipeline = resolve_depth_pipeline = nil;
+			return nil;
+		}
+		resolve_nearest = [device newSamplerStateWithDescriptor:nearest];
+	}
+	/* one output per kind, size and eye, kept: the HEAD-mode menu over the
+	film resolves an eye every frame, about 13 MB at quality 0.6. The two
+	eyes of one frame get their own; a later frame's resolve is queued after
+	the command buffers that read this one's */
+	{
+		NSString *key = [NSString stringWithFormat:@"%d %lux%lu %u", depth, (unsigned long)width,
+			(unsigned long)height, record->description.foveated_eye];
+
+		output = resolve_outputs[key];
+		if (!output)
+		{
+			descriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:depth ? MTLPixelFormatR32Float :
+				MTLPixelFormatBGRA8Unorm width:width height:height mipmapped:NO];
+			descriptor.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+			descriptor.storageMode = MTLStorageModePrivate;
+			output = [device newTextureWithDescriptor:descriptor];
+			/* (the sizes move while the render quality eases: a few at most) */
+			if (!resolve_outputs || resolve_outputs.count >= 8)
+				resolve_outputs = [NSMutableDictionary dictionary];
+			resolve_outputs[key] = output;
+		}
+	}
+	sizes = (struct foveation_sizes_uniform){ { (float)screen.width, (float)screen.height },
+		{ (float)physical.width, (float)physical.height },
+		{ (float)record->texture.width, (float)record->texture.height } };
+	pass_end();
+	pass = [MTLRenderPassDescriptor renderPassDescriptor];
+	pass.colorAttachments[0].texture = output;
+	pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+	pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+	resolve = [command_buffer() renderCommandEncoderWithDescriptor:pass];
+	if (metal_debug)
+		resolve.label = [NSString stringWithFormat:@"foveation resolve of %lux%lu", (unsigned long)screen.width,
+			(unsigned long)screen.height];
+	[resolve setRenderPipelineState:depth ? resolve_depth_pipeline : resolve_color_pipeline];
+	[resolve setViewport:(MTLViewport){ 0.0, 0.0, (double)width, (double)height, 0.0, 1.0 }];
+	[resolve setFragmentTexture:record->texture atIndex:0];
+	[resolve setFragmentSamplerState:depth ? resolve_nearest : present_sampler atIndex:0];
+	[resolve setFragmentBuffer:foveation_parameters(record) offset:0 atIndex:0];
+	[resolve setFragmentBytes:&sizes length:sizeof(sizes) atIndex:1];
+	[resolve drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
+	[resolve endEncoding];
+	use_texture(record);
+	return output;
+}
+
+/* a foveated target resolved at its screen shape inside its allocated size,
+for a picture drawn whole somewhere else (the film's screen, the UI's
+quad); an unfoveated one as it is */
+static id<MTLTexture> foveation_picture(MetalTexture *record)
+{
+	MTLSize screen, physical;
+	NSUInteger width, height;
+	id<MTLTexture> resolved;
+
+	if (!foveation_sizes(record, &screen, &physical))
+		return record->texture;
+	width = record->texture.width;
+	height = width * screen.height / screen.width;
+	if (height > record->texture.height)
+	{
+		height = record->texture.height;
+		width = height * screen.width / screen.height;
+	}
+	resolved = foveation_resolve(record, width, height);
+	return resolved ? resolved : record->texture;
+}
+
 static uint32_t gpu_metal_present(gpu_texture back_buffer)
 {
 	@autoreleasepool
@@ -2455,6 +3569,18 @@ static uint32_t gpu_metal_present(gpu_texture back_buffer)
 		command_buffer();
 		pass_finish(YES);
 #if TARGET_OS_VISION
+		/* head-tracked stereo without eyes this frame (the main menu, a
+		load): the picture goes on the UI's quad, level in front of the head
+		(host_stereo_present_ui), not the theater screen */
+		if (theater_wanted && record && record->texture && host_theater_active() && host_stereo_ui_ready())
+		{
+			use_texture(record);
+			commit(YES);
+			host_stereo_present_ui(queue, record->texture, nil, stereo_cut_brightness(HOST_STEREO_VIEW_UI, 0, 0));
+			frames++;
+			pacing.work_started = CACurrentMediaTime();
+			return 0;
+		}
 		/* theater mode: the picture, at the screen's size (sharp enough for its
 		angle, host_theater_picture_size), goes on the screen
 		in the immersive space, whose frames pace the game; the window isn't
@@ -2476,7 +3602,7 @@ static uint32_t gpu_metal_present(gpu_texture back_buffer)
 				height = window_height;
 				width = window_height * (long)record->description.width / (long)record->description.height;
 			}
-			picture = upscale(record->texture, width, height);
+			picture = upscale(foveation_picture(record), width, height);
 			use_texture(record);
 			commit(YES);
 			host_theater_present(queue, picture);
@@ -2503,7 +3629,8 @@ static uint32_t gpu_metal_present(gpu_texture back_buffer)
 				height = window_height;
 				width = window_height * (long)record->description.width / (long)record->description.height;
 			}
-			picture = upscale(record->texture, width, height);
+			/* (debug.rate_map_test: the back buffer resolved first) */
+			picture = upscale(foveation_picture(record), width, height);
 			pass.colorAttachments[0].texture = drawable.texture;
 			pass.colorAttachments[0].loadAction = MTLLoadActionClear;
 			pass.colorAttachments[0].storeAction = MTLStoreActionStore;
@@ -2539,6 +3666,18 @@ static uint32_t gpu_metal_present(gpu_texture back_buffer)
 		}
 		drawable = nil;
 		commit(YES);
+		if (metal_debug && (compile_stats.count[COMPILE_LIBRARY] || compile_stats.count[COMPILE_SPECIALIZE] ||
+			compile_stats.count[COMPILE_PIPELINE]))
+			platform_log("Metal: frame %lu compiled %lu libraries (%.1f ms, longest %.1f), specialized %lu vertex "
+				"functions (%.1f ms, longest %.1f), made %lu pipelines (%.1f ms, longest %.1f)", frames,
+				compile_stats.count[COMPILE_LIBRARY], compile_stats.seconds[COMPILE_LIBRARY] * 1e3,
+				compile_stats.longest[COMPILE_LIBRARY] * 1e3, compile_stats.count[COMPILE_SPECIALIZE],
+				compile_stats.seconds[COMPILE_SPECIALIZE] * 1e3, compile_stats.longest[COMPILE_SPECIALIZE] * 1e3,
+				compile_stats.count[COMPILE_PIPELINE], compile_stats.seconds[COMPILE_PIPELINE] * 1e3,
+				compile_stats.longest[COMPILE_PIPELINE] * 1e3);
+		memset(compile_stats.count, 0, sizeof(compile_stats.count));
+		memset(compile_stats.seconds, 0, sizeof(compile_stats.seconds));
+		memset(compile_stats.longest, 0, sizeof(compile_stats.longest));
 		frames++;
 		if (pass_log)
 		{
@@ -2557,6 +3696,18 @@ static uint32_t gpu_metal_present(gpu_texture back_buffer)
 			platform_log("Metal: %.1f draws a frame make %.1f encoder calls each and skip %.1f (state cache %s)",
 				(double)state_cache.draws / 600.0, (double)state_cache.issued / state_cache.draws,
 				(double)state_cache.skipped / state_cache.draws, state_cache.enabled ? "on" : "off");
+			if (metal_debug)
+				platform_log("Metal: %.1f pipeline changes a frame, %.1f of them with the same shaders",
+					(double)pipeline_changes.changes / 600.0, (double)pipeline_changes.same_shaders / 600.0);
+			pipeline_changes.changes = pipeline_changes.same_shaders = 0;
+			if (metal_debug)
+				platform_log("Metal: so far %lu shader libraries (%.0f ms), %lu vertex specializations (%.0f ms), "
+					"%lu pipelines (%.0f ms) made while drawing; outside a map's list: %lu libraries, %lu "
+					"specializations, %lu pipelines", compile_stats.total_count[COMPILE_LIBRARY],
+					compile_stats.total_seconds[COMPILE_LIBRARY] * 1e3, compile_stats.total_count[COMPILE_SPECIALIZE],
+					compile_stats.total_seconds[COMPILE_SPECIALIZE] * 1e3, compile_stats.total_count[COMPILE_PIPELINE],
+					compile_stats.total_seconds[COMPILE_PIPELINE] * 1e3, compile_stats.during_play[COMPILE_LIBRARY],
+					compile_stats.during_play[COMPILE_SPECIALIZE], compile_stats.during_play[COMPILE_PIPELINE]);
 			metal_state_take_counts(&state_cache);
 		}
 		if (frames % 600 == 0)
@@ -2568,6 +3719,233 @@ static uint32_t gpu_metal_present(gpu_texture back_buffer)
 		pacing.work_started = CACurrentMediaTime();
 		return next_frame_due;
 	}
+}
+
+/* a stereo frame: in head-tracked stereo (display.stereo = "head") each eye's
+picture and depth, and the HUD, go to the Compositor's frame that
+host_stereo_frame opened at the frame's begin (host_stereo.m); in stereo on
+the screen (display.stereo = "screen") each eye's picture, with the HUD over
+it, goes on the theater screen for its view (host_theater_present_eyes);
+without a frame (the space closed, another mode) eye 0 goes through the mono
+path.
+
+A cutscene (present->cinematic, the 3D film) is on the screen in any mode,
+and the script fade (present->fade) tints the space around the screen. A cut
+between any two of the full view, the screen and HEAD mode's UI quad (a
+cutscene starting or ending in HEAD mode, a load starting or ending, a menu
+over the film) goes to black and fades back in over HOST_STEREO_CUT_SECONDS,
+unless a script fade already covers it (present->cut_covered,
+stereo.c's halo_stereo_cut_covered). */
+#if TARGET_OS_VISION
+/* what the last stereo frame showed (host_stereo_hud.h's cut, which also
+covers the UI's quad), and the frames of the cut's fade still to come */
+static struct host_stereo_cut stereo_cut = HOST_STEREO_CUT_INITIAL;
+
+static const char *stereo_view_name(int view)
+{
+	return view == HOST_STEREO_VIEW_SCREEN ? "the screen" : view == HOST_STEREO_VIEW_UI ? "the UI's quad" : "the full view";
+}
+
+/* the brightness of a frame showing view (enum host_stereo_view): coming up
+from black over HOST_STEREO_CUT_SECONDS after a cut no script fade covers;
+black while requested (stereo's cut over a seat's exit glide) */
+static float stereo_cut_brightness(int view, int covered, int requested)
+{
+	int last = stereo_cut.shown, switched;
+	/* a frame stays up for the repeat count plus one refreshes of the
+	Vision Pro's 90 Hz, so the fade lasts the same time at 45 */
+	float frame_seconds = (float)(host_theater_frame_repeat() + 1) / 90.0f;
+	float brightness = host_stereo_cut_brightness(&stereo_cut, view, covered, requested, frame_seconds,
+		&switched);
+
+	if (switched)
+		platform_log("stereo: from %s to %s through black", stereo_view_name(last), stereo_view_name(view));
+	return brightness;
+}
+
+/* Stereo's frame times, for the benchmarks (avp-benchmark.sh reads the
+"frames shown for" line, as pacing_schedule's): the Compositor paces stereo,
+so its frames are measured by their presentation times, and a frame's CPU
+time is the time since the last present less the time spent waiting for the
+Compositor's frame. The refresh period is the shortest interval between
+presentations over the report's frames divided by the repeat count plus one
+(an on-time frame's), or 90 Hz's when that falls outside 60 to 120 Hz.
+Every 600 stereo frames.
+
+Both times lag by a frame, deliberately: the GPU time is what completed
+since the last count (the game's command buffers and the presenters',
+gpu_metal_count_gpu_time), and completion handlers land after the next frame
+has begun, as in pacing_schedule; the CPU time leaves out this frame's
+presenter encode, which comes after the count, and includes the last one's.
+Over a report each frame is counted once, so the medians are right. */
+static struct
+{
+	CFTimeInterval last_presentation;
+	CFTimeInterval shortest;
+	uint64_t gpu_counted;
+	CFTimeInterval intervals[PACING_TIMED_FRAMES];
+	double cpu_times[PACING_TIMED_FRAMES], gpu_times[PACING_TIMED_FRAMES];
+	unsigned long timed, frames;
+} stereo_pacing;
+
+static void stereo_pacing_count(void)
+{
+	CFTimeInterval now = CACurrentMediaTime();
+	CFTimeInterval waited = host_theater_take_waited();
+	CFTimeInterval presentation = host_theater_presentation_time();
+	CFTimeInterval interval = 0.0;
+	uint64_t gpu_total = atomic_load(&pacing_gpu_nanoseconds);
+	double cpu = pacing.work_started > 0.0 ? now - pacing.work_started - waited : 0.0;
+	double gpu = (double)(gpu_total - stereo_pacing.gpu_counted) / 1e9;
+
+	stereo_pacing.gpu_counted = gpu_total;
+	if (presentation > 0.0 && stereo_pacing.last_presentation > 0.0)
+		interval = presentation - stereo_pacing.last_presentation;
+	if (presentation > 0.0)
+		stereo_pacing.last_presentation = presentation;
+	/* a quarter second or more is a load or the background, not a frame */
+	if (interval > 0.0 && interval < 0.25 && cpu > 0.0 && stereo_pacing.timed < PACING_TIMED_FRAMES)
+	{
+		if (stereo_pacing.shortest <= 0.0 || interval < stereo_pacing.shortest)
+			stereo_pacing.shortest = interval;
+		stereo_pacing.intervals[stereo_pacing.timed] = interval;
+		stereo_pacing.cpu_times[stereo_pacing.timed] = cpu;
+		stereo_pacing.gpu_times[stereo_pacing.timed] = gpu;
+		stereo_pacing.timed++;
+	}
+	if (++stereo_pacing.frames % 600 == 0 && stereo_pacing.timed)
+	{
+		int repeat = host_theater_frame_repeat();
+		CFTimeInterval period = stereo_pacing.shortest / (double)(repeat + 1);
+		unsigned long shown[6] = { 0 };
+		double cpu_median, cpu_high, gpu_median, gpu_high;
+		unsigned long index;
+
+		if (period < 1.0 / 120.0 || period > 1.0 / 60.0)
+			period = 1.0 / 90.0;
+		for (index = 0; index < stereo_pacing.timed; index++)
+		{
+			long up = lround(stereo_pacing.intervals[index] / period);
+
+			shown[up < 1 ? 1 : up > 5 ? 5 : up]++;
+		}
+		pacing_percentiles(stereo_pacing.cpu_times, stereo_pacing.timed, &cpu_median, &cpu_high);
+		pacing_percentiles(stereo_pacing.gpu_times, stereo_pacing.timed, &gpu_median, &gpu_high);
+		platform_log("stereo: frames shown for 1/2/3/4/5+ refreshes at %.1f Hz: %lu/%lu/%lu/%lu/%lu (repeat count %d); "
+			"frame CPU %.1f ms, GPU %.1f ms (medians; 95th %.1f, %.1f)", 1.0 / period, shown[1], shown[2], shown[3],
+			shown[4], shown[5], repeat, cpu_median, gpu_median, cpu_high, gpu_high);
+		stereo_pacing.timed = 0;
+		stereo_pacing.shortest = 0.0;
+	}
+}
+#endif
+
+static uint32_t gpu_metal_present_stereo(const struct gpu_stereo_present *present)
+{
+#if TARGET_OS_VISION
+	@autoreleasepool
+	{
+		MetalTexture *color[2] = { texture_record(present->eye_color[0]), texture_record(present->eye_color[1]) };
+		MetalTexture *depth[2] = { texture_record(present->eye_depth[0]), texture_record(present->eye_depth[1]) };
+		MetalTexture *hud = present->hud ? texture_record(present->hud) : nil;
+		MetalTexture *zoom = present->zoom ? texture_record(present->zoom) : nil;
+		BOOL on_screen = present->mode == HALO_STEREO_SCREEN || present->cinematic;
+
+		if (theater_wanted && !on_screen && present->mode == HALO_STEREO_HEAD && color[0] && color[0]->texture && color[1] &&
+			color[1]->texture && depth[0] && depth[0]->texture && depth[1] && depth[1]->texture && host_stereo_ready())
+		{
+			int eye;
+
+			command_buffer();
+			/* the eyes' depth is read after the frame, so it's stored */
+			pass_end();
+			for (eye = 0; eye < 2; eye++)
+			{
+				use_texture(color[eye]);
+				use_texture(depth[eye]);
+			}
+			/* the HUD layer, the crosshairs' layer and the HUD groups'
+			targets (host_stereo_hud.h) */
+			MetalTexture *hud_records[HOST_STEREO_HUD_LAYER_COUNT] = { hud };
+			__unsafe_unretained id<MTLTexture> hud_layers[HOST_STEREO_HUD_LAYER_COUNT] = { nil };
+			int layer;
+
+			hud_records[HOST_STEREO_HUD_LAYER_RETICLE] = present->reticle_layer ?
+				texture_record(present->reticle_layer) : nil;
+			for (layer = 0; layer < HALO_HUD_GROUP_COUNT; layer++)
+				hud_records[HOST_STEREO_HUD_LAYER_GROUP + layer] = present->hud_group[layer] ?
+					texture_record(present->hud_group[layer]) : nil;
+			hud_records[HOST_STEREO_HUD_LAYER_UI] = present->ui ? texture_record(present->ui) : nil;
+			for (layer = 0; layer < HOST_STEREO_HUD_LAYER_COUNT; layer++)
+				if (hud_records[layer] && hud_records[layer]->texture)
+				{
+					use_texture(hud_records[layer]);
+					hud_layers[layer] = hud_records[layer]->texture;
+				}
+			if (zoom && zoom->texture)
+				use_texture(zoom);
+			commit(YES);
+			stereo_pacing_count();
+			host_stereo_present(queue, color[0]->texture, color[1]->texture, depth[0]->texture, depth[1]->texture,
+				hud_layers, present->hud_group_extent, present->hud_aspect, present->hud_ui, present->reticle,
+				present->hud_tangents, zoom ? zoom->texture : nil, present->zoom_tangents, present->near_meters,
+				present->far_meters, stereo_cut_brightness(HOST_STEREO_VIEW_FULL, present->cut_covered ||
+				present->expanding, present->cut_requested),
+				present->vignette, present->ui_dim, present->expanding, present->expansion, present->expansion_bars,
+				present->fade, present->cutscene, present->cutscene_forward, present->cutscene_up,
+				present->cutscene_tangents, present->cutscene_dim);
+			frames++;
+			pacing.work_started = CACurrentMediaTime();
+			return 0;
+		}
+		/* HEAD mode with a menu over the film (the main menu's scripted
+		scene, the pause menu in a cutscene): the left eye's picture with the
+		menu on the UI's quad, as a frame without eyes, not on the screen */
+		if (theater_wanted && on_screen && present->hud_ui && color[0] &&
+			color[0]->texture && hud && hud->texture && host_stereo_ui_ready())
+		{
+			id<MTLTexture> picture;
+
+			command_buffer();
+			pass_end();
+			/* (a foveated eye at its screen shape) */
+			picture = foveation_picture(color[0]);
+			use_texture(color[0]);
+			use_texture(hud);
+			commit(YES);
+			host_stereo_present_ui(queue, picture, hud->texture,
+				stereo_cut_brightness(HOST_STEREO_VIEW_UI, present->cut_covered, 0));
+			frames++;
+			pacing.work_started = CACurrentMediaTime();
+			return 0;
+		}
+		if (theater_wanted && on_screen && color[0] && color[0]->texture && color[1] &&
+			color[1]->texture && host_stereo_ready())
+		{
+			id<MTLTexture> left, right;
+
+			command_buffer();
+			pass_end();
+			/* (foveated eyes at their screen shape) */
+			left = foveation_picture(color[0]);
+			right = foveation_picture(color[1]);
+			use_texture(color[0]);
+			use_texture(color[1]);
+			if (hud && hud->texture)
+				use_texture(hud);
+			commit(YES);
+			stereo_pacing_count();
+			host_theater_present_eyes(queue, left, right, hud ? hud->texture : nil,
+				present->fade, stereo_cut_brightness(HOST_STEREO_VIEW_SCREEN, present->cut_covered, 0));
+			frames++;
+			pacing.work_started = CACurrentMediaTime();
+			return 0;
+		}
+		stereo_cut_brightness(HOST_STEREO_VIEW_NONE, 0, 0);
+	}
+#endif
+	/* (the window: eye 0, or a zoomed frame's picture in its place) */
+	return gpu_metal_present(present->zoom ? present->zoom : present->eye_color[0]);
 }
 
 static uint32_t gpu_metal_call_count_take(void)
@@ -2591,6 +3969,10 @@ static void gpu_metal_initialize(uint32_t flags, struct gpu_capabilities *capabi
 		visibility_wait = (flags & GPU_INITIALIZE_FIXED_TIMESTEP) != 0;
 		metalfx_wanted = (flags & GPU_INITIALIZE_METALFX) != 0;
 		metal_state_initialize(&state_cache, !(flags & GPU_INITIALIZE_NO_STATE_CACHE));
+		specialize_off = (flags & GPU_INITIALIZE_NO_SPECIALIZE) != 0;
+		built_during_play = [NSMutableData data];
+		if (specialize_off)
+			platform_log("Metal: vertex shaders are not specialized (debug.metal_specialize)");
 #ifndef HAVE_METALFX
 		if (metalfx_wanted)
 			platform_log("Metal: this build has no MetalFX; the picture is scaled bilinearly");
@@ -2602,6 +3984,9 @@ static void gpu_metal_initialize(uint32_t flags, struct gpu_capabilities *capabi
 		if (!layer || !device)
 			host_fatal("Metal is unavailable (layer %p, device %p)", (__bridge void *)layer, (__bridge void *)device);
 		queue = [device newCommandQueue];
+		/* (after the device: the archive is the device's, and named by its GPU) */
+		if (!(flags & GPU_INITIALIZE_NO_PIPELINE_ARCHIVE))
+			archive_open();
 #if TARGET_OS_VISION
 		if (flags & GPU_INITIALIZE_IMMERSIVE)
 		{
@@ -2640,6 +4025,13 @@ static void gpu_metal_initialize(uint32_t flags, struct gpu_capabilities *capabi
 		depth_states = [NSMutableDictionary dictionary];
 		samplers = [NSMutableDictionary dictionary];
 		scratch_colors = [NSMutableDictionary dictionary];
+		test_maps = [NSMutableDictionary dictionary];
+		{
+			char value[16];
+
+			host_config_string("debug.rate_map_test", "false", value, sizeof(value));
+			rate_map_test = !strcmp(value, "true");
+		}
 		compile_options = [MTLCompileOptions new];
 		/* vertex shaders: no fast math. The GLSL is highp, and the compiler
 		mustn't reorder its arithmetic; invariance keeps a position computed in

@@ -255,6 +255,9 @@ void player_control_initialize(
 	void);
 void player_control_dispose(
 	void);
+/* port: the script has taken the camera from the player */
+boolean player_control_camera_control_disabled(
+	void);
 boolean scripted_player_control_set_camera_control(
 	boolean camera_control);
 void player_control_inhibit_buttons(

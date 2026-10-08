@@ -375,6 +375,11 @@ union argb_color *interface_get_rgb_color(
 	return color;
 }
 
+#ifdef HALO_IOS
+/* port/linux/src/port_config.c's */
+int config_boolean(const char *name);
+#endif
+
 void interface_draw_fullscreen_overlays(
 	void)
 {
@@ -387,6 +392,18 @@ void interface_draw_fullscreen_overlays(
 	terminal_draw();
 	main_framerate_render();
 	render_debug_profile();
+#else
+	/* port: debug.terminal_on_screen draws the console's output (what
+	print and the console's commands print) on iOS too, for reminders
+	bound to cheats.txt's buttons in a headset */
+	{
+		static int terminal_on_screen = -1;
+
+		if (terminal_on_screen < 0)
+			terminal_on_screen = config_boolean("debug.terminal_on_screen") != 0;
+		if (terminal_on_screen)
+			terminal_draw();
+	}
 #endif
 
 	return;
@@ -565,7 +582,19 @@ void interface_draw_bitmap_modulated(
 	return;
 }
 
+/* port: interface_draw_screen is split in two so that stereo
+(source/render/render.c) can run the screen effects per eye and draw the HUD
+once; mono calls both, in the original order */
 void interface_draw_screen(
+	void)
+{
+	interface_draw_screen_effects();
+	interface_draw_hud();
+
+	return;
+}
+
+void interface_draw_screen_effects(
 	void)
 {
 	real flashlight_power;
@@ -586,7 +615,11 @@ void interface_draw_screen(
 				&hud_definition->screen_effects,
 				0,
 				struct hud_screen_effect_definition);
-			boolean zoomed = player_control_get_zoom_level(render.local_player_index) != NONE;
+			/* port: in stereo, the eyes of a zoomed frame (drawn while the
+			zoomed pass waits under a menu) keep the zoom's screen effects out
+			(halo_stereo.h): the zoomed pass has them */
+			boolean zoomed = player_control_get_zoom_level(render.local_player_index) != NONE &&
+				!halo_stereo_eye_unzoomed();
 			struct rasterizer_cinematic_screen_effect_parameters parameters;
 
 			csmemset(&parameters, 0, sizeof(parameters));
@@ -718,8 +751,21 @@ void interface_draw_screen(
 		rasterizer_screen_effect(NULL);
 	}
 
+	return;
+}
+
+void interface_draw_hud(
+	void)
+{
+	if (render.local_player_index == NONE)
+		return;
+
 	hud_draw_screen();
+	/* port: a corner the HUD took outside its group spans ends with it, and
+	with the game engine's own drawing after it (halo_stereo.h) */
+	halo_hud_group_forget_corner();
 	game_engine_post_rasterize();
+	halo_hud_group_forget_corner(); /* port */
 
 	return;
 }

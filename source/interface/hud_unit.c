@@ -775,6 +775,9 @@ void hud_render_unit_interface(
 
 	unit_hud_shield_meter_mapper_tick();
 	unit_hud_outline_mapper_tick();
+	/* port: the unit's HUD is its own group (halo_stereo.h), the shields,
+	health, flashlight and a vehicle's seats with their labels */
+	halo_hud_group_begin(HALO_HUD_GROUP_UNIT);
 
 	if (player->local_player_index == render.local_player_index &&
 		player->unit_index != NONE)
@@ -1114,6 +1117,9 @@ void hud_render_unit_interface(
 					short draw_flags = 0;
 					point2d corner;
 
+					/* port: the motion sensor is the tracker's group, inside the
+					unit's (halo_stereo.h) */
+					halo_hud_group_begin(HALO_HUD_GROUP_TRACKER);
 					absolute_placement.corner = _hud_anchor_bottom_left;
 					SET_FLAG(
 						draw_flags,
@@ -1167,6 +1173,7 @@ void hud_render_unit_interface(
 						local_player_index,
 						local_player_count() > 1,
 						&corner);
+					halo_hud_group_end(); /* port */
 				}
 
 				{
@@ -1345,6 +1352,7 @@ void hud_render_unit_interface(
 		}
 	}
 
+	halo_hud_group_end(); /* port */
 	match_assert_stack_frame("c:\\halo\\SOURCE\\interface\\hud_unit.c", 0x3C9);
 
 	return;

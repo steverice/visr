@@ -9,20 +9,25 @@ loop until the scene returns; the game resumes where it was. Not on a Mac. */
 
 static _Atomic int backgrounded;
 
+/* host_main.m: whether a scene is the game's window's (any of SDL's window
+scenes before the window exists). Another scene going to the background (an
+extra window scene being closed) leaves the game playing */
+int host_scene_is_games(void *scene);
+
 void host_lifecycle_install(void) {
     /* an iPad app on a Mac (tools/mac_run.py) may draw in the background, and
        a test run must not stop because its window went behind another */
     if(NSProcessInfo.processInfo.isiOSAppOnMac || NSProcessInfo.processInfo.isMacCatalystApp)return;
     [NSNotificationCenter.defaultCenter addObserverForName:UISceneDidEnterBackgroundNotification object:nil
         queue:nil usingBlock:^(NSNotification *notification){
-            (void)notification;
+            if(!host_scene_is_games((__bridge void *)notification.object))return;
             atomic_store(&backgrounded,1);
             host_sdl_audio_pause(1);
             host_logf(HOST_LOG_INFO,"in the background: audio paused, the game holds at its next frame");
         }];
     [NSNotificationCenter.defaultCenter addObserverForName:UISceneWillEnterForegroundNotification object:nil
         queue:nil usingBlock:^(NSNotification *notification){
-            (void)notification;
+            if(!host_scene_is_games((__bridge void *)notification.object))return;
             atomic_store(&backgrounded,0);
             host_sdl_audio_pause(0);
             host_logf(HOST_LOG_INFO,"in the foreground: the game resumes");

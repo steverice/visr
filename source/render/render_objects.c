@@ -102,6 +102,8 @@ symbols in this file:
 #include "objects/widgets/widgets.h"
 #include "units/units.h"
 #include "models/models.h"
+/* port: the model tag's node count, for the first-person body */
+#include "models/model_definitions.h"
 #include "shaders/shader_definitions.h"
 #include "shaders/shaders.h"
 #include "game/players.h"
@@ -246,6 +248,9 @@ static void render_object(
 	struct object_render_data *data);
 static void process_rendered_objects(
 	struct object_render_data *data);
+/* port: head-tracked stereo's body (port/linux/game/first_person_body.c) */
+static void render_first_person_body(
+	struct object_render_data *data);
 
 short structure_visibility_find_objects(
 	long *object_indices,
@@ -275,6 +280,8 @@ static struct render_object_globals render_object_globals = { 0 };
 boolean debug_inactive_objects = FALSE;
 
 static boolean reported_rendered_object_overflow = FALSE;
+/* port: while render_first_person_body draws the player's unit */
+static boolean first_person_body_pass = FALSE;
 
 /* ---------- public code */
 
@@ -364,6 +371,12 @@ void render_objects(
 		first_person_pass = !first_person_pass;
 	}
 	while (first_person_pass);
+
+	/* port: the first-person body, after the first-person weapon, so the
+	weapon pass's stencil (RASTERIZER_STENCIL_MODE_REJECT, left set when its
+	last model ends) keeps the body off the arms and weapon whatever their
+	depths */
+	render_first_person_body(&data);
 
 	rasterizer_models_end();
 
@@ -470,8 +483,15 @@ static void render_object_list(
 	while (object_index != NONE)
 	{
 		struct object_datum *object = object_get(object_index);
+		/* port: in head-tracked stereo the player's own unit draws below the
+		view, without its head or children, in its own pass after the
+		first-person weapon (render_first_person_body), and casts its shadow
+		(port/linux/game/first_person_body.c), on foot or in a vehicle's
+		first-person seat */
+		boolean first_person_body = halo_first_person_body(object_index) && !render.camera.mirrored;
 
-		if (!object_is_first_person_camera(object_index) || render.camera.mirrored)
+		if (!object_is_first_person_camera(object_index) || render.camera.mirrored ||
+			(first_person_body && (data->shadow || first_person_body_pass)))
 		{
 			struct render_model_effect model_effect;
 
@@ -505,6 +525,44 @@ static void render_object_list(
 				struct object_definition *definition =
 					object_definition_get(object->definition_index);
 				real level_of_detail_pixels = object_get_level_of_detail_pixels(object_index);
+				/* port: the first-person body's are a render-only copy, and its
+				shadow's another, both set back along the facing */
+				real_matrix4x3 const *node_matrices = object_get_node_matrices(object_index);
+
+				if (first_person_body && definition->object.model.index != NONE)
+				{
+					short node_count = (short)(object->object.node_matrices.size / (short)sizeof(real_matrix4x3));
+					short model_node_count = (short)model_definition_get(definition->object.model.index)->nodes.count;
+					/* the world facing: a seated unit's forward is in its seat's
+					node frame */
+					real_vector3d facing;
+
+					node_count = MIN(node_count, model_node_count);
+					object_get_orientation(object_index, &facing, NULL);
+					node_matrices = halo_first_person_body_matrices(
+						definition->object.model.index,
+						node_matrices,
+						node_count,
+						&facing.i,
+						&render.camera.position.x,
+						first_person_weapon_visible(render.local_player_index),
+						object->object.parent_object_index != NONE,
+						data->shadow);
+					if (!data->shadow && !halo_first_person_body_fill())
+					{
+						halo_first_person_body_log(object_index, node_matrices, node_count);
+					}
+				}
+				/* port: in a stereo eye pass, far scenery (a10's ring) draws a render-only copy that moves
+				with the eye, so it has no disparity and reads as far away (port/linux/game/stereo_far.c) */
+				if (!data->shadow && halo_stereo_eye_position())
+				{
+					node_matrices = halo_stereo_far_matrices(
+						tag_get_name(object->definition_index),
+						node_matrices,
+						(short)(object->object.node_matrices.size / (short)sizeof(real_matrix4x3)),
+						&render.camera.position);
+				}
 
 				match_assert(
 					"c:\\halo\\SOURCE\\render\\render_objects.c",
@@ -602,7 +660,7 @@ static void render_object_list(
 					render_model(
 						definition->object.model.index,
 						level_of_detail_pixels,
-						object_get_node_matrices(object_index),
+						node_matrices,
 						object->object.region_permutations,
 						object->object.outgoing_change_colors,
 						object->object.outgoing_function_values,
@@ -624,7 +682,7 @@ static void render_object_list(
 					render_model(
 						definition->object.model.index,
 						level_of_detail_pixels * 0.3f,
-						object_get_node_matrices(object_index),
+						node_matrices,
 						object->object.region_permutations,
 						object->object.outgoing_change_colors,
 						object->object.outgoing_function_values,
@@ -638,7 +696,9 @@ static void render_object_list(
 				}
 			}
 
-			if (!data->shadow && object->object.first_widget_index != NONE)
+			/* port: the body's widgets and children (the third-person weapon)
+			go with its hidden torso */
+			if (!data->shadow && object->object.first_widget_index != NONE && !first_person_body)
 			{
 				struct render_animation animation;
 
@@ -647,13 +707,22 @@ static void render_object_list(
 				widgets_render(object_index, data->lighting, &animation);
 			}
 
-			if (object->object.first_child_object_index != NONE)
+			if (object->object.first_child_object_index != NONE && !first_person_body)
 			{
 				render_object_list(
 					data,
 					data->shadow ? NULL : &model_effect,
 					object->object.first_child_object_index);
 			}
+		}
+
+		/* port: the body pass draws the player's unit alone: seated, its next
+		object is a seat-mate on the vehicle's child list, who would draw a
+		second time under the weapon's stencil with the player's lighting (on
+		foot the unit has no next object) */
+		if (first_person_body_pass)
+		{
+			return;
 		}
 
 		object_index = object->object.next_object_index;
@@ -1103,7 +1172,10 @@ static void render_object(
 	{
 		struct object_datum *object = object_get(data->object_index);
 
-		if (!object_is_first_person_camera(data->object_index) &&
+		/* port: the first-person body casts its shadow (first_person_body.c),
+		except in a mirror, as in mono */
+		if ((!object_is_first_person_camera(data->object_index) ||
+				(halo_first_person_body(data->object_index) && !render.camera.mirrored)) &&
 			!TEST_FLAG(object->object.flags, _object_shadowless_bit) &&
 			(!TEST_FLAG(object->object.flags, _object_invisible_bit) ||
 				object->object.first_child_object_index != NONE))
@@ -1205,6 +1277,58 @@ static void process_rendered_objects(
 		data->object_index =
 			render_object_globals.rendered_object_indices[rendered_object_index];
 		render_object(data);
+	}
+
+	return;
+}
+
+/* port: head-tracked stereo's body: the player's unit, which the object
+pass skipped as in mono, drawn alone after the first-person weapon
+(port/linux/game/first_person_body.c), then again with the cull reversed
+for the inside faces its cut neck shows, in a flat dark color
+(halo_first_person_body_fill, rasterizer_xbox_models.c), both under the
+weapon pass's stencil reject, with its depth clamped rather than clipped
+at the near plane (halo_first_person_body_set_depth_clamp). It draws when its root (the vehicle when
+seated, the unit itself on foot) is in the rendered list: a seated unit is
+a child object, never in a cluster, so the list holds only its vehicle.
+Never in a mirror's window, where the object pass draws the whole player
+already */
+static void render_first_person_body(
+	struct object_render_data *data)
+{
+	long player_index = local_player_get_player_index(render.local_player_index);
+	long unit_index = player_index == NONE ? NONE : player_get(player_index)->unit_index;
+	long root_index;
+	short rendered_object_index;
+
+	if (unit_index == NONE || render.camera.mirrored || !halo_first_person_body(unit_index))
+	{
+		return;
+	}
+
+	root_index = unit_index;
+	while (object_get(root_index)->object.parent_object_index != NONE)
+	{
+		root_index = object_get(root_index)->object.parent_object_index;
+	}
+
+	for (rendered_object_index = 0;
+		rendered_object_index < render_object_globals.rendered_object_count;
+		rendered_object_index++)
+	{
+		if (render_object_globals.rendered_object_indices[rendered_object_index] == root_index)
+		{
+			first_person_body_pass = TRUE;
+			halo_first_person_body_set_depth_clamp(TRUE);
+			data->object_index = unit_index;
+			render_object(data);
+			halo_first_person_body_set_fill(TRUE);
+			render_object(data);
+			halo_first_person_body_set_fill(FALSE);
+			halo_first_person_body_set_depth_clamp(FALSE);
+			first_person_body_pass = FALSE;
+			break;
+		}
 	}
 
 	return;

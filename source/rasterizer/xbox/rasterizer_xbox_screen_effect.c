@@ -349,6 +349,20 @@ static void rasterizer_screen_effect_set_texture_transforms(
 		{
 			constants[0][3] += x_offset * convolution_scale.i;
 			constants[1][3] += y_offset * convolution_scale.j;
+			/* port: the zoomed pass is shown over the view's shape, not the
+			screen's (halo_stereo_zoom_fit): the mask, laid out centered in
+			the screen's lines, is widened or narrowed across about the
+			viewport's center so it keeps its shape, fit to the view's
+			height: its coordinate at a pixel x becomes its coordinate at
+			c + (x - c) / fit, c the viewport's center */
+			if (halo_stereo_current_layer() == HALO_STEREO_LAYER_ZOOM)
+			{
+				real fit = halo_stereo_zoom_fit((real)viewport_map.width / (real)viewport_map.height);
+				real center = viewport_map.width * 0.5f;
+
+				constants[0][3] += center * convolution_scale.i * (1.0f - 1.0f / fit);
+				constants[0][0] /= fit;
+			}
 		}
 
 		if (scanline_bitmap == &viewport_map)
@@ -1184,6 +1198,17 @@ void _rasterizer_screen_flash(
 	unsigned long alpha_input;
 	short viewport_width;
 	short viewport_height;
+	/* port: stereo's HUD layer (render_player_frame_stereo), drawn after the
+	eyes have the flash. The presenter puts the layer over each eye as
+	premultiplied color plus the eye times the layer's alpha, the picture's
+	transmittance (d3d8_device.c), so a lighten or darken flash scaled by
+	one minus that (D3DBLEND_INVDESTALPHA, alpha unwritten) gives the HUD
+	exactly mono's flash over it, and nothing where the layer is empty; the
+	other types change the picture alone. The same for the reticle's layer
+	and each HUD group's target, which the presenter puts over each eye the
+	same way */
+	boolean stereo_hud_layer = halo_stereo_current_layer() == HALO_STEREO_LAYER_HUD ||
+		halo_stereo_current_layer() == HALO_STEREO_LAYER_RETICLE;
 
 	match_assert(
 		"c:\\halo\\SOURCE\\rasterizer\\xbox\\rasterizer_xbox_screen_effect.c",
@@ -1193,7 +1218,10 @@ void _rasterizer_screen_flash(
 	rasterizer_profile_begin(_rasterizer_profile_screen_flash);
 
 	if (rasterizer_debug_options.screen_flash_enabled &&
-		global_window_parameters.screen_flash.type != _render_screen_flash_type_none)
+		global_window_parameters.screen_flash.type != _render_screen_flash_type_none &&
+		(!stereo_hud_layer ||
+			global_window_parameters.screen_flash.type == _render_screen_flash_type_lighten ||
+			global_window_parameters.screen_flash.type == _render_screen_flash_type_darken))
 	{
 		flash_color.alpha = global_window_parameters.screen_flash.intensity *
 			global_window_parameters.screen_flash.color.alpha;
@@ -1238,7 +1266,7 @@ void _rasterizer_screen_flash(
 				IDirect3DDevice8_SetRenderState(
 					global_d3d_device,
 					D3DRS_SRCBLEND,
-					D3DBLEND_ONE);
+					stereo_hud_layer ? D3DBLEND_INVDESTALPHA : D3DBLEND_ONE);
 				IDirect3DDevice8_SetRenderState(
 					global_d3d_device,
 					D3DRS_DESTBLEND,
@@ -1255,7 +1283,7 @@ void _rasterizer_screen_flash(
 				IDirect3DDevice8_SetRenderState(
 					global_d3d_device,
 					D3DRS_SRCBLEND,
-					D3DBLEND_ONE);
+					stereo_hud_layer ? D3DBLEND_INVDESTALPHA : D3DBLEND_ONE);
 				IDirect3DDevice8_SetRenderState(
 					global_d3d_device,
 					D3DRS_DESTBLEND,

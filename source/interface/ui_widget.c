@@ -6270,6 +6270,17 @@ static void widget_instance_render_recursive(
 				alpha_modifier;
 		}
 		color = modulate_pixel32_by_real_alpha(0xFFFFFFFF, alpha);
+		/* port: in HEAD mode's full view a flat fill over the whole design
+		space (the dim behind a menu or a help panel) darkens the eyes
+		instead, by its opacity (halo_stereo_ui_dim_active): on the UI's
+		quad it would be a dark rectangle */
+		if (definition->bounds.x0 <= 0 && definition->bounds.y0 <= 0 &&
+			definition->bounds.x1 >= 640 && definition->bounds.y1 >= 480 &&
+			bitmap->width <= 16 && bitmap->height <= 16 && halo_stereo_ui_dim_active())
+		{
+			halo_stereo_ui_dim_add(_texture_cache_bitmap_get_hardware_format(bitmap, FALSE, TRUE), alpha);
+		}
+		else
 		{
 			/* port: a frame of ui.map's that the menus scale (the Xbox's
 			picture of the button settings, in the profile settings' smaller

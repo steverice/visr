@@ -5,6 +5,9 @@
 #include "guest_image.h"
 #include "host_display_pin.h"
 #include "host_join_link.h"
+#if !TARGET_OS_TV
+#include "host_texture_settings.h"
+#endif
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 #if TARGET_OS_MACCATALYST
@@ -68,8 +71,131 @@ static uint32_t copy_string(const char *text) {
     char *p=host_low_map(strlen(text)+1,PROT_READ|PROT_WRITE);
     if(!p)host_fatal("out of guest memory");strcpy(p,text);return guest_pointer(p);
 }
+/* SDL's scene delegate (SDL_uikitappdelegate.m) calls main for every window
+scene that connects: a second one (visionOS can connect or restore another
+window scene of the app) fires its start timer whenever the running guest
+pumps the run loop (SDL_PollEvent), and would start a second guest inside the
+first, nested on the main thread, until the system kills the hung app. Only
+the first call runs the game. A later one returns at once, and its
+postFinishLaunch then turns SDL's iOS event pump off (SDL_SetiOSEventPump),
+which is global: the running game would never run the main run loop again,
+so no UIKit event, lifecycle notification or main-queue block would reach it.
+host_extra_scene_poll, from the game's event poll, turns the pump back on and
+closes the extra scene. */
+static int extra_scene_pending;
+
+/* the scene holding the game's window, or nil before it exists */
+static UIWindowScene *game_window_scene(void) {
+    SDL_Window *game_window=host_sdl_window();
+    UIWindow *window=game_window ? (__bridge UIWindow *)SDL_GetPointerProperty(SDL_GetWindowProperties(game_window),
+        SDL_PROP_WINDOW_UIKIT_WINDOW_POINTER,NULL) : nil;
+    return window.windowScene;
+}
+
+/* whether a disconnecting scene is the game's: yes before the game's window
+exists, when any of SDL's window scenes could be it (as before) */
+static BOOL scene_is_the_games(UIScene *scene) {
+    UIWindowScene *game_scene=game_window_scene();
+    if(game_scene)return scene==game_scene;
+    return [scene isKindOfClass:UIWindowScene.class] &&
+        [NSStringFromClass([(NSObject *)scene.delegate class]) isEqualToString:@"SDLUIKitSceneDelegate"];
+}
+
+int host_scene_is_games(void *scene) {
+    return scene_is_the_games((__bridge UIScene *)scene);
+}
+
+/* closes SDL's window scenes other than the one holding the game's window
+(SDL's plain UIWindow, from the SDL window's properties); NO until that
+window exists, since before then the game's scene could be any of them */
+static BOOL close_extra_window_scenes(void) {
+#if !TARGET_OS_TV
+    UIWindowScene *game_scene=game_window_scene();
+    if(!game_scene)return NO;
+    for(UIScene *scene in UIApplication.sharedApplication.connectedScenes){
+        /* SDL's window scenes only, never theater mode's immersive space */
+        if(scene==game_scene || ![scene isKindOfClass:UIWindowScene.class] ||
+            ![NSStringFromClass([(NSObject *)scene.delegate class]) isEqualToString:@"SDLUIKitSceneDelegate"])continue;
+        host_logf(HOST_LOG_INFO,"closing an extra window scene (%s)",scene.session.role.UTF8String);
+        [UIApplication.sharedApplication requestSceneSessionDestruction:scene.session options:nil
+            errorHandler:^(NSError *error){host_logf(HOST_LOG_WARN,"the extra window scene didn't close: %s",
+                error.description.UTF8String);}];
+    }
+#endif
+    return YES;
+}
+
+/* the game's event poll (host_sdl.c), on the main thread outside any SDL
+call: after a later main call, the event pump comes back on, and the extra
+scene closes once the game's window exists */
+/* polls left to watch the game's window after an extra scene closed */
+static int extra_scene_watch;
+
+void host_extra_scene_poll(void) {
+    /* SDL's delegate for the closed scene tells the whole app it went to the
+       background (SDL_uikitappdelegate.m: SDL_OnApplicationDidEnterBackground),
+       which minimizes the game's window though its own scene stays active, and
+       no restore follows: restore it */
+    if(extra_scene_watch>0){
+        SDL_Window *window=host_sdl_window();
+        extra_scene_watch--;
+        if(window&&(SDL_GetWindowFlags(window)&SDL_WINDOW_MINIMIZED)){
+            /* SDL's UIKit driver has no RestoreWindow (SDL_RestoreWindow does
+               nothing there); its foreground notifications give the window
+               back its focus and send it RESTORED, which clears the flag and
+               enters fullscreen again */
+            SDL_OnApplicationWillEnterForeground();
+            SDL_OnApplicationDidEnterForeground();
+            if(SDL_GetWindowFlags(window)&SDL_WINDOW_MINIMIZED)
+                host_logf(HOST_LOG_WARN,"the game's window is still minimized after the extra scene's close");
+            else
+                host_logf(HOST_LOG_INFO,"the game's window is restored after the extra scene's close minimized it");
+            extra_scene_watch=0;
+        }
+    }
+    if(!extra_scene_pending)return;
+    if(extra_scene_pending==1){
+        char directory[1024];
+        SDL_SetiOSEventPump(true);
+        host_logf(HOST_LOG_INFO,"the event pump is back on after the extra window scene's start");
+        /* SDL's scene delegate also changed the working directory to the app's
+           resources for the new scene; the host's relative paths (config.toml,
+           host_config.c) are the data folder's */
+        if(getcwd(directory,sizeof(directory))&&strcmp(directory,data_root)){
+            if(chdir(data_root)==0)
+                host_logf(HOST_LOG_INFO,"the working directory is the data folder again (the extra scene set %s)",directory);
+            else
+                host_logf(HOST_LOG_WARN,"the working directory can't go back to the data folder (errno %d); it's %s",
+                    errno,directory);
+        }
+        /* a block on the main queue runs only when the main run loop does */
+        dispatch_async(dispatch_get_main_queue(),^{host_logf(HOST_LOG_INFO,"the main queue runs again");});
+        extra_scene_pending=2;
+    }
+    if(close_extra_window_scenes()){
+        extra_scene_pending=0;
+        extra_scene_watch=600;
+    }
+}
+
+/* debug.test_extra_scene (the simulator): asks for a second window scene of
+the app once the game runs, to drive the path above */
+void host_extra_scene_test(void) {
+#if !TARGET_OS_TV
+    host_logf(HOST_LOG_INFO,"debug.test_extra_scene: asking for a second window scene");
+    [UIApplication.sharedApplication requestSceneSessionActivation:nil userActivity:nil options:nil
+        errorHandler:^(NSError *error){host_logf(HOST_LOG_WARN,"debug.test_extra_scene: %s",error.description.UTF8String);}];
+#endif
+}
+
 int main(int argc,char **argv) {
     (void)argc;(void)argv;
+    static int entered;
+    if(entered++){
+        host_logf(HOST_LOG_WARN,"another window scene connected and asked to start the game while it runs (start %d); ignored",entered);
+        extra_scene_pending=1;
+        return 0;
+    }
     @autoreleasepool {
 #if TARGET_OS_TV
         /* tvOS apps may only write to Caches (purgeable). */
@@ -116,7 +242,14 @@ int main(int argc,char **argv) {
            loop is when a player is most likely to close the window; delivered
            while that loop or the guest pumps the run loop. */
         [NSNotificationCenter.defaultCenter addObserverForName:UISceneDidDisconnectNotification object:nil queue:nil
-            usingBlock:^(NSNotification *notification){(void)notification;host_exit(0);}];
+            usingBlock:^(NSNotification *notification){
+                /* an extra window scene closing (close_extra_window_scenes), or
+                theater mode's space, isn't the game's window closing */
+                if(!scene_is_the_games(notification.object)){
+                    host_logf(HOST_LOG_INFO,"a scene that isn't the game's window disconnected");
+                    return;
+                }
+                host_exit(0);}];
 #endif
         UIApplication.sharedApplication.idleTimerDisabled=YES;
 #if TARGET_OS_MACCATALYST
@@ -130,6 +263,10 @@ int main(int argc,char **argv) {
         }
 #endif
         host_ios_prepare_assets(data_root);
+#if !TARGET_OS_TV
+        /* the Settings app's texture pane: acted on now and at every return to the foreground */
+        host_texture_settings_observe(data_root);
+#endif
         /* the arena is the step a device can refuse (visionOS: see port/ios/README.md) */
         if(host_load_image(NULL,0))host_fatal(host_arena?"Could not map the signed game image. See ios-runtime.log in Files.":
             "Could not reserve the game's 4 GB memory arena. See ios-runtime.log in Files.");

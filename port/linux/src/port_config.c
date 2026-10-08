@@ -5,9 +5,11 @@ The native ports' settings (port_config.h), parsed with tomlc17
 (port/third_party/tomlc17). Every setting is in the table below with its
 type, default, the HALO_* environment variable that overrides it and the
 comment written into a new file. The file is read once, on the first
-question; unknown keys and values of the wrong type are reported in the log
-and the defaults used instead, and the file itself is never rewritten once
-it exists, so that the player's edits and comments stay.
+question (config_reload_boolean reads one setting again); unknown keys and
+values of the wrong type are reported in the log and the defaults used
+instead, and a table or key repeated in it keeps its first and is reported
+too. Once it exists, the file is only rewritten to add a newer version's
+settings or fold such repeats, keeping the player's edits and comments.
 */
 
 #include "platform.h"
@@ -120,6 +122,16 @@ static const struct config_setting config_settings[] =
 		"the screen's resolution each way, as the Xbox had them, or \"full\"\n"
 		"(sharper reflections; up to a whole second render of the scene's pixels\n"
 		"where a mirror shows)." },
+	{ "display.model_lod", _config_string, "\"max\"", "HALO_MODEL_LOD", _environment_value, _platform_all,
+		"Which geometry detail level models draw: \"max\" (default) always the\n"
+		"highest they have, so they never pop between levels or drop out with\n"
+		"distance; \"auto\" picks by on-screen size, as the Xbox did. The console's\n"
+		"rasterizer_debug_model_lod overrides it." },
+	{ "display.lod_scale", _config_real, "1.0", "HALO_LOD_SCALE", _environment_value, _platform_ios,
+		"HEAD mode and the side-by-side view: a multiplier on the pixel size the game\n"
+		"picks model detail and particle distance by; 1.0 is the Xbox's (0.5 to 4).\n"
+		"Higher keeps model detail and particles farther out, for the headset's\n"
+		"denser pixels, at some frame time. Sprites keep their size. Read at start." },
 	{ "display.compressed_textures", _config_boolean, "true", "HALO_COMPRESSED_TEXTURES", _environment_value, _platform_ios,
 		"With the Metal renderer, keep the game's DXT textures compressed on the GPU\n"
 		"where it supports them (BC1-3): a quarter to an eighth of the memory, and\n"
@@ -135,6 +147,157 @@ static const struct config_setting config_settings[] =
 	{ "display.immersive", _config_boolean, "false", "HALO_IMMERSIVE", _environment_value, _platform_ios,
 		"Apple Vision Pro, visionOS 26 and later: show the game on a screen standing\n"
 		"in the room (an immersive space) instead of in a window." },
+	{ "display.stereo", _config_string, "\"off\"", "HALO_STEREO", _environment_value, _platform_ios,
+		"Apple Vision Pro: \"off\" (flat), \"head\" (in stereo, the head turns the view),\n"
+		"\"screen\" (in stereo on the theater screen), or \"side_by_side\" (a debug view\n"
+		"of both eyes in the window)." },
+	{ "display.frame_repeat", _config_integer, "0", "HALO_FRAME_REPEAT", _environment_value, _platform_ios,
+		"Apple Vision Pro, display.stereo = \"head\" or \"screen\": how many extra\n"
+		"display refreshes each frame stays up, 0 to 3: 0 draws a frame every\n"
+		"refresh (90 a second), 1 every other (45 a second) for when 90 costs too\n"
+		"much. Set when the immersive space opens." },
+	{ "display.foveation", _config_boolean, "true", "HALO_FOVEATION", _environment_value, _platform_ios,
+		"Apple Vision Pro, display.stereo = \"head\": render through the\n"
+		"Compositor's foveation, sharper at the middle of each view than at its\n"
+		"edges, at display.render_quality. False renders each view evenly, for\n"
+		"comparisons. Set when the immersive space opens." },
+	{ "display.render_quality", _config_real, "0.6", "HALO_RENDER_QUALITY", _environment_value, _platform_ios,
+		"With display.foveation: the Compositor's render quality, 0 to 1 (the\n"
+		"headset's lowest to its highest): how many pixels the middle of each view\n"
+		"gets. Higher is sharper and costs more frame time and memory. In place of\n"
+		"display.render_scale for the eyes. The default, 0.6, is the highest\n"
+		"quality that held 90 Hz in the 2026-10-07 headset sweep (a10, foveated):\n"
+		"0.7 and 0.8 begin to miss refreshes, 0.9 and 1.0 miss 5 to 9%, and\n"
+		"unfoveated rendering ran at 45 Hz. Set when the immersive space opens." },
+	{ "display.first_person_body", _config_boolean, "true", "HALO_FIRST_PERSON_BODY", _environment_set_is_true, _platform_ios,
+		"With display.stereo = \"head\": draw the Master Chief's body below the\n"
+		"view (no head or neck, and no third-person arms while you hold a weapon),\n"
+		"so looking down shows your chest and feet. None while a script animates\n"
+		"him; in a seat, as display.first_person_body_seats says." },
+	{ "display.first_person_body_offset", _config_real, "0.08", "HALO_FIRST_PERSON_BODY_OFFSET", _environment_value,
+		_platform_ios,
+		"With display.first_person_body: how far behind your eyes the body stands,\n"
+		"in world units (0 to 0.2; 0.08 is about 24 cm), so the feet show past the\n"
+		"chest when you look down. Read at start." },
+	{ "display.first_person_body_seats", _config_boolean, "true", "HALO_FIRST_PERSON_BODY_SEATS", _environment_set_is_true,
+		_platform_ios,
+		"With display.first_person_body: also draw the legs in a vehicle's\n"
+		"first-person seat (the Warthog's passenger seat, the Scorpion's rider\n"
+		"seats). Seats whose camera is on the gun or behind the vehicle, and a10's\n"
+		"cryo pod, show no body." },
+	{ "display.first_person_body_seat_offset", _config_real, "0.0", "HALO_FIRST_PERSON_BODY_SEAT_OFFSET",
+		_environment_value, _platform_ios,
+		"With display.first_person_body_seats: how far the seated legs move back\n"
+		"along the seat's facing, in world units (0 to 0.2). A seat's camera is a\n"
+		"marker on the vehicle, not a point on the body, so 0 means the legs sit\n"
+		"where the game puts them." },
+	{ "display.weapon_offset_down", _config_real, "0.0", "HALO_WEAPON_OFFSET_DOWN", _environment_value, _platform_ios,
+		"With display.stereo = \"head\": how far the first-person weapon and arms\n"
+		"sit below where the game puts them, in world units (0 to 0.2; 0.01 is about\n"
+		"3 cm), so the headset's taller view doesn't show where the arms end. Read\n"
+		"at start." },
+	{ "display.weapon_offset_back", _config_real, "0.0", "HALO_WEAPON_OFFSET_BACK", _environment_value, _platform_ios,
+		"With display.stereo = \"head\": how far the first-person weapon and arms\n"
+		"sit closer to your eyes than where the game puts them, in world units (0\n"
+		"to 0.2). Read at start." },
+	{ "display.eye_height_offset", _config_real, "0.0", "HALO_EYE_HEIGHT_OFFSET", _environment_value, _platform_ios,
+		"With display.stereo = \"head\": how far your eyes sit above the game's\n"
+		"camera, in world units (-0.1 to 0.1; 0.03 is about 9 cm), for trying a\n"
+		"taller eye height. Not in cutscenes. Read at start." },
+	{ "display.film_depth_share", _config_real, "0.25", "HALO_FILM_DEPTH_SHARE", _environment_value, _platform_ios,
+		"With display.stereo: how deep a cutscene (a 3D film on the screen) looks:\n"
+		"how far behind the screen the far distance sits, as a share of your eye\n"
+		"separation (0.05 to 0.9; more is deeper). Read at start." },
+	{ "display.film_convergence", _config_real, "1.75", "HALO_FILM_CONVERGENCE", _environment_value, _platform_ios,
+		"With display.stereo: in a cutscene, what lies this many meters ahead of\n"
+		"the camera sits on the screen's surface; nearer comes out in front of it\n"
+		"(0.3 to 10; less pushes faces back behind the screen). Read at start." },
+	{ "display.screen_depth_share", _config_real, "0.3", "HALO_SCREEN_DEPTH_SHARE", _environment_value, _platform_ios,
+		"With display.stereo = \"screen\": how deep the game looks on the screen (a\n"
+		"3D TV): how far behind the screen the far distance sits, as a share of\n"
+		"your eye separation (0.05 to 0.9; more is deeper, less keeps the reticle\n"
+		"from doubling on far targets). Read at start." },
+	{ "display.screen_convergence", _config_real, "1.0", "HALO_SCREEN_CONVERGENCE", _environment_value, _platform_ios,
+		"With display.stereo = \"screen\": what lies this many meters ahead of the\n"
+		"player sits on the screen's surface; nearer comes out in front of it\n"
+		"(0.3 to 10; 0.6 to 0.7 brings only walls you nearly touch in front).\n"
+		"Read at start." },
+	{ "display.screen_framing", _config_string, "\"band\"", "HALO_SCREEN_FRAMING", _environment_value, _platform_ios,
+		"With display.stereo = \"screen\": \"band\" (default) shows the game's\n"
+		"horizontal view across the 16:9 screen, so things look their natural\n"
+		"size, and the screen's bottom edge cuts the weapon like a window frame;\n"
+		"\"wide\" shows the flat game's wider view, everything a quarter smaller\n"
+		"and the whole weapon in view. Cutscenes fill the screen either way.\n"
+		"Read at start." },
+	{ "display.stereo_vehicle_screen", _config_boolean, "false", "HALO_STEREO_VEHICLE_SCREEN", _environment_value,
+		_platform_ios,
+		"With display.stereo = \"head\": put third-person cameras (a vehicle's chase\n"
+		"camera) on the theater screen, as cutscenes are. Off (default), they stay\n"
+		"around you: your head looks around from the camera, and the sticks drive\n"
+		"and aim. Read at start." },
+	{ "display.hud_corner_across", _config_real, "28.0", "HALO_HUD_CORNER_ACROSS", _environment_value, _platform_ios,
+		"With display.stereo = \"head\": how far out to the sides the HUD sits, in\n"
+		"degrees from the view's center: the outer corners of the weapon's counters\n"
+		"(top left), the shields and health (top right), the motion tracker (bottom\n"
+		"left) and the prompts and messages (left). Each piece grows toward the\n"
+		"center from there. 0 to 40 (both eyes see 40). Read at start." },
+	{ "display.hud_corner_up", _config_real, "20.0", "HALO_HUD_CORNER_UP", _environment_value, _platform_ios,
+		"With display.stereo = \"head\": how far up the HUD's top corners sit (the\n"
+		"weapon's counters, the shields and health), in degrees from the view's\n"
+		"center, 0 to 40. Read at start." },
+	{ "display.hud_tracker_down", _config_real, "22.0", "HALO_HUD_TRACKER_DOWN", _environment_value, _platform_ios,
+		"With display.stereo = \"head\": how far down the motion tracker's bottom\n"
+		"edge sits, in degrees below the view's center, 0 to 40. Read at start." },
+	{ "display.hud_messages_up", _config_real, "12.0", "HALO_HUD_MESSAGES_UP", _environment_value, _platform_ios,
+		"With display.stereo = \"head\": how far up the top of the help text,\n"
+		"prompts and messages sits, in degrees from the view's center; they run\n"
+		"down from there. 0 to 40. Read at start." },
+	{ "display.hud_scale", _config_real, "1.0", "HALO_HUD_SCALE", _environment_value, _platform_ios,
+		"With display.stereo = \"head\": the size of the HUD's pieces (not the\n"
+		"crosshair) against their natural 0.072 degrees a line, 0.5 to 2. Read at\n"
+		"start." },
+	{ "display.hud_distance", _config_real, "2.0", "HALO_HUD_DISTANCE", _environment_value, _platform_ios,
+		"With display.stereo = \"head\": how far ahead the HUD, the crosshair and the\n"
+		"menus rest, in meters, 1 to 4. Every piece keeps its size in your view at\n"
+		"any distance; only how near it looks changes. Read at start." },
+	{ "display.hud_depth", _config_boolean, "true", "HALO_HUD_DEPTH", _environment_value, _platform_ios,
+		"With display.stereo = \"head\": bring each HUD piece (the crosshair, the\n"
+		"corners) nearer while something under it is nearer than its resting\n"
+		"distance, so it always looks in front of what it covers. Off: the HUD\n"
+		"stays at display.hud_distance. Read at start." },
+	{ "display.hud_depth_share", _config_real, "0.85", "HALO_HUD_DEPTH_SHARE", _environment_value, _platform_ios,
+		"With display.hud_depth: how near a piece comes, as a share of the\n"
+		"distance to the nearest thing under it, 0.5 to 1. Read at start." },
+	{ "display.hud_depth_floor", _config_real, "0.3", "HALO_HUD_DEPTH_FLOOR", _environment_value, _platform_ios,
+		"With display.hud_depth: the nearest a piece comes, in meters, below\n"
+		"display.hud_distance. Read at start." },
+	{ "display.hud_depth_pull_in", _config_real, "0.1", "HALO_HUD_DEPTH_PULL_IN", _environment_value, _platform_ios,
+		"With display.hud_depth: the seconds a piece takes to come from its\n"
+		"resting distance to the nearest, 0 to 5. Read at start." },
+	{ "display.hud_depth_relax", _config_real, "1.0", "HALO_HUD_DEPTH_RELAX", _environment_value, _platform_ios,
+		"With display.hud_depth: the seconds a piece takes to go back from the\n"
+		"nearest to its resting distance, 0 to 5. Read at start." },
+	{ "display.hud_depth_relax_delay", _config_real, "0.5", "HALO_HUD_DEPTH_RELAX_DELAY", _environment_value,
+		_platform_ios,
+		"With display.hud_depth: the seconds a piece waits, once nothing near is\n"
+		"under it, before it goes back, 0 to 5. Read at start." },
+	{ "display.hud_resolution", _config_real, "1.0", "HALO_HUD_RESOLUTION", _environment_value, _platform_ios,
+		"HEAD mode and the side-by-side view: the pixels the HUD, the crosshair and\n"
+		"the menus are drawn with, as a fraction of the view's along each axis, 0.5\n"
+		"to 1. Less takes less memory (0.5: a quarter) and looks softer. Read at\n"
+		"start." },
+	{ "input.turn", _config_string, "\"snap\"", "HALO_TURN", _environment_value, _platform_ios,
+		"With display.stereo = \"head\": how the right stick turns the view: \"snap\"\n"
+		"(default; a flick turns input.snap_angle at once), \"smooth\" (steadily, at\n"
+		"input.smooth_turn_speed), or \"off\" (it doesn't; turn your body)." },
+	{ "input.snap_angle", _config_real, "30.0", "HALO_SNAP_ANGLE", _environment_value, _platform_ios,
+		"With input.turn = \"snap\": degrees per snap (5 to 180)." },
+	{ "input.smooth_turn_speed", _config_real, "120.0", "HALO_SMOOTH_TURN_SPEED", _environment_value, _platform_ios,
+		"With input.turn = \"smooth\": degrees per second with the stick all the way\n"
+		"over (10 to 720; 120 is the game's own speed before it speeds up)." },
+	{ "input.comfort_vignette", _config_boolean, "false", "HALO_COMFORT_VIGNETTE", _environment_value, _platform_ios,
+		"With input.turn = \"smooth\": darken the edges of the view while the stick\n"
+		"turns it, for comfort." },
 	{ "display.theater_width", _config_real, "60.0", "HALO_THEATER_WIDTH", _environment_value, _platform_ios,
 		"With display.immersive: how much of the view the screen spans, in degrees\n"
 		"across (the headset's view is about 100; 60 is the front of a cinema).\n"
@@ -176,6 +339,10 @@ static const struct config_setting config_settings[] =
 		"Draw the menus' and HUD's text with the fonts in port/assets/fonts\n"
 		"(Overpass) at the resolution the game draws at, and the menus' titles\n"
 		"from port/assets/titles; false draws the maps' bitmap fonts and titles." },
+	{ "display.upscaled_textures", _config_boolean, "true", "HALO_UPSCALED_TEXTURES", _environment_value, _platform_all,
+		"Draw upscaled textures (made on this device from your copy of the game)\n"
+		"where they exist; false draws the maps' own. Takes effect at the next\n"
+		"level load." },
 	{ "display.menus", _config_string, "\"pc\"", "HALO_MENUS", _environment_value, _platform_all,
 		"The menus: \"pc\" for the PC version's main menu (port/assets/menus,\n"
 		"and a menus folder here for your own), \"xbox\" for the Xbox's." },
@@ -454,15 +621,80 @@ static const struct config_setting config_settings[] =
 	{ "debug.test_input", _config_string, "\"\"", "HALO_TEST_INPUT", _environment_value, _platform_all,
 		"\"bot:<seed>\" plays controller 1 with a scripted pattern (automated\n"
 		"network tests); \"look:<seed>\" stands still, only turning and looking\n"
-		"up and down; empty for none." },
+		"up and down; \"walklook:<seed>\" looks down, then walks;\n"
+		"\"zoom:<start>,<swaps>,<clicks>[,<lights>[,<unclicks>]]\" stands still and\n"
+		"from poll <start> swaps weapons <swaps> times, zooms <clicks> times,\n"
+		"presses the flashlight <lights> times (night vision), then clicks the\n"
+		"zoom <unclicks> times more (out of it); empty for none." },
+	{ "debug.side_by_side_screen", _config_boolean, "false", "HALO_SIDE_BY_SIDE_SCREEN", _environment_set_is_true,
+		_platform_ios,
+		"With display.stereo = \"side_by_side\": show the eyes SCREEN mode's\n"
+		"gameplay would have (a 3D TV on the default screen, 64 mm eyes) in place\n"
+		"of head-tracked ones." },
+	{ "debug.side_by_side_tangents", _config_string, "\"\"", "HALO_SIDE_BY_SIDE_TANGENTS", _environment_value,
+		_platform_ios,
+		"With display.stereo = \"side_by_side\": the left eye's frustum as\n"
+		"\"left,right,up,down\" tangents (the right eye's mirrored left to right),\n"
+		"for asymmetric eyes like the headset's; empty for 0.8 on every side." },
+	{ "debug.screen_lean", _config_real, "0.0", "HALO_SCREEN_LEAN", _environment_value, _platform_ios,
+		"With debug.side_by_side_screen: a fixed lean of the head, in meters to the\n"
+		"right (up to 0.25), as if you leaned in front of the screen." },
+	{ "debug.cutscene_immersive", _config_boolean, "false", "HALO_CUTSCENE_IMMERSIVE", _environment_set_is_true,
+		_platform_ios,
+		"A spike: in HEAD mode (and the side-by-side view), a cutscene's third-person\n"
+		"film frame renders immersive instead of on the 3D-film screen: the eyes\n"
+		"are the cutscene camera turned by the head, the director's 16:9 frame is\n"
+		"anchored in the room where the head pointed as the cutscene began, and\n"
+		"outside it the picture is blurred, darkened and desaturated." },
+	{ "debug.cutscene_immersive_min_fov", _config_real, "40.0", "HALO_CUTSCENE_IMMERSIVE_MIN_FOV", _environment_value,
+		_platform_ios,
+		"With debug.cutscene_immersive: the narrowest shot that renders immersive,\n"
+		"as the camera's horizontal field of view in degrees (70 for the game's\n"
+		"default lens; the director's frame spans that across its width). A\n"
+		"narrower (telephoto) shot falls back to the 3D-film screen." },
+	{ "debug.cutscene_outside_dim", _config_real, "0.6", "HALO_CUTSCENE_OUTSIDE_DIM", _environment_value,
+		_platform_ios,
+		"With debug.cutscene_immersive: how much the blurred picture outside the\n"
+		"director's frame is darkened and desaturated, 0 (not at all) to 1\n"
+		"(black)." },
+	{ "debug.side_by_side_head_yaw", _config_string, "\"\"", "HALO_SIDE_BY_SIDE_HEAD_YAW", _environment_value,
+		_platform_ios,
+		"With display.stereo = \"side_by_side\" and debug.cutscene_immersive: a head\n"
+		"that turns side to side in the immersive cutscene, as \"amplitude,period\"\n"
+		"(degrees, seconds), so the Mac shows the room-anchored frame; empty for\n"
+		"none." },
+	{ "debug.head_yaw_log", _config_boolean, "false", "HALO_HEAD_YAW_LOG", _environment_set_is_true, _platform_ios,
+		"HEAD mode: log a line each frame while the head turns (\"stereo: head\n"
+		"yaw\"): the head's yaw from the frame's predicted pose, the yaw the eye\n"
+		"cameras used, and how far the world moved against the head since the\n"
+		"last line, to see whether the world stays put while the head turns." },
+	{ "debug.head_sweep", _config_string, "\"\"", "HALO_HEAD_SWEEP", _environment_value, _platform_ios,
+		"HEAD mode: turn the head by itself, left and right in a sine, as\n"
+		"\"amplitude_degrees,period_seconds\" (\"30,4\"), in place of the yaw\n"
+		"ARKit gives, to check the view's tracking in the simulator; empty for\n"
+		"none. It overrides the device's head yaw too, so leave it empty on a\n"
+		"headset." },
+	{ "debug.foveation_eye_passes", _config_boolean, "true", "HALO_FOVEATION_EYE_PASSES", _environment_value,
+		_platform_ios,
+		"With display.foveation: false renders the game's eyes unfoveated at the\n"
+		"foveated view's full size, and only the last step that fills each view\n"
+		"goes through the Compositor's rate map (composite-only foveation, the\n"
+		"reference the full path is compared against)." },
+	{ "debug.rate_map_test", _config_boolean, "false", "HALO_RATE_MAP_TEST", _environment_value, _platform_ios,
+		"Metal renderer on the Mac: give the screen-sized targets a synthetic,\n"
+		"lopsided rate map (full rate in the middle third, half outside it, denser\n"
+		"at the top than the bottom), resolved at present, to check foveated\n"
+		"rendering off the headset." },
 	{ "debug.update_answer", _config_string, "\"\"", "HALO_UPDATE_ANSWER", _environment_value, _platform_desktop,
 		"The answer to the new version question, for automated tests: \"yes\",\n"
 		"\"no\" or \"never\" (do not ask again, confirmed); empty asks." },
 	{ "debug.exit_after", _config_real, "0.0", "HALO_EXIT_AFTER", _environment_value, _platform_all,
-		"Quit this many seconds after the window opens; 0 never." },
+		"Quit this many seconds after the window opens (of game time under\n"
+		"debug.fixed_timestep); 0 never." },
 	{ "debug.fixed_timestep", _config_boolean, "false", "HALO_FIXED_TIMESTEP", _environment_set_is_true, _platform_all,
 		"Advance the game's clock 1/30 s per frame, however long the frame took, so\n"
-		"two runs show the same frames; debug.exit_after then counts frames." },
+		"two runs show the same frames; debug.exit_after then counts seconds of\n"
+		"game time, 30 frames each (600 = 18,000 frames)." },
 	{ "debug.hidden_window", _config_boolean, "false", "HALO_HIDDEN_WINDOW", _environment_set_is_true, _platform_desktop,
 		"Keep the window hidden (and never fullscreen)." },
 	{ "debug.null_renderer", _config_boolean, "false", "HALO_NULL_RENDERER", _environment_set_is_true, _platform_all,
@@ -477,11 +709,39 @@ static const struct config_setting config_settings[] =
 		"Show the frame number and the game time in a corner of the screen, to\n"
 		"point at a moment; with debug.fixed_timestep the same frame is the same\n"
 		"moment in every run. Not in screenshots." },
+	{ "debug.terminal_on_screen", _config_boolean, "false", "HALO_TERMINAL_ON_SCREEN", _environment_set_is_true, _platform_ios,
+		"Draw the console's output (what print and commands print) over the\n"
+		"game, as the desktop builds do; false keeps it in the log only." },
+	{ "debug.test_extra_scene", _config_boolean, "false", "HALO_TEST_EXTRA_SCENE", _environment_set_is_true, _platform_ios,
+		"Ask for a second window scene a few seconds in, to check that the game\n"
+		"ignores its start, keeps its event pump and closes the scene (the\n"
+		"host's host_main.m). For the simulator." },
+	{ "debug.test_theater_reopen", _config_boolean, "false", "HALO_TEST_THEATER_REOPEN", _environment_set_is_true, _platform_ios,
+		"With display.immersive: close the immersive space a few seconds in, then\n"
+		"press the window's button that opens it again (the host's\n"
+		"host_theater.m). For the simulator." },
 	{ "debug.gl_debug", _config_boolean, "false", "HALO_GL_DEBUG", _environment_set_is_true, _platform_all,
 		"Report OpenGL errors in the log." },
 	{ "debug.metal_state_cache", _config_boolean, "true", "HALO_METAL_STATE_CACHE", _environment_value, _platform_ios,
 		"With the Metal renderer, skip the encoder calls that set what the\n"
 		"encoder already holds; false makes every call, to compare." },
+	{ "debug.shader_list_warm", _config_boolean, "true", "HALO_SHADER_LIST_WARM", _environment_value, _platform_ios,
+		"Compile the shaders and pipelines in a map's shader list while it loads;\n"
+		"false compiles each when a frame first draws with it, to compare." },
+	{ "debug.shader_list_record", _config_string, "\"shader-lists-missed\"", "HALO_SHADER_LIST_RECORD", _environment_value, _platform_ios,
+		"With the Metal renderer, a folder (in the data folder unless a full path)\n"
+		"where the shaders and pipelines made while drawing, those a map's shader\n"
+		"list missed, are appended to MAP.txt, each line once; \"\" for none.\n"
+		"tools/shader_lists.py merges them into port/shader-lists." },
+	{ "debug.metal_pipeline_archive", _config_boolean, "false", "HALO_METAL_PIPELINE_ARCHIVE", _environment_value, _platform_ios,
+		"With the Metal renderer, keep the compiled pipelines in an archive in the\n"
+		"app's caches between launches. Off until writing it works: in the Mac app\n"
+		"it fails with \"cannot create temporary file\" (Metal's own shader cache\n"
+		"still keeps compiled shaders between launches)." },
+	{ "debug.metal_specialize", _config_boolean, "true", "HALO_METAL_SPECIALIZE", _environment_value, _platform_ios,
+		"With the Metal renderer, specialize each pipeline's vertex shader for its\n"
+		"attribute formats; false uses the unspecialized shaders, which read the\n"
+		"formats per draw (the fallback when specializing fails), to compare." },
 	{ "debug.menu_open", _config_string, "\"\"", "HALO_MENU_OPEN", _environment_value, _platform_all,
 		"Start on this screen of the menus (port/assets/menus) instead of the main\n"
 		"menu, a player profile being edited; empty for the main menu." },
@@ -516,6 +776,9 @@ static const struct config_setting config_settings[] =
 		"Save every this many frames to screenshot_directory; 0 none." },
 	{ "debug.texture_dump_directory", _config_string, "\"\"", "HALO_TEXTURE_DUMP", _environment_value, _platform_all,
 		"A folder to write every texture to as it is uploaded; empty none." },
+	{ "debug.texture_override_directory", _config_string, "\"\"", "HALO_TEXTURE_OVERRIDE", _environment_value, _platform_all,
+		"A folder of replacement textures, <hash>.rgba (step-tools/texture-upscale.py),\n"
+		"each drawn in place of the texture whose first mip level hashes to <hash>; empty none." },
 	{ "debug.texture_log", _config_boolean, "false", "HALO_TEXTURE_LOG", _environment_set_is_true, _platform_all,
 		"Log texture uploads." },
 	{ "debug.texture_no_cache", _config_boolean, "false", "HALO_TEXTURE_NO_CACHE", _environment_set_is_true, _platform_all,
@@ -718,24 +981,179 @@ static char *config_default_text(void)
 		"# it to go back to them. Each setting can also be set for one run with\n"
 		"# the environment variable named with it, which wins over this file.\n");
 #endif
+	/* each table once, in the order its first setting has in the table above,
+	with all of its settings: TOML rejects a table defined twice, and the
+	table above doesn't keep a section's settings together (iOS's input
+	settings come between display's) */
 	for (index = 0; index < NUMBER_OF_CONFIG_SETTINGS; index++)
 	{
 		const struct config_setting *setting = &config_settings[index];
 		const char *dot = strchr(setting->name, '.');
+		size_t length, other;
 		char buffer[64];
 
 		if (!(setting->platforms & CONFIG_PLATFORM) || !dot)
 			continue;
-		if (strncmp(section, setting->name, (size_t)(dot - setting->name)) ||
-			section[dot - setting->name] != 0)
+		/* (the section's name and its dot) */
+		length = (size_t)(dot - setting->name) + 1;
+		/* (a section an earlier setting opened is written already) */
+		for (other = 0; other < index; other++)
 		{
-			snprintf(section, sizeof(section), "%.*s", (int)(dot - setting->name), setting->name);
-			snprintf(buffer, sizeof(buffer), "\n[%s]\n", section);
-			config_append(&text, buffer);
+			if ((config_settings[other].platforms & CONFIG_PLATFORM) &&
+				!strncmp(config_settings[other].name, setting->name, length))
+				break;
 		}
-		config_append_setting(&text, setting);
+		if (other < index)
+			continue;
+		snprintf(section, sizeof(section), "%.*s", (int)(length - 1), setting->name);
+		snprintf(buffer, sizeof(buffer), "\n[%s]\n", section);
+		config_append(&text, buffer);
+		for (other = index; other < NUMBER_OF_CONFIG_SETTINGS; other++)
+		{
+			if ((config_settings[other].platforms & CONFIG_PLATFORM) &&
+				!strncmp(config_settings[other].name, setting->name, length))
+				config_append_setting(&text, &config_settings[other]);
+		}
 	}
 	return text.buffer;
+}
+
+static int config_line_section(const char *line, const char *end, char *section, size_t size);
+
+/* text with its repeated tables and keys folded away, or NULL if it has
+none: a table's later headers are dropped and their lines join its first,
+and a key set again in the same table keeps its first value. TOML rejects
+both, and without this the whole file would be ignored for one slip (an
+older version of this file's writer repeated [display] and [input] on
+iOS). Each repeat is logged with its line. Only "[table]" headers and
+"key = value" lines are recognized, which is all the settings use */
+static char *config_fold_repeats(const char *text)
+{
+	enum { MAXIMUM_TABLES = 32, MAXIMUM_KEYS = 512 };
+	struct config_fold_line
+	{
+		const char *start;
+		size_t length;
+		/* -1 before the first table */
+		int table;
+	};
+	char tables[MAXIMUM_TABLES][64];
+	char keys[MAXIMUM_KEYS][64];
+	int key_tables[MAXIMUM_KEYS];
+	int table_count = 0, key_count = 0, table = -1, repeats = 0, line_number = 1, order;
+	struct config_fold_line *lines = NULL;
+	size_t line_count = 0, capacity = 0, index;
+	struct config_text out = { NULL, 0, 0 };
+	const char *line;
+
+	for (line = text; *line; line_number++)
+	{
+		const char *end = line + strcspn(line, "\n");
+		const char *next = *end ? end + 1 : end;
+		const char *start = line;
+		char name[64];
+		int keep = 1;
+
+		while (start < end && (*start == ' ' || *start == '\t'))
+			start++;
+		if (start + 1 < end && start[0] == '[' && start[1] != '[' &&
+			config_line_section(start, end, name, sizeof(name)))
+		{
+			int found;
+
+			for (found = 0; found < table_count && strcmp(tables[found], name); found++)
+				;
+			if (found < table_count)
+			{
+				platform_log("config.toml line %d: [%s] is defined again; its settings join the first", line_number, name);
+				repeats++;
+				keep = 0;
+			}
+			else if (table_count < MAXIMUM_TABLES)
+			{
+				snprintf(tables[table_count], sizeof(tables[0]), "%s", name);
+				table_count++;
+			}
+			table = found < table_count ? found : -1;
+		}
+		else if (table >= 0 && start < end && *start != '#')
+		{
+			size_t length = strcspn(start, " \t=\n");
+			const char *equals = start + length;
+
+			while (equals < end && (*equals == ' ' || *equals == '\t'))
+				equals++;
+			if (length && equals < end && *equals == '=' && length < sizeof(keys[0]))
+			{
+				int found;
+
+				for (found = 0; found < key_count &&
+					(key_tables[found] != table || strncmp(keys[found], start, length) || keys[found][length]); found++)
+					;
+				if (found < key_count)
+				{
+					platform_log("config.toml line %d: %s.%.*s is set again; the first value stays", line_number,
+						tables[table], (int)length, start);
+					repeats++;
+					keep = 0;
+				}
+				else if (key_count < MAXIMUM_KEYS)
+				{
+					memcpy(keys[key_count], start, length);
+					keys[key_count][length] = 0;
+					key_tables[key_count] = table;
+					key_count++;
+				}
+			}
+		}
+		if (keep)
+		{
+			if (line_count == capacity)
+			{
+				size_t new_capacity = capacity ? capacity * 2 : 256;
+				struct config_fold_line *grown = realloc(lines, new_capacity * sizeof(*grown));
+
+				if (!grown)
+				{
+					free(lines);
+					return NULL;
+				}
+				lines = grown;
+				capacity = new_capacity;
+			}
+			lines[line_count].start = line;
+			lines[line_count].length = (size_t)(next - line);
+			lines[line_count].table = table;
+			line_count++;
+		}
+		line = next;
+	}
+	if (!repeats)
+	{
+		free(lines);
+		return NULL;
+	}
+	/* the lines before the first table, then each table's lines in order */
+	for (order = -1; order < table_count; order++)
+	{
+		for (index = 0; index < line_count; index++)
+		{
+			char *copy;
+
+			if (lines[index].table != order)
+				continue;
+			copy = config_copy(lines[index].start, lines[index].length);
+			if (!copy)
+				continue;
+			/* (the file's last line may lack its newline) */
+			if (out.length && out.buffer[out.length - 1] != '\n')
+				config_append(&out, "\n");
+			config_append(&out, copy);
+			free(copy);
+		}
+	}
+	free(lines);
+	return out.buffer;
 }
 
 /* the settings of this build that text (the file, parsed as table) lacks,
@@ -946,6 +1364,47 @@ static void config_report_unknown_keys(toml_datum_t table)
 	}
 }
 
+/* the setting's default, as a new file would have it */
+static void config_set_default(size_t index)
+{
+	const char *default_value = config_settings[index].default_value;
+
+	if (config_settings[index].type == _config_string)
+	{
+		/* written as a TOML basic string without escapes */
+		size_t length = strlen(default_value);
+
+		free(config_values[index].string);
+		config_values[index].string = length >= 2 ? config_copy(default_value + 1, length - 2) : strdup("");
+	}
+	else
+	{
+		config_set_from_text(&config_values[index], config_settings[index].type, default_value);
+	}
+}
+
+/* the setting's environment variable, if it is set, over the file */
+static void config_set_from_environment(size_t index)
+{
+	const struct config_setting *setting = &config_settings[index];
+	const char *environment = getenv(setting->environment);
+
+	if (!environment)
+		return;
+	switch (setting->environment_style)
+	{
+	case _environment_value:
+		config_set_from_text(&config_values[index], setting->type, environment);
+		break;
+	case _environment_set_is_true:
+		config_values[index].boolean = 1;
+		break;
+	case _environment_set_is_false:
+		config_values[index].boolean = 0;
+		break;
+	}
+}
+
 static void config_load(void)
 {
 	char path[1024];
@@ -954,28 +1413,22 @@ static void config_load(void)
 	size_t index;
 
 	for (index = 0; index < NUMBER_OF_CONFIG_SETTINGS; index++)
-	{
-		const char *default_value = config_settings[index].default_value;
-
-		if (config_settings[index].type == _config_string)
-		{
-			/* written as a TOML basic string without escapes */
-			size_t length = strlen(default_value);
-
-			config_values[index].string = length >= 2 ? config_copy(default_value + 1, length - 2) : strdup("");
-		}
-		else
-		{
-			config_set_from_text(&config_values[index], config_settings[index].type, default_value);
-		}
-	}
+		config_set_default(index);
 
 	config_path(path, sizeof(path));
 	text = config_read_file(path, &size);
 	if (text)
 	{
-		toml_result_t result = toml_parse(text, (int)size);
+		char *folded = config_fold_repeats(text);
+		toml_result_t result;
 
+		if (folded)
+		{
+			free(text);
+			text = folded;
+			size = strlen(text);
+		}
+		result = toml_parse(text, (int)size);
 		if (result.ok)
 		{
 			char *completed;
@@ -985,8 +1438,12 @@ static void config_load(void)
 			config_report_unknown_keys(result.toptab);
 			platform_log("settings: %s", path);
 			completed = config_add_missing(text, result.toptab);
-			if (completed && !config_write_file(path, completed))
+			/* (the folded file written back, so the player's edits and the
+			settings screen's land in one place) */
+			if ((completed || folded) && !config_write_file(path, completed ? completed : text))
 				platform_log("settings: cannot write %s", path);
+			else if (folded)
+				platform_log("settings: folded the repeats out of %s", path);
 			free(completed);
 		}
 		else
@@ -1008,25 +1465,7 @@ static void config_load(void)
 	}
 
 	for (index = 0; index < NUMBER_OF_CONFIG_SETTINGS; index++)
-	{
-		const struct config_setting *setting = &config_settings[index];
-		const char *environment = getenv(setting->environment);
-
-		if (!environment)
-			continue;
-		switch (setting->environment_style)
-		{
-		case _environment_value:
-			config_set_from_text(&config_values[index], setting->type, environment);
-			break;
-		case _environment_set_is_true:
-			config_values[index].boolean = 1;
-			break;
-		case _environment_set_is_false:
-			config_values[index].boolean = 0;
-			break;
-		}
-	}
+		config_set_from_environment(index);
 }
 
 static const struct config_value *config_value(const char *name, enum config_type type)
@@ -1281,6 +1720,40 @@ int config_default(const char *name, char *text, size_t size)
 int config_boolean(const char *name)
 {
 	return config_value(name, _config_boolean)->boolean;
+}
+
+/* one boolean read again from the file, as at start-up (its default when the
+file lacks it or does not parse), the environment still winning: for a
+setting another process changes while the game runs (the iOS host, from the
+Settings app's switch) */
+int config_reload_boolean(const char *name)
+{
+	long index = config_setting_index(name);
+	char path[1024];
+	size_t size = 0;
+	char *text;
+	int value;
+
+	(void)config_boolean(name);   /* the first load, defaults and all */
+	if (index < 0 || config_settings[index].type != _config_boolean)
+		return config_boolean(name);
+	config_path(path, sizeof(path));
+	text = config_read_file(path, &size);
+	pthread_mutex_lock(&config_lock);
+	config_set_default((size_t)index);
+	if (text)
+	{
+		toml_result_t result = toml_parse(text, (int)size);
+
+		if (result.ok)
+			config_set_from_file(&config_values[index], &config_settings[index], result.toptab);
+		toml_free(result);
+	}
+	config_set_from_environment((size_t)index);
+	value = config_values[index].boolean;
+	pthread_mutex_unlock(&config_lock);
+	free(text);
+	return value;
 }
 
 long config_integer(const char *name)

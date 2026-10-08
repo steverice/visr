@@ -297,6 +297,23 @@ boolean director_inhibited_input(
 	return director_get(local_player_index)->inhibited_input;
 }
 
+/* port: the perspective director_get_perspective gives, without storing
+it, for stereo's cutscene screen (port/linux/game/cinematic_screen.c): a
+first-person camera still pausing on a change keeps the last perspective */
+director_perspective director_peek_perspective(
+	short local_player_index)
+{
+	struct director *camera = director_get(local_player_index);
+
+	if (camera->camera_proc == first_person_camera_update)
+		return camera->camera_change_pause == 0.f ? _director_perspective_first_person : camera->perspective;
+	if (camera->camera_proc == following_camera_update)
+		return _director_perspective_third_person;
+	if (camera->camera_proc == (director_camera_update_proc)scripted_camera_update)
+		return _director_perspective_scripted;
+	return _director_perspective_neutral;
+}
+
 director_perspective director_get_perspective(
 	short local_player_index)
 {

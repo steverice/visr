@@ -35,9 +35,11 @@ reads the controller directly, such as skipping a cinematic. Actions are
 keyed by segment and game tick: a segment ends whenever the game time goes
 back (a checkpoint revert, the next level), so a replay whose revert comes a
 frame later than the recording's still lines up. Its header is "halo action
-recording 1", then one line per tick: segment, tick and the action's eight
-32-bit words in hex. A replay should run with display.direct_camera off:
-the live camera follows the real stick, not the recorded facing.
+recording 1", plus " stereo=head" when display.stereo wasn't off (head, screen
+or side_by_side; an older header reads as off), then one line per tick:
+segment, tick and the action's eight 32-bit words in hex. A replay should run
+with display.direct_camera off: the live camera follows the real stick, not
+the recorded facing.
 
 With debug.benchmark, a replay's frames are timed from the first recorded
 state to the last; then the report goes to benchmark-<name>-<time>.txt next
@@ -144,6 +146,22 @@ static void actions_load(void)
 		platform_log("debug.input_replay: %s isn't an action recording", replay.replay_actions_path);
 		fclose(file);
 		return;
+	}
+	{
+		/* the stereo mode the recording was made in; an older header has none, which reads as off */
+		char recorded[32] = "off";
+		const char *tag = strstr(line, " stereo=");
+		const char *run = config_string("display.stereo");
+
+		if (tag)
+			sscanf(tag + strlen(" stereo="), "%31s", recorded);
+		if (!run || !*run)
+			run = "off";
+		/* a10's script flow differs only when one mode skips its look-inversion test (head, side_by_side) and the other doesn't */
+		if ((!strcmp(recorded, "head") || !strcmp(recorded, "side_by_side")) !=
+			(!strcmp(run, "head") || !strcmp(run, "side_by_side")))
+			platform_log("debug.input_replay: warning: %s was recorded with display.stereo \"%s\" and this run uses \"%s\"; a10's script flow differs (its look-inversion test runs only when the mode isn't head or side_by_side)",
+				replay.replay_actions_path, recorded, run);
 	}
 	while (fgets(line, sizeof(line), file))
 	{
@@ -427,7 +445,14 @@ void input_replay_tick_action(void *action)
 				replay.record_actions_path[0] = 0;
 				return;
 			}
-			fprintf(replay.actions_file, "%s\n", ACTION_HEADER);
+			{
+				const char *stereo = config_string("display.stereo");
+
+				if (stereo && *stereo && strcmp(stereo, "off"))
+					fprintf(replay.actions_file, "%s stereo=%s\n", ACTION_HEADER, stereo);
+				else
+					fprintf(replay.actions_file, "%s\n", ACTION_HEADER);
+			}
 		}
 		memcpy(words, action, sizeof(words));
 		fprintf(replay.actions_file, "%ld %ld", replay.segment, tick);
