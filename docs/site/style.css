@@ -36,6 +36,16 @@ body {
 .page { max-width: 680px; margin: 0 auto; padding: 48px 16px 40px; }
 @media (min-width: 720px) { .page { padding: 80px 24px 56px; } }
 
+@font-face {
+  font-family: "Orbitron";
+  src: url("fonts/Orbitron-VariableFont_wght.woff2") format("woff2");
+  font-weight: 400 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root { --brand-font: "Orbitron"; }
+
 h1, h2 { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", system-ui, sans-serif; line-height: 1.2; }
 h1 { font-size: clamp(1.8rem, 6vw, 2.5rem); letter-spacing: -0.015em; margin: 20px 0 12px; }
 h2 { font-size: 1.25rem; margin: 0 0 10px; }
@@ -47,7 +57,13 @@ code { font: 0.88em/1.4 ui-monospace, "SF Mono", Menlo, monospace; white-space: 
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
 
 .icon { display: block; border-radius: 20px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25); }
+
+/* The icon with the VISR wordmark beside it, centered on each other; both shrink on a phone */
+.brand { display: flex; align-items: center; gap: clamp(14px, 4vw, 24px); font-family: var(--brand-font), sans-serif; font-optical-sizing: auto; font-weight: normal; font-style: normal; }
+.brand .icon { width: clamp(88px, 24vw, 180px); height: auto; border-radius: 22%; flex: none; }
+.brand .wordmark { font-family: var(--brand-font), -apple-system, BlinkMacSystemFont, system-ui, sans-serif; margin: 0; font-size: clamp(2.6rem, 11vw, 4.5rem); letter-spacing: 0.06em; line-height: 1; }
 .lede { font-size: 1.1rem; color: var(--muted); }
+blockquote { font-size: 1.1rem; color: var(--muted); }
 .links { color: var(--muted); }
 
 section { padding-top: 28px; margin-top: 28px; border-top: 1px solid var(--line); }

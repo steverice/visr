@@ -1,12 +1,15 @@
-<img src="port/ios/Assets.xcassets/AppIcon.appiconset/AppIcon-180.png" width="96" alt="The VISR app icon: a helmet with a gold visor on a dark teal grid">
+<img src="port/ios/Assets.xcassets/AppIcon.appiconset/AppIcon-180.png" width="180" alt="The VISR app icon: a helmet with a gold visor on a dark teal grid">
 
 # VISR
 
+### Experience *Halo: Combat Evolved* in a whole new dimension
+
 VISR is a native port of Halo: Combat Evolved to Apple Vision Pro, built from
-the Halo: CE decompilation. It renders natively in Metal, with no emulation in
-between, so it holds the headset's frame rate in foveated stereo. The goal is
-the best possible, best-optimized Halo on Vision Pro, true to the original game.
-The same app also runs on iPhone, iPad, Apple TV and the Mac.
+the Halo: CE decompilation, running natively on-device in Metal.
+
+The goal is to provide the best possible way to experience Halo while staying
+faithful to the original game. VISR builds on my love of the game and the many
+thousands of hours I have spent playing it.
 
 VISR ships no game data. You need a disc image of the original Xbox game, made
 from your own disc. VISR is an unofficial fan project, not affiliated with or
@@ -20,6 +23,7 @@ endorsed by Microsoft, Halo Studios or Bungie. See [Legal](#legal).
   rather than the head
 - Scope zoom fills the view
 - Third-person cutscenes on a 3D screen in the room
+- (Coming Soon) Support for gun / aim control with PSVR2 controllers
 
 VISR also plays in 2D, in a window or on a virtual screen in the room (theater
 mode). A game controller is required.
@@ -28,6 +32,12 @@ Settings live in `config.toml` in the VISR folder in Files.
 [ROADMAP.md](ROADMAP.md) names the setting behind each feature, and
 [port/ios/README.md](port/ios/README.md) describes the display and renderer
 settings.
+
+## Other Apple Platforms
+
+The same app will also build and run on iPhone, iPad, Apple TV and the Mac.
+While builds on these platforms may be tested, they are not an official target
+and may have issues.
 
 ## Get the app
 
@@ -59,6 +69,10 @@ system, map build and campaign maps before it copies anything, then extracts
 the maps and starts the game. Later launches go straight to the game, and you
 can delete the image. Saves live in the `save` folder inside the VISR folder;
 back it up before you delete the app.
+
+> [!WARNING]
+> **Do not ask** where to obtain an XISO. If you do not have an XISO from your own,
+> legally purchased copy of Halo: Combat Evolved then this project is not for you.
 
 ## Build from source
 
@@ -132,6 +146,9 @@ do not attach game files or disc images. Security problems go through
 - [pfista/halo-og](https://github.com/pfista/halo-og), Michael Pfister's port
   with a native Metal renderer for macOS: exact texture border colors, pixel
   shader combiner fixes, and the pre-HUD spot for post-processing
+- [LivingFray/HaloCEVR](https://github.com/LivingFray/HaloCEVR), a full VR
+  conversion mod for the 2003 PC Edition of the game, which provided design
+  inspiration for some of the VR decisions
 - [xemu](https://xemu.app/), the Xbox emulator, whose model of the Xbox GPU's
   pixel shaders the shader translators follow
 
