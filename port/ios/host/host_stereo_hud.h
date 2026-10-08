@@ -207,7 +207,10 @@ int host_stereo_hud_layout(float layout_width, int ui, const float reticle[3], c
 clamp(share x the nearest depth under it, floor, the resting distance),
 eased in diopters: pulling in at (1/floor - 1/distance) / pull_in diopters a
 second at once, relaxing out relax_delay after the last frame that asked
-for the current distance or nearer, at (1/floor - 1/distance) / relax.
+for the current distance or nearer, at (1/floor - 1/distance) / relax. A
+frame asking for a distance less than HOST_STEREO_HUD_DEPTH_DEADBAND_DIOPTERS
+farther counts as asking for the current one, unless nothing is near enough
+to move the piece from rest or it is already relaxing.
 display.hud_depth, _share, _floor (meters), _pull_in, _relax and
 _relax_delay (seconds), read at start (host_stereo.m); distance is the
 placement's. host_stereo_hud_depth_settings_clamp clamps the floor below
@@ -222,6 +225,12 @@ struct host_stereo_hud_depth_settings
 };
 #define HOST_STEREO_HUD_DEPTH_SETTINGS_DEFAULT { 1, 0.85f, 0.3f, 0.1f, 1.0f, 0.5f, HOST_STEREO_HUD_DISTANCE_DEFAULT }
 #define HOST_STEREO_HUD_DEPTH_FLOOR_MIN 0.1f
+/* how much farther, in diopters, what's under a piece may ask it to be
+without starting a relax. b30's Warthog ride swung the targets of a piece
+held over something near by 0.22 to 0.35 diopters (the frame's edge entering
+and leaving the footprint), a relax and a new pull-in about every 1.1 s;
+the smallest real move in that ride asked for 0.59 diopters */
+#define HOST_STEREO_HUD_DEPTH_DEADBAND_DIOPTERS 0.45f
 /* the floor's most, as a share of the distance */
 #define HOST_STEREO_HUD_DEPTH_FLOOR_SHARE_MAX 0.9f
 int host_stereo_hud_depth_settings_clamp(struct host_stereo_hud_depth_settings *settings);

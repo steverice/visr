@@ -815,6 +815,70 @@ static void depth_ease_checks(void)
 	}
 }
 
+/* the ease's deadband (HOST_STEREO_HUD_DEPTH_DEADBAND_DIOPTERS): b30's
+Warthog ride, a passenger, had the meters over the frame whose nearest
+swung between 0.61 and 0.71 m (0.27 diopters of target) for 0.7 s or so at
+a time, which relaxed and pulled the piece back in about every 1.1 s. Held
+in the band, the piece stays put; a real approach still pulls in at once,
+a real recession still relaxes, and nothing under it still rests */
+static float depth_run(struct host_stereo_hud_depth_state *state, float nearest, float seconds,
+	const struct host_stereo_hud_depth_settings *settings, float *lowest, float *highest)
+{
+	float distance = 0.0f, t;
+
+	for (t = 0.0f; t < seconds - 1e-4f; t += DEPTH_FRAME)
+	{
+		distance = host_stereo_hud_depth_ease(state, nearest, DEPTH_FRAME, settings);
+		if (lowest)
+			*lowest = fminf(*lowest, distance);
+		if (highest)
+			*highest = fmaxf(*highest, distance);
+	}
+	return distance;
+}
+
+static void depth_deadband_checks(void)
+{
+	struct host_stereo_hud_depth_settings settings = HOST_STEREO_HUD_DEPTH_SETTINGS_DEFAULT;
+	struct host_stereo_hud_depth_state state = HOST_STEREO_HUD_DEPTH_STATE_INITIAL;
+	float near_target = 1.0f / (0.85f * 0.61f), far_target = 1.0f / (0.85f * 0.71f);
+	float held, lowest = INFINITY, highest = 0.0f, distance, t, back;
+	int cycle, frame;
+	char what[240];
+
+	check(near_target - far_target < HOST_STEREO_HUD_DEPTH_DEADBAND_DIOPTERS,
+		"the ride's 0.61 to 0.71 m swing is inside the deadband");
+	held = depth_run(&state, 0.61f, 0.2f, &settings, NULL, NULL);
+	for (cycle = 0; cycle < 4; cycle++)
+	{
+		depth_run(&state, 0.71f, 0.7f, &settings, &lowest, &highest);
+		depth_run(&state, 0.61f, 0.7f, &settings, &lowest, &highest);
+	}
+	snprintf(what, sizeof(what), "a nearest swinging 0.61 to 0.71 m every 0.7 s holds the piece at %.3f m for 5.6 s "
+		"(it went %.3f to %.3f m)", held, lowest, highest);
+	check(fabsf(held - 0.85f * 0.61f) < 1e-3f && highest - lowest < 1e-4f && fabsf(highest - held) < 1e-4f, what);
+	/* something comes to 0.4 m: in at once */
+	back = -1.0f;
+	for (frame = 1, t = DEPTH_FRAME; frame <= 18; frame++, t += DEPTH_FRAME)
+	{
+		distance = host_stereo_hud_depth_ease(&state, 0.4f, DEPTH_FRAME, &settings);
+		if (back < 0.0f && fabsf(distance - 0.34f) <= 0.01f)
+			back = t;
+	}
+	snprintf(what, sizeof(what), "then something at 0.4 m pulls it in to 0.34 m after %.3f s (within 0.1 s and a frame)",
+		back);
+	check(back >= 0.0f && back <= 0.1f + DEPTH_FRAME + 1e-4f, what);
+	/* it goes back to 1.5 m, well past the band: holds, then relaxes */
+	distance = depth_run(&state, 1.5f, 0.5f + 1.0f + 2.0f * DEPTH_FRAME, &settings, NULL, NULL);
+	snprintf(what, sizeof(what), "then at 1.5 m it relaxes out to 1.275 m (at %.3f m 1.5 s later)", distance);
+	check(fabsf(distance - 0.85f * 1.5f) < 1e-3f, what);
+	/* nothing under it, though 1.275 m is inside the band of the rest */
+	distance = depth_run(&state, INFINITY, 0.5f + 1.0f + 2.0f * DEPTH_FRAME, &settings, NULL, NULL);
+	snprintf(what, sizeof(what), "and with nothing under it, it rests at 2.00 m again (at %.3f m 1.5 s later)",
+		distance);
+	check(distance == 2.0f, what);
+}
+
 /* the layout with a distance for each piece: every quad keeps its angular
 extents, each piece's quads sit at its distance, and without distances the
 quads are byte for byte the resting layout's */
@@ -1262,6 +1326,7 @@ int main(int argc, char **argv)
 	zoom_checks();
 	distance_checks();
 	depth_ease_checks();
+	depth_deadband_checks();
 	depth_layout_checks();
 	footprint_checks();
 	reticle_depth_checks();

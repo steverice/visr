@@ -485,6 +485,14 @@ float host_stereo_hud_depth_ease(struct host_stereo_hud_depth_state *state, floa
 		state->waited = 0.0f;
 		current = fminf(target, current + diopter_rate(span, settings->pull_in) * dt);
 	}
+	else if (target > rest && target > current - HOST_STEREO_HUD_DEPTH_DEADBAND_DIOPTERS &&
+		state->waited <= settings->relax_delay)
+	{
+		/* a little farther than it is, with something near under it: it
+		holds, so a nearest that wanders in a small range doesn't pump (a
+		relax under way goes on to its target) */
+		state->waited = 0.0f;
+	}
 	else
 	{
 		state->waited += dt;
