@@ -184,7 +184,11 @@ version 23 keeps a Custom Edition map's blocks past the Xbox tools' limits
 whole (scenario vehicles, animations, seats: `tag_schema.h`), so a host and a
 client of version 22 would place different objects on such a map, and sends
 the map file's header checksum as the game record's map version
-(`cache_files_map_version`), which a client checks its copy against.
+(`cache_files_map_version`), which a client checks its copy against;
+version 24 adds the PC vehicle set, a vehicle set value the host sends with
+the gametype, by which every machine places a map's vehicles, so a client of
+version 23 would place none of a set it does not know while the host placed
+them all.
 
 A client plays by its host's rules: in another's game (searching for it,
 in its lobby, or playing it) the developer console, the telnet console
