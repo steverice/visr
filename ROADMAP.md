@@ -5,9 +5,10 @@
 - [x] Stereo with head tracking through Compositor Services (`display.stereo = "head"`)
 - [x] Stick turning: snap (default), smooth or off, with an optional comfort vignette (`input.turn`, `input.snap_angle`, `input.smooth_turn_speed`, `input.comfort_vignette`)
 - [x] Foveated rendering through the Compositor's rate maps, on by default (`display.foveation`)
-- [ ] A default render quality chosen from a headset sweep (`display.render_quality`)
+- [x] A default render quality chosen from a headset sweep (`display.render_quality`)
 - [x] The HUD split by what draws each piece, with the crosshair on its own layer
 - [x] The HUD in the periphery, in CE's own corners, turning with the body only (`display.hud_scale`, `display.hud_resolution`)
+- [x] The HUD drawn in front of what it covers, at a set distance (`display.hud_depth_floor`, `display.hud_depth_share`, `display.hud_distance`)
 - [x] Scope zoom fills the view
 - [x] Cutscenes as a 3D film on a 16:9 screen, opening out to the world at the end
 - [x] Vehicles stay immersive in third person
@@ -17,7 +18,7 @@
 - [x] A separate random seed for rendering, so render settings don't change the game
 - [x] The first-person weapon lowered for the headset's taller view
 - [x] The first-person body drawn below the view (`display.first_person_body_offset`)
-- [ ] The first-person body in vehicle seats, and depth clamping on the body
+- [x] The first-person body in vehicle seats, and depth clamping on the body
 - [ ] Immersive cutscenes, with the scene outside the director's frame blurred
 - [x] Stereo on the theater screen, as a 3D TV (`display.stereo = "screen"`)
 - [x] 2D play in a window at the window's resolution
@@ -43,7 +44,7 @@
 - [x] Rendering at the display's native resolution, with MetalFX upscaling (`display.upscaler`, `display.render_scale`)
 - [x] Compressed textures, 16x anisotropic filtering and reversed-Z depth
 - [x] Upstream's redrawn high-resolution HUD and text
-- [x] Anti-aliasing (FXAA, SMAA, MSAA, SSAA), shadow resolution and per-pixel lighting (`display.anti_aliasing`, `display.shadow_resolution`, `display.per_pixel_lighting`)
+- [ ] Upstream's anti-aliasing (FXAA, SMAA, MSAA, SSAA), shadow resolution and per-pixel lighting on Metal
 - [ ] Mirror reflections at full resolution by default (`display.mirror_resolution`)
 - [ ] AI-upscaled textures
 - [ ] Bink intro and attract videos
@@ -52,7 +53,7 @@
 
 - [x] Split-screen co-op, LAN play, and internet play with a server browser, from OpenCE (`network.online`)
 - [x] `halo://join` invite links on every Apple platform
-- [x] A grace period that keeps a network game running while the app is in the background
+- [ ] A grace period that keeps a network game running while the app is in the background
 - [ ] LAN discovery over Bonjour
 - [ ] Sharing the host's invite from the app
 - [ ] Internet play on by default
