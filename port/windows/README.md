@@ -87,7 +87,8 @@ These files use only the Windows SDK:
 | --- | --- |
 | `src/win32_files.c`, `src/win32_net.c` | The file and socket functions of `port/linux/src/posix.h`. |
 | `src/win32_posix.c` | The POSIX functions on Windows threads, critical sections, condition variables, `VirtualAlloc` and the performance counter. |
-| `src/win32_memory_watch.c` | The write tracking of textures, with a vectored exception handler. It also writes reports of crashes. |
+| `src/win32_memory_watch.c` | The write tracking of textures, with a vectored exception handler. |
+| `src/win32_crash.c` | The crash reports. Refer to "Crash reports". |
 
 `port.json` gives the Linux files that these files replace, and the Windows
 libraries of the link.
@@ -108,6 +109,25 @@ prevents this:
 MSVC gives file scope to a structure tag in a prototype. clang does not.
 Thus the build also includes the declarations of the Linux build
 (`build/windows/halo_msvc_tags.h`).
+
+## Crash reports
+
+A crash writes the faulting address and the calls that led to it to
+`debug.txt` and to the log. This tree's builds send no crash reports and do
+not ask to: `src/win32_crash.c` keeps upstream's minidump reporter and
+Sentry upload, but `crash_reports_enabled` turns them off, and there is no
+`crash_reports.upload` setting.
+
+`tools/symbolize_crash.py` adds the function names and the source lines to
+the crash lines of a `debug.txt` or a `halo.log`, from the PDBs of the build
+(`halo.pdb` next to `halo.exe`; the workflow keeps them as an artifact):
+
+```
+python tools/symbolize_crash.py debug.txt halo.exe
+```
+
+Give the `halo.exe` of the build that crashed, with its `halo.pdb` next to
+it. The tool needs `llvm-symbolizer` (LLVM).
 
 ## Limits
 

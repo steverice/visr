@@ -19,6 +19,7 @@ memory_watch.c detects that by write-protecting the pages.
 #include "menu_files.h"
 #include "text_hires.h"
 #include "port_config.h"
+#include "../game/cache_file_formats.h"
 #include "texture_override.h"
 #include "texture_upscale_state.h"
 
@@ -580,14 +581,129 @@ static void texture_dump(gpu_texture texture, uint32_t type, const struct xgpu_t
 	free(pixels);
 }
 
+/* ---------- Custom Edition channel orders
+
+Halo PC keeps what some textures hold in other channels than the game reads
+it from (enum custom_edition_channel_order): a model shader's multipurpose
+masks, and a HUD meter's shape and fill order. The Custom Edition map
+loading says which texels hold which order as they arrive
+(port/linux/game/custom_edition_bitmaps.c), and textures made of them are
+sampled with each channel taken from where Halo PC keeps it. (port: gpu.h
+has no sampling swizzle, so such textures are decoded to BGRA and their
+channels moved on the CPU as they upload: see channels_reorder.) Addresses stay listed until other texels
+arrive there, which the loading also says, or the map goes; the game and the
+renderer share a thread. */
+
+/* for each order, the channel (red, green, blue, alpha) of the texels each
+channel is sampled from */
+static const unsigned char custom_edition_channel_sources[NUMBER_OF_CUSTOM_EDITION_CHANNEL_ORDERS][4] =
+{
+	{ 0, 1, 2, 3 },
+	/* specular, self-illumination, color change and the auxiliary mask */
+	{ 2, 1, 3, 0 },
+	/* the fill order in color, the shape in alpha */
+	{ 3, 3, 3, 0 },
+};
+
+struct custom_edition_texels
+{
+	unsigned long address;
+	unsigned char channel_order;
+};
+
+static struct custom_edition_texels *custom_edition_texels;
+static unsigned long custom_edition_texel_count;
+static unsigned long custom_edition_texel_capacity;
+
+/* the order of the texels at address */
+static unsigned char custom_edition_texels_order(unsigned long address)
+{
+	unsigned long index;
+
+	for (index = 0; index < custom_edition_texel_count; index++)
+	{
+		if (custom_edition_texels[index].address == address)
+			return custom_edition_texels[index].channel_order;
+	}
+	return _custom_edition_channels_xbox;
+}
+
+void halo_custom_edition_texels_channels(const void *texels, unsigned char channel_order)
+{
+	unsigned long address = (unsigned long)texels;
+	unsigned long index;
+
+	if (channel_order >= NUMBER_OF_CUSTOM_EDITION_CHANNEL_ORDERS)
+		channel_order = _custom_edition_channels_xbox;
+	for (index = 0; index < custom_edition_texel_count && custom_edition_texels[index].address != address; index++)
+	{
+	}
+	if (index < custom_edition_texel_count)
+	{
+		if (channel_order == _custom_edition_channels_xbox)
+			custom_edition_texels[index] = custom_edition_texels[--custom_edition_texel_count];
+		else
+			custom_edition_texels[index].channel_order = channel_order;
+	}
+	else if (channel_order != _custom_edition_channels_xbox)
+	{
+		if (custom_edition_texel_count == custom_edition_texel_capacity)
+		{
+			unsigned long capacity = custom_edition_texel_capacity ? custom_edition_texel_capacity * 2 : 64;
+			struct custom_edition_texels *grown = realloc(custom_edition_texels, capacity * sizeof(*grown));
+
+			if (!grown)
+			{
+				platform_log("no memory to list the texels at %08lx: they are sampled in Halo PC's channel order",
+					address);
+				return;
+			}
+			custom_edition_texels = grown;
+			custom_edition_texel_capacity = capacity;
+		}
+		custom_edition_texels[custom_edition_texel_count].address = address;
+		custom_edition_texels[custom_edition_texel_count].channel_order = channel_order;
+		custom_edition_texel_count++;
+	}
+}
+
+void halo_custom_edition_texels_forget(void)
+{
+	free(custom_edition_texels);
+	custom_edition_texels = NULL;
+	custom_edition_texel_count = 0;
+	custom_edition_texel_capacity = 0;
+}
+
+/* moves each texel's channels to where the game samples them (port: in place
+of upstream's GL_TEXTURE_SWIZZLE_*); texels are 32-bit ARGB words */
+static void channels_reorder(unsigned long *texels, unsigned long count, unsigned char channel_order)
+{
+	const unsigned char *sources = custom_edition_channel_sources[channel_order];
+	/* each channel's shift in an ARGB word, by red, green, blue, alpha */
+	static const unsigned char shifts[4] = { 16, 8, 0, 24 };
+	unsigned long index;
+
+	for (index = 0; index < count; index++)
+	{
+		unsigned long texel = texels[index], reordered = 0, channel;
+
+		for (channel = 0; channel < 4; channel++)
+			reordered |= ((texel >> shifts[sources[channel]]) & 0xff) << shifts[channel];
+		texels[index] = reordered;
+	}
+}
+
+/* decode: the texture is BGRA8 although its texels are DXT (no S3TC, or
+texels in another channel order) */
 static void upload(gpu_texture texture, uint32_t type, const struct xgpu_texture_description *description,
-	const unsigned char *base, const D3DCOLOR *palette)
+	const unsigned char *base, const D3DCOLOR *palette, BOOL decode, unsigned char channel_order)
 {
 	struct format_information information = format_information(description->format);
 	unsigned long face_count = description->cube_map ? 6 : 1;
 	unsigned long face_size = xgpu_texture_face_size(description);
 	unsigned long largest = description->width * description->height * description->depth;
-	BOOL decode_compressed = description->compressed && !device_capabilities.s3tc;
+	BOOL decode_compressed = description->compressed && decode;
 	unsigned long *converted = description->compressed && !decode_compressed ? NULL :
 		malloc(largest * sizeof(unsigned long));
 	unsigned long face, level;
@@ -621,6 +737,8 @@ static void upload(gpu_texture texture, uint32_t type, const struct xgpu_texture
 				free(converted);
 				return;
 			}
+			if (channel_order != _custom_edition_channels_xbox)
+				channels_reorder(converted, width * height * depth, channel_order);
 			gpu_texture_upload(texture, (uint32_t)face, (uint32_t)level, converted, (uint32_t)(width * height * depth * 4));
 		}
 	}
@@ -682,6 +800,9 @@ struct texture_entry
 	memory watch serial read before it was found: the same while no watched
 	page has been written since (0: never found) */
 	unsigned long watched_serial, watched_generation;
+	/* texture holds BGRA8 although the texels are DXT: the device has no
+	S3TC, or the texels were once in a Custom Edition channel order */
+	BOOL decoded;
 };
 
 #define TEXTURE_BUCKET_COUNT 4096
@@ -1022,8 +1143,9 @@ gpu_texture xgpu_texture_get(const DWORD *resource, const D3DCOLOR *palette, uin
 			struct gpu_texture_description texture = { 0 };
 			struct format_information information = format_information(entry->description.format);
 
+			entry->decoded = entry->description.compressed && !device_capabilities.s3tc;
 			texture.type = (uint8_t)entry->type;
-			texture.format = !entry->description.compressed || !device_capabilities.s3tc ? GPU_FORMAT_BGRA8 :
+			texture.format = !entry->description.compressed || entry->decoded ? GPU_FORMAT_BGRA8 :
 				information.kind == _texel_dxt1 ? GPU_FORMAT_BC1 :
 				information.kind == _texel_dxt3 ? GPU_FORMAT_BC2 : GPU_FORMAT_BC3;
 			texture.usage = GPU_USAGE_UPLOAD;
@@ -1074,6 +1196,26 @@ gpu_texture xgpu_texture_get(const DWORD *resource, const D3DCOLOR *palette, uin
 		if (entry->override < 0 && entry->size && platform_is_contiguous((void *)entry->address) &&
 			platform_is_contiguous((void *)(entry->address + entry->size - 1)))
 		{
+			unsigned char channel_order = custom_edition_texels_order(entry->address);
+
+			/* texels in a Custom Edition channel order are decoded and
+			reordered on upload (channels_reorder), so a block-compressed
+			texture is made again as BGRA8 */
+			if (channel_order != _custom_edition_channels_xbox && entry->description.compressed && !entry->decoded)
+			{
+				struct gpu_texture_description texture = { 0 };
+
+				texture.type = (uint8_t)entry->type;
+				texture.format = GPU_FORMAT_BGRA8;
+				texture.usage = GPU_USAGE_UPLOAD;
+				texture.width = (uint32_t)entry->description.width;
+				texture.height = (uint32_t)entry->description.height;
+				texture.depth = (uint32_t)entry->description.depth;
+				texture.levels = (uint32_t)entry->description.levels;
+				gpu_texture_destroy(entry->texture);
+				entry->texture = gpu_texture_create(&texture);
+				entry->decoded = TRUE;
+			}
 			if (config_boolean("debug.texture_log"))
 			{
 				const unsigned char *bytes = (const unsigned char *)entry->address;
@@ -1089,7 +1231,8 @@ gpu_texture xgpu_texture_get(const DWORD *resource, const D3DCOLOR *palette, uin
 					entry->description.height, entry->size, entry->generation,
 					ones * 100 / entry->size, zeros * 100 / entry->size);
 			}
-			upload(entry->texture, entry->type, &entry->description, (const unsigned char *)entry->address, palette);
+			upload(entry->texture, entry->type, &entry->description, (const unsigned char *)entry->address, palette,
+				entry->decoded, channel_order);
 			texture_override_apply(entry, palette);
 		}
 	}

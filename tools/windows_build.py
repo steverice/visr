@@ -366,7 +366,11 @@ def generate_windows_build(n: Writer, sln: Any) -> None:
             f"-I{XDK_INCLUDE}",
         ])
         for source in game_sources(linux_config):
-            add_object(source, game_cflags)
+            # The halt screen and version command identify this native build.
+            flags = game_cflags
+            if source.as_posix() == "source/main/main.c":
+                flags += " " + updater_defines(getattr(sln, "port_release", False))
+            add_object(source, flags)
         for source in sorted(Path(linux_config["game_sources"]).glob("*.c")):
             add_object(source, game_cflags)
 
@@ -410,6 +414,9 @@ def generate_windows_build(n: Writer, sln: Any) -> None:
         for source in sorted((PORT_DIR / "src").glob("*.c")):
             if source.name == "win32_upnp.c":
                 add_object(source, f"{win32_cflags} {miniupnpc_include}")
+            elif source.name == "win32_crash.c":
+                # the build's number and configuration name its crash reports
+                add_object(source, f"{win32_cflags} {updater_defines(getattr(sln, 'port_release', False))}")
             else:
                 add_object(source, win32_cflags if source.name.startswith("win32_") else platform_cflags)
         # internet play's UPnP (port/third_party/miniupnpc), on Winsock, as

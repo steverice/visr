@@ -75,7 +75,8 @@ with ideas from VALORANT's netcode articles, keeping the 30 Hz tick:
 
   The host's EXTRA ENEMIES (`coop_enemies.c`, `network.coop_enemies_mode`)
   give each squad of enemies a level places more of itself: PER PLAYER, a
-  percentage of itself for each player past the first; STATIC MULTIPLIER,
+  percentage of itself for each player past the first, to 8 times its size
+  at most (more filled the clients' objects); STATIC MULTIPLIER,
   that many times itself for any number of players. They stand around its
   starting locations on free ground (the same floor, clear of crates and
   other actors, with room to stand), or where none is left on rings about
@@ -175,7 +176,15 @@ lists a public game with a password with its invite's token sealed with the
 password's key (`p2p_lobby.c`), a listing of another layout; version 21
 sends each killing blow again reliably and an object come to rest three
 times (a client waits for a player's blow before its body dies without one),
-and switches co-op's BSP on the host's crossing alone.
+and switches co-op's BSP on the host's crossing alone; version 22 names a
+Halo Custom Edition map's level `custom_maps\<name>`
+(`port/linux/game/custom_edition_cache.h`), which a client of an older
+version can neither load nor explain, so it is told to update instead;
+version 23 keeps a Custom Edition map's blocks past the Xbox tools' limits
+whole (scenario vehicles, animations, seats: `tag_schema.h`), so a host and a
+client of version 22 would place different objects on such a map, and sends
+the map file's header checksum as the game record's map version
+(`cache_files_map_version`), which a client checks its copy against.
 
 A client plays by its host's rules: in another's game (searching for it,
 in its lobby, or playing it) the developer console, the telnet console

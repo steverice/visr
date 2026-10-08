@@ -58,7 +58,9 @@ jobs:
         run: python tools/ci_build.py linux release
 
       - name: Test
-        run: python -m pytest -q tools/test_linux_port.py
+        run: |
+          python -m pytest -q tools/test_linux_port.py
+          python tools/test_light_storage.py
 
       - name: Compile cache
         run: ccache --show-stats
@@ -115,6 +117,9 @@ jobs:
       - name: Release
         run: python tools/ci_build.py windows release
 
+      - name: Test light storage
+        run: python tools/test_light_storage.py
+
       - name: Compile cache
         run: ccache --show-stats
 
@@ -128,4 +133,17 @@ jobs:
         with:
           name: halo-windows-release
           path: dist/halo-windows-release
+          retention-days: 3
+
+      # the PDBs, for crash reports' backtraces (tools/ci_build.py)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: halo-windows-debug-symbols
+          path: dist/halo-windows-debug-symbols
+          retention-days: 3
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: halo-windows-release-symbols
+          path: dist/halo-windows-release-symbols
           retention-days: 3
