@@ -248,3 +248,4 @@ if '"display.foveation": "true",' not in mac_run_text or '"debug.foveation_eye_p
 
 # Parse untrusted XISO metadata and exercise extraction/cancellation under sanitizers.
 run('python3', 'tools/ios_xiso_test.py')
+run('python3', 'tools/test_network_light_state.py')
