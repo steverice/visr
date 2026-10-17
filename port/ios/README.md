@@ -1,4 +1,4 @@
-# Build and install VISR on iPhone, iPad, Apple TV and Apple Vision Pro
+# Build and install VISR on Apple devices
 
 This directory builds a native ARM64 iOS app around the existing game's ILP32
 runtime. It uses SDL3, OpenGL ES 3 or Metal, UIKit touch controls, and the user's original
@@ -110,6 +110,29 @@ not replace existing maps. Interrupted imports are cleaned up on next launch;
 existing maps displaced during the final move are restored if needed. Saves
 and profiles stay in `Documents/save` throughout.
 
+### Apple TV
+
+Build for tvOS 16 or later with `--tvos`:
+
+```sh
+python3 tools/ios_build.py --tvos --team YOUR_TEAM_ID --bundle-id com.yourname.visr
+python3 tools/ios_build.py --tvos --unsigned --ipa dist/VISR-tvOS-unsigned.ipa
+```
+
+The signed app is `build/tvos/app-device/Release-appletvos/VISR.app`;
+install it with the source-build commands below, using that path. A game
+controller is required.
+
+When game data is missing, the app shows a local address, a QR code and a
+pairing code. On a phone or computer on the same network, scan the QR code or
+open the address, enter the pairing code, and choose your Xbox disc image.
+Keep the setup screen open until the import finishes. The image is sent
+directly to the Apple TV, not to a project server.
+
+Apple TV keeps its data in a cache folder that tvOS may clear, including local
+saves. [Optional iCloud saves](../../docs/cloud-saves.md) can restore saved
+progress in builds configured for it; game data must be imported again.
+
 ### Install a source build
 
 List devices with `xcrun devicectl list devices`. Enable Developer Mode when
@@ -178,6 +201,12 @@ level needs them. Apple TV has no per-app Settings page. The code is in
 
 ## Controls
 
+The [settings reference](../linux/README.md#settings) and
+[configuration schema](../settings/config.schema.json) are generated from the
+setting definitions. Device profile options have a separate
+[reference](../../profiles/README.md#profile-settings-reference) and
+[schema](../settings/profile.schema.json).
+
 ### Resolution
 
 Native physical display resolution is the default, with a Retina drawable and
@@ -208,13 +237,13 @@ is not used on Apple Vision Pro, which places the HUD itself.
 smooths the 3D view's jagged edges with a pass over it once it is drawn:
 `"fxaa"` (cheap) or `"smaa"` (sharper, about three times the work). The pass
 runs at the size the scene is rendered at, before the HUD and menus are
-drawn, so they are never blurred. It is off by default; the Apple TV HD's
-device profile turns FXAA on.
+drawn, so they are never blurred. It is off by default; the iPhone 17 Pro's
+device profile turns FXAA on. The Apple TV HD's profile leaves it off.
 
 The renderer preserves the selected aspect ratio and caps the render size to
 the drawable and GPU texture limit. Existing configuration files without
-`render_height` automatically use native resolution. Anti-aliasing and an
-in-app graphics settings menu are not implemented yet.
+`render_height` automatically use native resolution. An in-app graphics
+settings menu is not implemented yet.
 
 Each device starts from its **device profile**: the graphics settings chosen
 for its model, or for its class of device when the model has none
@@ -323,8 +352,27 @@ the Files picker. On iPadOS 26 and later it also requests the interface
 orientation lock for the full-screen scene; portrait is excluded from the
 app's orientation masks. iPadOS controls windowed multitasking and may
 letterbox the landscape app when a full-screen orientation lock is unavailable.
-Internet invite hosting and clipboard joining default to off on iOS. Local/network multiplayer is
-not yet validated.
+Internet play is off until the player accepts its disclosure. The
+[network guide below](#what-internet-play-reaches) describes the third-party
+services it contacts. LAN discovery uses Bonjour on iPhone, iPad, Vision Pro
+and Mac; Apple TV does not use Bonjour or the invite share sheet.
+
+### Wired external displays
+
+On iPhone and iPad with Metal, a wired display shows the game while the device
+keeps the HUD and touch controls over black. With a controller, the companion
+screen dims after inactivity. Unplugging the display pauses the game and returns
+it to the device. AirPlay and the OpenGL ES renderer use system mirroring.
+
+The device profile chooses the output mode and graphics budget for the display
+([external profiles](../../profiles/README.md#external-displays)). Player choices
+still apply on either output. On iOS 27, the app must be built with the iOS 27
+SDK for separate output; a build made with an older SDK uses system mirroring.
+
+Wired output, mode selection and the companion HUD have been verified on an
+iPhone 17 Pro. iPad output, disconnect/reconnect behavior, controller play,
+AirPlay and audio-route changes still need device verification; see the
+[roadmap](../../ROADMAP.md#app).
 
 ### Movies
 
@@ -510,24 +558,37 @@ The manual copy command assumes `Documents/maps` does not yet exist; avoid nesti
 second `maps` directory. Simulator graphics are slow; validate performance on
 a physical device.
 
-### Running on a Mac
+## Mac
 
-`tools/mac_run.py` runs the device build on an Apple-silicon Mac as a "Designed
-for iPad" app, renders with the GPU, and collects the results:
+`--mac` builds the Mac Catalyst app for Apple silicon, ad hoc signed without
+an Apple developer account:
 
 ```sh
-python3 tools/ios_build.py --team TEAM
-python3 tools/mac_run.py run --team TEAM --xiso ~/Downloads/halo.iso --exit-after 60 \
+python3 tools/ios_build.py --mac
+open build/mac/app/Release-maccatalyst/VISR.app
+```
+
+The app imports an Xbox disc image through **Choose XISO**, as on iPhone and
+iPad. It keeps game data, saves, `config.toml` and logs in
+`~/Library/Application Support/<bundle identifier>/`. The default identifier
+is `org.steverice.visr.mac`.
+
+`tools/mac_run.py` uses this app by default and collects screenshots and logs.
+Seed its separate data folder with extracted maps:
+
+```sh
+python3 tools/mac_run.py run --maps assets/maps --exit-after 60 \
   --screenshot-every 300 --dump-shaders --out results/menu
 python3 tools/mac_run.py compare results/menu results/menu-again
 ```
 
-The first run imports the XISO into the app's container. `--init 'map_name a10'`
-loads a level without input. The runner wraps the CMake-built executable in a
-small `xcodegen` project because macOS kills the app the CMake project signs. It
-runs without a debugger because `memory_watch.c`'s deliberate page faults would
-stop one; to debug, use `process handle SIGSEGV SIGBUS --stop false --pass true`
-in LLDB.
+`--init 'map_name a10'` loads a level without input. The runner uses
+`~/Library/Application Support/<bundle identifier>/runner-data` and does not
+use iCloud saves. `--runner ipad --team TEAM --xiso path/to/halo.iso` selects
+the older Designed for iPad runner, which needs a signed iOS build and Xcode.
+Both runners run without a debugger because `memory_watch.c`'s deliberate
+page faults would stop one; to debug, use
+`process handle SIGSEGV SIGBUS --stop false --pass true` in LLDB.
 
 `run --simulator UDID` runs a simulator build in that simulator instead (the
 visionOS one by default; `--app` picks another), with the same settings and
