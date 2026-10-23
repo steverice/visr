@@ -10,7 +10,7 @@ Lowest first; each layer overrides the ones before it.
 
 1. The game's built-in default.
 2. The **class** profile: the one `kind = "class"` file whose platform matches and whose GPU family range holds the device's.
-3. The **model** profile: an exact `kind = "model"` match, otherwise an explicit `and_newer` rule, otherwise the strongest compatible source selected by the hardware catalog. An inherited source brings its own class baseline (see below).
+3. The **model** profile: an exact `kind = "model"` match, otherwise the strongest compatible source selected by the hardware catalog (for any device the catalog lists), otherwise an explicit `and_newer` rule (only for identifiers the catalog does not list). An inherited source brings its own class baseline (see below).
 4. A **drop-in** file, `device-profile.toml` in the app's data folder, for trying a profile (below).
 5. What the player chose: a value set in the menus, with the Settings app's switch, or by editing `config.toml`.
 6. A developer's override: a `HALO_*` environment variable or a build's `--render-height`.
@@ -34,7 +34,9 @@ On a Mac, use `chips = ["Apple M4 Pro"]`. Known tiers are base, Pro, Max and Ult
 
 Exact matches always win. Among qualifying rules, the newest source generation wins, then the highest Mac tier. Equal thresholds for one platform/product line are rejected by both snapshot validation and `tools/profile_check.py`. A rule precedes catalog inheritance and uses the receiving device's class baseline. The log names the source rule and target identity. Drop-ins and player choices keep their usual precedence.
 
-No shipped profile enables this rule without evidence. Apps built before support for `and_newer` reject a downloaded snapshot containing the field, including `profiles-2` snapshots; the compatibility label alone does not make the syntax safe for older clients. Keep current feeds free of these rules until the client compatibility policy is updated. The publisher also refuses them in `profiles-1` snapshots.
+The newest measured profile in each product line carries this rule: `iphone-17-pro.toml`, `ipad-pro-m1.toml` and `apple-tv-4k-3rd.toml`. Apps built before support for `and_newer` reject a downloaded snapshot containing the field, including `profiles-2` snapshots. Version 0.4.0 is not kept compatible with current feeds. The publisher still refuses the field in `profiles-1` snapshots.
+
+A rule applies only to identifiers the hardware catalog does not list. A device the catalog lists takes the catalog's answer (inheritance, or its class profile when it has no tier or no compatible source), so a later identifier of a weaker model, such as the iPad mini 6 (`iPad14,1`), is not taken over by the newest iPad profile.
 
 ## Hardware fallback
 
@@ -42,11 +44,11 @@ An exact model or chip profile wins. Otherwise, the app uses `hardware/catalog.t
 
 The catalog has separate orderings for iOS, tvOS, visionOS, and Mac. A source must fit the receiving device's physical memory, GPU family, render-pixel limits for gameplay/menu/cutscenes, and refresh target. Unknown or unordered hardware keeps its class fallback. Inheritance uses the source's class baseline and model values together, including scene values; the receiving class does not contribute extra settings. Drop-ins and player choices retain their precedence.
 
-The initial catalog covers the M1 iPad Pro variants: the 11-inch model may inherit the measured 12.9-inch profile. That inheritance is an explicit hardware assessment, not a benchmark of the 11-inch model. Other models retain exact/class matching until their ordering is established. Physical runtime checks can reject a catalog candidate.
+The catalog lists every iPhone, iPad and Apple TV model the app supports, from the iPhone 8, iPad (5th generation) and Apple TV HD through the current generation. Each entry records its basis and the source of its ordering. A tier orders GPU capability: the design generation, then the GPU core count where a design is shared. Hardware whose ordering against its neighbors cannot be defended has no tier and keeps its class profile; none is left out today. Inheritance for hardware without a measurement of its own is an explicit hardware assessment, not a benchmark of that model.
 
-To add coverage, record the exact device identities, platform, tier, GPU family, evidence basis, and source in a `[[hardware]]` entry. Designate at most one `[[fallback]]` source per platform/tier, referencing a measured model profile and its compatibility envelope. Omit a hardware tier when ordering is uncertain. Use the existing catalog as the schema example and validate the entire folder with `python3 tools/profile_check.py` before publishing a change.
+iOS has two tier ranges, iPhones from 100 and iPads from 1000, so an iPhone never inherits an iPad's profile. Each source's envelope carries a memory floor, the pixels its measured device drew, and a refresh limit. A device on a display faster than the source was measured at is outside the envelope, because iPhone, iPad and Apple TV builds cannot cap gameplay at a lower frame rate (`display.frame_rate` is Mac-only there; the system paces frames), so the settings would run at a rate nobody measured them at. Such a device keeps the next lower compatible source, or the class floor. Physical runtime checks can reject a catalog candidate.
 
-Logs and benchmark reports distinguish inherited selection from exact selection and retain both hardware identities, tiers, and the catalog version. An inherited result does not change the evidence attached to the source's settings.
+**The class floor.** A device weaker than every measured profile of its line, or outside every envelope, takes its class profile, whose values are the weakest measured device's settings: for iPhone and iPad, the iPad Pro 12.9-inch (1st generation, A9X) at 720 lines with menus and cutscenes at the display's size; for Apple TV, the Apple TV HD's values (`apple-tv-hd.toml`). Because every model profile sits on its class, each states the values the floor would otherwise change.
 
 ## Scene classes
 
@@ -99,7 +101,7 @@ A device's profile aims for the highest tier of this ladder that the device hold
 
 Tier 3 is the ideal. Above it, each tier must also hold at more enemies than real play has, so the profile keeps headroom: a device that holds 120 frames a second at 1440 lines with twice the enemies should not run 4K and drop below 60 in a busy game.
 
-**Holding a tier.** In every benchmark window at the tier's multiplier, after the device has warmed up, 95% of frames take at most 90% of the frame budget: 30.0 ms at 30 frames a second, 15.0 ms at 60, 7.5 ms at 120. Each level's window is the stretch that level stresses most (open terrain with vehicles, swarms of small enemies, effects and reflections, large fights between factions). Fanless devices and phones throttle, so a cold run does not count.
+**Holding a tier.** In every benchmark window at the tier's frame rate, render lines and enemy multiplier, after the device has warmed up, at least 99.5% of frames present on time and late frames are few. On time means shown within one refresh of the tier's frame rate; a late frame is one shown after more than 1.5 refreshes. GPU time is for diagnosis and for comparing the cost of settings, not the pass/fail test: on pipelined Metal, `gpu_ms` includes waits for the next drawable, so a device that holds its rate can show a GPU time near the whole frame budget. Each level's window is the stretch that level stresses most (open terrain with vehicles, swarms of small enemies, effects and reflections, large fights between factions). Fanless devices and phones throttle, so a cold run does not count.
 
 **Settings before tiers.** Before a device drops a tier, the profile lowers the settings that cost the most for the least visible difference (shadow detail, anisotropy, level of detail, anti-aliasing), in the order the measured cost of each setting gives. Frame rate and render lines change only when those settings cannot close the gap.
 
