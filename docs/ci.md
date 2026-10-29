@@ -113,3 +113,4 @@ Never upload game maps, disc images, extracted textures/movies, gameplay
 captures or private recordings to public CI artifacts. Public jobs produce
 synthetic fixtures and app binaries without game data. Signing, App Store
 uploads and publication belong to a separately approved release workflow.
+
